@@ -37,7 +37,7 @@ export default function HomePage() {
       return;
     }
     try {
-      const res = await fetch(`http://10.132.255.7:5001/api/documents?username=${username}`);
+      const res = await fetch(`/api/documents?username=${username}`);
       if (res.ok) {
         const data = await res.json();
         setDocuments(data);
@@ -183,7 +183,7 @@ export default function HomePage() {
       formData.append('username', username);
 
       try {
-        const response = await fetch('http://10.132.255.7:5001/api/documents/upload', {  
+        const response = await fetch('/api/documents/upload', {  
           method: 'POST',
           body: formData,
         });

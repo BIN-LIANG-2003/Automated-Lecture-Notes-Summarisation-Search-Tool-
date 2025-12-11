@@ -53,7 +53,7 @@ export default function AuthPage() {
       console.log("Google User:", decoded);
 
       // 注意：这里使用您代码中原有的 IP 地址
-      const res = await fetch('http://10.132.255.7:5001/api/auth/google', {
+      const res = await fetch('/api/auth/google', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
@@ -87,7 +87,7 @@ export default function AuthPage() {
     }
 
     try {
-      const response = await fetch('http://10.132.255.7:5001/api/auth/login', {
+      const response = await fetch('/api/auth/login', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -129,7 +129,7 @@ export default function AuthPage() {
     }
 
     try {
-      const response = await fetch('http://10.132.255.7:5001/api/auth/register', {
+      const response = await fetch('/api/auth/register', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

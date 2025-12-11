@@ -11,7 +11,7 @@ export default function DocumentDetail() {
   useEffect(() => {
     const fetchDoc = async () => {
       try {
-        const res = await fetch(`http://10.132.255.7:5001/api/documents/${docId}`);
+        const res = await fetch(`/api/documents/${docId}`);
         if (!res.ok) throw new Error('Document not found');
         const data = await res.json();
         setDocument(data);
@@ -27,7 +27,7 @@ export default function DocumentDetail() {
   if (loading) return <div className="container document-detail"><p>Loading...</p></div>;
   if (error || !document) return <div className="container document-detail"><p>Error: {error}</p></div>;
 
-  const fileUrl = `http://10.132.255.7:5001/uploads/${document.filename}`;
+  const fileUrl = `/uploads/${document.filename}`;
   const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(document.fileType);
   
   const headerStyle = {
