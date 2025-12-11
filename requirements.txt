@@ -1,0 +1,8 @@
+Flask
+Flask-Cors
+google-auth
+google-auth-oauthlib
+requests
+python-docx
+PyPDF2
+gunicorn
