@@ -11,29 +11,27 @@ from werkzeug.security import generate_password_hash, check_password_hash
 from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
-# --- 文本提取库 (您的核心功能) ---
-import docx  # 处理 .docx
-import PyPDF2  # 处理 .pdf
+# --- 文本提取库 ---
+import docx
+import PyPDF2
 
-app = Flask(__name__)
-CORS(app)  # 允许跨域
+# ================= 配置部分 =================
+# 修改点 1：初始化 Flask 指向 dist 文件夹
+app = Flask(__name__, static_folder='dist', static_url_path='')
+CORS(app)
 
-# =================配置部分=================
-# 上传文件保存的文件夹
+# 上传配置
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
-app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 限制最大上传 20MB
+app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
 
-# 允许的文件后缀
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
-
-# 您的 Google Client ID (必须与前端 main.jsx 一致)
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
 
-# =================数据库工具函数=================
+# ================= 数据库工具函数 =================
 def get_db_connection():
     conn = sqlite3.connect('database.db')
     conn.row_factory = sqlite3.Row
@@ -41,7 +39,6 @@ def get_db_connection():
 
 def init_db():
     conn = get_db_connection()
-    # 1. 创建用户表
     conn.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -50,7 +47,6 @@ def init_db():
             password_hash TEXT NOT NULL
         )
     ''')
-    # 2. 创建文档表 (包含 content 字段用于存提取的文字)
     conn.execute('''
         CREATE TABLE IF NOT EXISTS documents (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -67,16 +63,14 @@ def init_db():
     conn.commit()
     conn.close()
 
-# 初始化数据库 (每次启动时检查)
 init_db()
 
-# =================辅助函数=================
+# ================= 辅助函数 =================
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
 def extract_text(filepath, ext):
-    """从文件中提取文字的核心逻辑"""
     text = ""
     try:
         if ext == 'docx':
@@ -90,15 +84,13 @@ def extract_text(filepath, ext):
         elif ext == 'txt':
             with open(filepath, 'r', encoding='utf-8', errors='ignore') as f:
                 text = f.read()
-        # 图片暂不处理OCR，留空
     except Exception as e:
         print(f"Error extracting text: {e}")
-        text = "Text extraction failed or not supported."
+        text = "Text extraction failed."
     return text
 
-# =================API 路由接口=================
+# ================= API 路由接口 (业务逻辑) =================
 
-# 1. 普通注册
 @app.route('/api/auth/register', methods=['POST'])
 def register():
     data = request.get_json()
@@ -110,7 +102,6 @@ def register():
         return jsonify({'error': 'Missing fields'}), 400
 
     hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
-
     conn = get_db_connection()
     try:
         conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
@@ -122,7 +113,6 @@ def register():
     finally:
         conn.close()
 
-# 2. 普通登录
 @app.route('/api/auth/login', methods=['POST'])
 def login():
     data = request.get_json()
@@ -130,7 +120,6 @@ def login():
     password = data.get('password')
 
     conn = get_db_connection()
-    # 支持用用户名或邮箱登录
     user = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', 
                         (username_or_email, username_or_email)).fetchone()
     conn.close()
@@ -140,34 +129,23 @@ def login():
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
 
-# 3. Google 登录 (新增功能)
 @app.route('/api/auth/google', methods=['POST'])
 def google_login():
     try:
         data = request.get_json()
         token = data.get('token')
         
-        # A. 验证 Google Token
-        id_info = id_token.verify_oauth2_token(
-            token, 
-            google_requests.Request(), 
-            GOOGLE_CLIENT_ID
-        )
-
-        # B. 获取用户信息
+        id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
         email = id_info['email']
         name = id_info.get('name', email.split('@')[0])
         
-        # C. 数据库查找用户
         conn = get_db_connection()
         user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
         
         if user is None:
-            # 自动注册逻辑
-            username = f"{name.split()[0]}_{uuid.uuid4().hex[:4]}" # 生成唯一用户名
-            random_password = uuid.uuid4().hex # 生成随机密码
+            username = f"{name.split()[0]}_{uuid.uuid4().hex[:4]}"
+            random_password = uuid.uuid4().hex
             hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
-            
             try:
                 conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                              (username, email, hashed_password))
@@ -176,38 +154,25 @@ def google_login():
             except Exception as e:
                 conn.close()
                 return jsonify({'error': f'Register failed: {str(e)}'}), 500
-
         conn.close()
-
-        # D. 返回成功
-        return jsonify({
-            'message': 'Login successful',
-            'username': user['username']
-        }), 200
-
+        return jsonify({'message': 'Login successful', 'username': user['username']}), 200
     except ValueError:
         return jsonify({'error': 'Invalid Google token'}), 401
     except Exception as e:
         print(f"Google login error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
-# 4. 获取文档列表
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     username = request.args.get('username')
     conn = get_db_connection()
-    
     if username:
-        # 只看自己的
         docs = conn.execute('SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC', (username,)).fetchall()
     else:
-        # 看所有的 (访客模式)
         docs = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC').fetchall()
-    
     conn.close()
     return jsonify([dict(doc) for doc in docs])
 
-# 5. 上传文档 (包含文本提取逻辑)
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -221,19 +186,13 @@ def upload_file():
     
     if file and allowed_file(file.filename):
         filename = secure_filename(file.filename)
-        # 防止重名覆盖，加个时间戳
         unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
         file.save(filepath)
 
-        # 获取文件后缀
         ext = filename.rsplit('.', 1)[1].lower()
-        
-        # --- 核心：提取文本 ---
         extracted_text = extract_text(filepath, ext)
-        # -------------------
 
-        # 存入数据库
         conn = get_db_connection()
         conn.execute(
             'INSERT INTO documents (filename, title, uploaded_at, file_type, content, username, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -241,19 +200,15 @@ def upload_file():
         )
         conn.commit()
         conn.close()
-
         return jsonify({'message': 'File uploaded and processed successfully'}), 201
     
     return jsonify({'error': 'File type not allowed'}), 400
 
-# 6. 获取单个文档详情
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
     conn = get_db_connection()
     doc = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,)).fetchone()
-    
     if doc:
-        # 更新最后访问时间
         conn.execute('UPDATE documents SET last_access_at = ? WHERE id = ?', 
                      (datetime.utcnow().isoformat(), doc_id))
         conn.commit()
@@ -263,13 +218,32 @@ def get_document(doc_id):
         conn.close()
         return jsonify({'error': 'Document not found'}), 404
 
-# 7. 下载/预览文件
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-# =================启动服务器=================
+# ================= 前端托管路由 (新增部分) =================
+
+# 修改点 2：添加根路由，返回 index.html
+@app.route('/')
+def serve_index():
+    return send_from_directory(app.static_folder, 'index.html')
+
+# 修改点 3：添加捕获所有路由，防止 React 刷新 404
+@app.route('/<path:path>')
+def catch_all(path):
+    # 如果是 API 或上传文件请求，不要拦截，直接返回 404 让 Flask 处理
+    if path.startswith('api/') or path.startswith('uploads/'):
+        return jsonify({'error': 'Not found'}), 404
+    
+    # 如果请求的是静态资源 (如 js, css, png)，直接返回文件
+    if os.path.exists(os.path.join(app.static_folder, path)):
+        return send_from_directory(app.static_folder, path)
+    
+    # 否则（比如访问 /login），统统返回 index.html 给 React 处理
+    return send_from_directory(app.static_folder, 'index.html')
+
 if __name__ == '__main__':
-    # host='0.0.0.0' 允许局域网访问 (手机端)
-    # port=5001 您的指定端口
-    app.run(debug=True, port=5001, host='0.0.0.0')
+    # 适配 Render 的环境变量 PORT
+    port = int(os.environ.get('PORT', 5001))
+    app.run(debug=True, port=port, host='0.0.0.0')
