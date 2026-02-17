@@ -15,54 +15,136 @@ from google.auth.transport import requests as google_requests
 import docx
 import PyPDF2
 
+# --- PostgreSQL 驱动 ---
+import psycopg2
+from psycopg2.extras import RealDictCursor
+
 # ================= 配置部分 =================
-# 修改点 1：初始化 Flask 指向 dist 文件夹
 app = Flask(__name__, static_folder='dist', static_url_path='')
 CORS(app)
 
-# 上传配置
 UPLOAD_FOLDER = 'uploads'
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
-
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
 
-# ================= 数据库工具函数 =================
-def get_db_connection():
-    conn = sqlite3.connect('database.db')
-    conn.row_factory = sqlite3.Row
-    return conn
+# ================= 数据库智能兼容层 (DBWrapper) =================
+class DBWrapper:
+    """
+    这个类用于屏蔽 SQLite 和 PostgreSQL 的语法差异。
+    Render 使用 PostgreSQL (%s 占位符)，本地开发使用 SQLite (? 占位符)。
+    """
+    def __init__(self, conn, db_type):
+        self.conn = conn
+        self.db_type = db_type
 
+    def execute(self, query, params=()):
+        # 1. 自动转换占位符：如果是 Postgres，把 SQL 里的 '?' 替换为 '%s'
+        if self.db_type == 'postgres':
+            query = query.replace('?', '%s')
+        
+        # 2. 执行查询
+        try:
+            if self.db_type == 'postgres':
+                cursor = self.conn.cursor()
+                cursor.execute(query, params)
+                return cursor
+            else:
+                # SQLite
+                return self.conn.execute(query, params)
+        except Exception as e:
+            print(f"Database Execution Error: {e}")
+            raise e
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        self.conn.close()
+
+# ================= 数据库连接函数 =================
+def get_db_connection():
+    # 1. 尝试从 Render 环境变量获取 PostgreSQL 地址
+    database_url = os.environ.get('DATABASE_URL')
+    
+    if database_url:
+        # === 生产环境: PostgreSQL ===
+        try:
+            # 修正 URL 格式 (SQLAlchemy/Psycopg2 需要 postgresql:// 开头)
+            if database_url.startswith("postgres://"):
+                database_url = database_url.replace("postgres://", "postgresql://", 1)
+            
+            conn = psycopg2.connect(database_url, cursor_factory=RealDictCursor)
+            return DBWrapper(conn, 'postgres')
+        except Exception as e:
+            print(f"❌ PostgreSQL connection failed: {e}")
+            # 如果连不上 PG，返回 None 或者抛出错误
+            return None
+    else:
+        # === 本地开发环境: SQLite ===
+        conn = sqlite3.connect('database.db')
+        conn.row_factory = sqlite3.Row
+        return DBWrapper(conn, 'sqlite')
+
+# ================= 初始化数据库表 =================
 def init_db():
     conn = get_db_connection()
-    conn.execute('''
+    if not conn:
+        print("⚠️ Warning: Could not connect to database for initialization.")
+        return
+
+    print(f"✅ Connected to database type: {conn.db_type}")
+
+    # 根据数据库类型选择不同的建表语法
+    if conn.db_type == 'postgres':
+        # Postgres 使用 SERIAL 自增
+        id_type = "SERIAL PRIMARY KEY"
+        timestamp_type = "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"
+    else:
+        # SQLite 使用 INTEGER PRIMARY KEY AUTOINCREMENT
+        id_type = "INTEGER PRIMARY KEY AUTOINCREMENT"
+        timestamp_type = "TEXT" # SQLite 存时间通常用文本
+
+    # 创建用户表
+    users_sql = f'''
         CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE,
             password_hash TEXT NOT NULL
-        )
-    ''')
-    conn.execute('''
+        );
+    '''
+    
+    # 创建文档表
+    docs_sql = f'''
         CREATE TABLE IF NOT EXISTS documents (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            id {id_type},
             filename TEXT NOT NULL,
             title TEXT,
-            uploaded_at TEXT,
+            uploaded_at {timestamp_type},
             file_type TEXT,
             content TEXT, 
             tags TEXT,
             username TEXT,
-            last_access_at TEXT
-        )
-    ''')
-    conn.commit()
-    conn.close()
+            last_access_at {timestamp_type}
+        );
+    '''
 
+    try:
+        conn.execute(users_sql)
+        conn.execute(docs_sql)
+        conn.commit()
+        print("✅ Database tables initialized successfully.")
+    except Exception as e:
+        print(f"❌ Error initializing tables: {e}")
+    finally:
+        conn.close()
+
+# 启动时运行初始化
 init_db()
 
 # ================= 辅助函数 =================
@@ -89,7 +171,7 @@ def extract_text(filepath, ext):
         text = "Text extraction failed."
     return text
 
-# ================= API 路由接口 (业务逻辑) =================
+# ================= API 路由接口 =================
 
 @app.route('/api/auth/register', methods=['POST'])
 def register():
@@ -104,12 +186,14 @@ def register():
     hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
     conn = get_db_connection()
     try:
+        # DBWrapper 会自动处理占位符 ?
         conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                      (username, email, hashed_pw))
         conn.commit()
         return jsonify({'message': 'User created successfully'}), 201
-    except sqlite3.IntegrityError:
-        return jsonify({'error': 'Username or email already exists'}), 409
+    except Exception as e:
+        # 捕捉重复注册等错误
+        return jsonify({'error': f'Registration failed (User may exist): {str(e)}'}), 409
     finally:
         conn.close()
 
@@ -120,8 +204,10 @@ def login():
     password = data.get('password')
 
     conn = get_db_connection()
-    user = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', 
-                        (username_or_email, username_or_email)).fetchone()
+    # 注意：Postgres 的 fetchone 返回的是字典 (RealDictRow)，SQLite 返回的是 Row，都能通过 ['key'] 访问
+    cursor = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', 
+                        (username_or_email, username_or_email))
+    user = cursor.fetchone()
     conn.close()
 
     if user and check_password_hash(user['password_hash'], password):
@@ -140,7 +226,8 @@ def google_login():
         name = id_info.get('name', email.split('@')[0])
         
         conn = get_db_connection()
-        user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
+        cursor = conn.execute('SELECT * FROM users WHERE email = ?', (email,))
+        user = cursor.fetchone()
         
         if user is None:
             username = f"{name.split()[0]}_{uuid.uuid4().hex[:4]}"
@@ -150,7 +237,9 @@ def google_login():
                 conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                              (username, email, hashed_password))
                 conn.commit()
-                user = conn.execute('SELECT * FROM users WHERE email = ?', (email,)).fetchone()
+                # 重新获取用户
+                cursor = conn.execute('SELECT * FROM users WHERE email = ?', (email,))
+                user = cursor.fetchone()
             except Exception as e:
                 conn.close()
                 return jsonify({'error': f'Register failed: {str(e)}'}), 500
@@ -166,12 +255,18 @@ def google_login():
 def get_documents():
     username = request.args.get('username')
     conn = get_db_connection()
-    if username:
-        docs = conn.execute('SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC', (username,)).fetchall()
-    else:
-        docs = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC').fetchall()
-    conn.close()
-    return jsonify([dict(doc) for doc in docs])
+    try:
+        if username:
+            cursor = conn.execute('SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC', (username,))
+            docs = cursor.fetchall()
+        else:
+            cursor = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC')
+            docs = cursor.fetchall()
+        
+        # 将结果转换为字典列表 (兼容 PG 和 SQLite)
+        return jsonify([dict(doc) for doc in docs])
+    finally:
+        conn.close()
 
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_file():
@@ -185,65 +280,70 @@ def upload_file():
         return jsonify({'error': 'No selected file'}), 400
     
     if file and allowed_file(file.filename):
-        filename = secure_filename(file.filename)
-        unique_filename = f"{uuid.uuid4().hex[:8]}_{filename}"
+        original_filename = file.filename
+        try:
+            ext = original_filename.rsplit('.', 1)[1].lower()
+        except IndexError:
+            return jsonify({'error': 'Filename must have an extension'}), 400
+        
+        unique_filename = f"{uuid.uuid4().hex}.{ext}"
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        
         file.save(filepath)
-
-        ext = filename.rsplit('.', 1)[1].lower()
         extracted_text = extract_text(filepath, ext)
 
         conn = get_db_connection()
-        conn.execute(
-            'INSERT INTO documents (filename, title, uploaded_at, file_type, content, username, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
-            (unique_filename, filename, datetime.utcnow().isoformat(), ext, extracted_text, username, '')
-        )
-        conn.commit()
-        conn.close()
-        return jsonify({'message': 'File uploaded and processed successfully'}), 201
+        try:
+            conn.execute(
+                'INSERT INTO documents (filename, title, uploaded_at, file_type, content, username, tags) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                (unique_filename, original_filename, datetime.utcnow().isoformat(), ext, extracted_text, username, '')
+            )
+            conn.commit()
+            return jsonify({'message': 'File uploaded and processed successfully'}), 201
+        except Exception as e:
+            print(f"Upload error: {e}")
+            return jsonify({'error': 'Database save failed'}), 500
+        finally:
+            conn.close()
     
     return jsonify({'error': 'File type not allowed'}), 400
 
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
     conn = get_db_connection()
-    doc = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,)).fetchone()
-    if doc:
-        conn.execute('UPDATE documents SET last_access_at = ? WHERE id = ?', 
-                     (datetime.utcnow().isoformat(), doc_id))
-        conn.commit()
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        
+        if doc:
+            conn.execute('UPDATE documents SET last_access_at = ? WHERE id = ?', 
+                         (datetime.utcnow().isoformat(), doc_id))
+            conn.commit()
+            return jsonify(dict(doc))
+        else:
+            return jsonify({'error': 'Document not found'}), 404
+    finally:
         conn.close()
-        return jsonify(dict(doc))
-    else:
-        conn.close()
-        return jsonify({'error': 'Document not found'}), 404
 
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
-# ================= 前端托管路由 (新增部分) =================
-
-# 修改点 2：添加根路由，返回 index.html
+# ================= 前端路由 =================
 @app.route('/')
 def serve_index():
     return send_from_directory(app.static_folder, 'index.html')
 
-# 修改点 3：添加捕获所有路由，防止 React 刷新 404
 @app.route('/<path:path>')
 def catch_all(path):
-    # 如果是 API 或上传文件请求，不要拦截，直接返回 404 让 Flask 处理
     if path.startswith('api/') or path.startswith('uploads/'):
         return jsonify({'error': 'Not found'}), 404
     
-    # 如果请求的是静态资源 (如 js, css, png)，直接返回文件
     if os.path.exists(os.path.join(app.static_folder, path)):
         return send_from_directory(app.static_folder, path)
     
-    # 否则（比如访问 /login），统统返回 index.html 给 React 处理
     return send_from_directory(app.static_folder, 'index.html')
 
 if __name__ == '__main__':
-    # 适配 Render 的环境变量 PORT
     port = int(os.environ.get('PORT', 5001))
     app.run(debug=True, port=port, host='0.0.0.0')

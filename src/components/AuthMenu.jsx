@@ -2,11 +2,11 @@ import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 const SETTINGS_ITEMS = [
-  { id: 'public', label: '公开资料', icon: '👤', active: true },
-  { id: 'account', label: '帐户', icon: '⚙️' },
-  { id: 'appearance', label: '外观', icon: '🎨' },
-  { id: 'accessibility', label: '无障碍', icon: '🦾' },
-  { id: 'notifications', label: '通知', icon: '🔔' },
+  { id: 'public', label: 'Public profile', icon: '👤', active: true },
+  { id: 'account', label: 'Account', icon: '⚙️' },
+  { id: 'appearance', label: 'Appearance', icon: '🎨' },
+  { id: 'accessibility', label: 'Accessibility', icon: '🦾' },
+  { id: 'notifications', label: 'Notifications', icon: '🔔' },
 ];
 
 export default function AuthMenu({ isLoggedIn, onSignOut }) {
@@ -77,7 +77,7 @@ export default function AuthMenu({ isLoggedIn, onSignOut }) {
                 <span className="settings-icon" aria-hidden="true">
                   {item.icon}
                 </span>
-                <span className="settings-label-cn">{item.label}</span>
+                <span className="settings-label">{item.label}</span>
               </div>
             ))}
           </div>
