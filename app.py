@@ -2,7 +2,7 @@ import os
 import sqlite3
 import uuid
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, redirect
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -19,6 +19,10 @@ import PyPDF2
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+# --- AWS S3 库 (新增) ---
+import boto3
+from botocore.exceptions import NoCredentialsError
+
 # ================= 配置部分 =================
 app = Flask(__name__, static_folder='dist', static_url_path='')
 CORS(app)
@@ -31,6 +35,26 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
+
+# ================= AWS S3 配置 (新增) =================
+# 从环境变量获取密钥
+S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
+S3_KEY = os.environ.get('AWS_ACCESS_KEY_ID')
+S3_SECRET = os.environ.get('AWS_SECRET_ACCESS_KEY')
+S3_REGION = os.environ.get('AWS_REGION', 'us-west-2')
+
+# 创建 S3 客户端
+try:
+    s3_client = boto3.client(
+        's3',
+        aws_access_key_id=S3_KEY,
+        aws_secret_access_key=S3_SECRET,
+        region_name=S3_REGION
+    )
+    print("✅ AWS S3 Client initialized.")
+except Exception as e:
+    print(f"⚠️ AWS S3 Client failed to initialize: {e}")
+    s3_client = None
 
 # ================= 数据库智能兼容层 (DBWrapper) =================
 class DBWrapper:
@@ -82,7 +106,6 @@ def get_db_connection():
             return DBWrapper(conn, 'postgres')
         except Exception as e:
             print(f"❌ PostgreSQL connection failed: {e}")
-            # 如果连不上 PG，返回 None 或者抛出错误
             return None
     else:
         # === 本地开发环境: SQLite ===
@@ -107,7 +130,7 @@ def init_db():
     else:
         # SQLite 使用 INTEGER PRIMARY KEY AUTOINCREMENT
         id_type = "INTEGER PRIMARY KEY AUTOINCREMENT"
-        timestamp_type = "TEXT" # SQLite 存时间通常用文本
+        timestamp_type = "TEXT" 
 
     # 创建用户表
     users_sql = f'''
@@ -192,7 +215,6 @@ def register():
         conn.commit()
         return jsonify({'message': 'User created successfully'}), 201
     except Exception as e:
-        # 捕捉重复注册等错误
         return jsonify({'error': f'Registration failed (User may exist): {str(e)}'}), 409
     finally:
         conn.close()
@@ -204,7 +226,6 @@ def login():
     password = data.get('password')
 
     conn = get_db_connection()
-    # 注意：Postgres 的 fetchone 返回的是字典 (RealDictRow)，SQLite 返回的是 Row，都能通过 ['key'] 访问
     cursor = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', 
                         (username_or_email, username_or_email))
     user = cursor.fetchone()
@@ -237,7 +258,6 @@ def google_login():
                 conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                              (username, email, hashed_password))
                 conn.commit()
-                # 重新获取用户
                 cursor = conn.execute('SELECT * FROM users WHERE email = ?', (email,))
                 user = cursor.fetchone()
             except Exception as e:
@@ -263,11 +283,11 @@ def get_documents():
             cursor = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC')
             docs = cursor.fetchall()
         
-        # 将结果转换为字典列表 (兼容 PG 和 SQLite)
         return jsonify([dict(doc) for doc in docs])
     finally:
         conn.close()
 
+# ================= 修改后的上传接口 (支持 S3) =================
 @app.route('/api/documents/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
@@ -287,11 +307,37 @@ def upload_file():
             return jsonify({'error': 'Filename must have an extension'}), 400
         
         unique_filename = f"{uuid.uuid4().hex}.{ext}"
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
-        
-        file.save(filepath)
-        extracted_text = extract_text(filepath, ext)
+        # 1. 先保存到本地临时文件夹 (为了提取文字)
+        local_filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(local_filepath)
 
+        # 2. 提取文字 (这一步需要本地文件)
+        extracted_text = extract_text(local_filepath, ext)
+
+        # 3. 【关键步骤】上传到 AWS S3
+        try:
+            if S3_BUCKET and s3_client: # 只有配置了 S3 且客户端初始化成功才上传
+                print(f"🚀 Uploading to S3: {S3_BUCKET}")
+                s3_client.upload_file(
+                    local_filepath, 
+                    S3_BUCKET, 
+                    unique_filename,
+                    ExtraArgs={'ContentType': file.content_type} # 设置文件类型
+                )
+                print("✅ Upload to S3 successful")
+                
+                # 4. 上传成功后，删除本地文件 (节省 Render 空间)
+                os.remove(local_filepath)
+                print("🗑️ Local file removed")
+            else:
+                print("⚠️ S3_BUCKET not set or client failed, keeping local file")
+
+        except Exception as e:
+            print(f"❌ S3 Upload Error: {e}")
+            # 注意：即使 S3 上传失败，我们可能还是想保留数据库记录（或者报错，取决于你的需求）
+            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
+
+        # 5. 存入数据库
         conn = get_db_connection()
         try:
             conn.execute(
@@ -299,9 +345,9 @@ def upload_file():
                 (unique_filename, original_filename, datetime.utcnow().isoformat(), ext, extracted_text, username, '')
             )
             conn.commit()
-            return jsonify({'message': 'File uploaded and processed successfully'}), 201
+            return jsonify({'message': 'File uploaded successfully'}), 201
         except Exception as e:
-            print(f"Upload error: {e}")
+            print(f"Database Error: {e}")
             return jsonify({'error': 'Database save failed'}), 500
         finally:
             conn.close()
@@ -325,9 +371,26 @@ def get_document(doc_id):
     finally:
         conn.close()
 
+# ================= 修改后的下载/访问接口 (支持 S3) =================
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
-    return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+    # 如果配置了 S3，直接生成一个 S3 的链接跳转过去
+    if S3_BUCKET and s3_client:
+        try:
+            # 生成一个“预签名 URL”，有效期 1 小时 (3600秒)
+            presigned_url = s3_client.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': S3_BUCKET, 'Key': filename},
+                ExpiresIn=3600
+            )
+            # 让浏览器直接跳转到 AWS S3 下载
+            return redirect(presigned_url, code=302)
+        except Exception as e:
+            print(f"S3 Link Generation Error: {e}")
+            return jsonify({'error': 'Could not generate file link'}), 500
+    else:
+        # 如果没配 S3 (比如本地测试)，还是从本地文件夹读
+        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
 # ================= 前端路由 =================
 @app.route('/')
