@@ -61,8 +61,7 @@ a{ color:inherit; }
 .brand{ display:flex; gap:10px; align-items:center; font-weight:700; letter-spacing:.2px; }
 .nav-links{ list-style:none; margin:0; padding:0; display:flex; gap:14px; align-items:center; }
 .nav-links li{ display:flex; align-items:center; }
-.nav-links a, .linklike{ text-decoration:none; color:var(--text); padding:10px 12px; border-radius:12px; transition:all .2s ease; }
-.linklike{ background:transparent; border:1px solid transparent; cursor:pointer; }
+.nav-links a{ text-decoration:none; color:var(--text); padding:10px 12px; border-radius:12px; transition:all .2s ease; }
 .nav-links a:hover, .linklike:hover{ background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.08); }
 .navbar a[aria-current="page"]{ border-bottom:2px solid var(--primary); }
 
@@ -222,7 +221,16 @@ button:disabled:hover,
 }
 
 /* Button-like links */
-.linklike{ background:transparent; border:1px solid transparent; cursor:pointer; border-radius:12px; padding:6px 10px; }
+.linklike{
+  text-decoration:none;
+  color:var(--text);
+  padding:6px 10px;
+  border-radius:12px;
+  transition:all .2s ease;
+  background:transparent;
+  border:1px solid transparent;
+  cursor:pointer;
+}
 
 /* Edit tags button */
 .edit-tags{ background:rgba(255,255,255,.05); border:1px solid rgba(255,255,255,.12); border-radius:12px; padding:8px 10px; align-self:flex-start; }
@@ -234,10 +242,6 @@ button:disabled:hover,
    Auth page (container)
    =========================== */
 .login-body{ display:grid; place-items:center; min-height:100vh; }
-.login-card{
-  margin-top:6vh; width:min(520px,92%); padding:26px;
-  background: var(--glass); border:1px solid var(--stroke); border-radius:22px; box-shadow: var(--shadow);
-}
 .login-card h1{ margin:10px 0 6px; }
 
 /* ===========================
@@ -325,62 +329,72 @@ button:disabled:hover,
 
 .user-menu .dropdown{
   display:none;
-  position:absolute; right:0; top:calc(100% + 8px);
-  min-width: 160px;
-  background: var(--glass);
-  border:1px solid var(--stroke);
-  border-radius:12px;
-  box-shadow: var(--shadow);
-  padding:6px;
+  position:absolute; right:0; top:calc(100% + 12px);
+  min-width: 220px;
+  background: rgba(16,20,28,0.92);
+  backdrop-filter: blur(16px) saturate(135%);
+  border:1px solid rgba(255,255,255,.08);
+  border-radius:14px;
+  box-shadow: 0 14px 45px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.25);
+  padding:12px;
   z-index: 50;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
 }
-.user-menu.open .dropdown{ display:block; }
+.user-menu.open .dropdown{ display:flex; }
 
 .dropdown-item{
   display:block; width:100%;
   background:transparent; border:0; color:var(--text);
-  text-align:left; padding:8px 10px; border-radius:8px; cursor:pointer;
+  text-align:left; padding:9px 10px; border-radius:10px; cursor:pointer;
+  font-weight:600;
 }
 .dropdown-item:hover{ background: rgba(255,255,255,.06); }
+.user-menu .dropdown > .dropdown-item:last-child{
+  margin-top:4px;
+  border-top:1px solid rgba(255,255,255,.08);
+}
 
 .settings-toggle{
   display:flex; align-items:center; justify-content:space-between; gap:8px;
-  font-weight:600;
+  font-weight:650;
 }
 .settings-chevron{ font-size:12px; color:var(--muted); }
 .settings-panel{
-  margin:6px 0 10px;
-  padding:6px;
-  border-radius:10px;
-  background: rgba(255,255,255,.04);
-  border:1px solid rgba(255,255,255,.07);
+  margin:2px 0 2px;
+  padding:8px;
+  border-radius:12px;
+  background: rgba(255,255,255,.03);
+  border:1px solid rgba(255,255,255,.06);
   display:grid;
-  gap:4px;
+  gap:6px;
 }
 .settings-item{
   display:flex; align-items:center; gap:10px;
-  padding:8px 10px;
-  border-radius:10px;
+  padding:9px 11px;
+  border-radius:12px;
   border:1px solid transparent;
   background:transparent;
   color:var(--text);
   outline:none;
+  white-space: nowrap;
 }
 .settings-item:hover, .settings-item:focus-visible{
   background: rgba(255,255,255,.06);
   border-color: rgba(255,255,255,.12);
 }
 .settings-item.active{
-  background: rgba(122,162,255,.08);
-  border-color: rgba(122,162,255,.45);
-  box-shadow: inset 3px 0 0 var(--primary);
+  background: rgba(122,162,255,.12);
+  border-color: rgba(122,162,255,.35);
+  box-shadow: inset 3px 0 0 var(--primary), 0 6px 20px rgba(0,0,0,.2);
 }
 .settings-icon{
   width:18px; height:18px;
   display:grid; place-items:center;
   color:var(--muted);
 }
-.settings-label-cn{ letter-spacing:.3px; }
+.settings-label{ letter-spacing:.3px; font-weight:600; }
 /* ===== Password visibility toggle ===== */
 /* --- Fix: make input fill wrapper so the eye sits INSIDE --- */
 .field-with-toggle {
@@ -420,25 +434,6 @@ button:disabled:hover,
 .toggle-visibility[data-visible="true"] .icon-eye-off { display:block; }
 
 
-/* ===== Back to home button ===== */
-.back-home-btn {
-  position: absolute;
-  top: 16px;
-  right: 20px;
-  font-size: 14px;
-  font-weight: 500;
-  text-decoration: none;
-  padding: 6px 12px;
-  border-radius: 8px;
-  background: rgba(255,255,255,0.05);
-  border: 1px solid rgba(255,255,255,0.15);
-  color: var(--text);
-  transition: background 0.2s, border-color 0.2s;
-}
-.back-home-btn:hover {
-  background: rgba(255,255,255,0.1);
-  border-color: rgba(255,255,255,0.25);
-}
 /* Make the auth card a positioning context */
 .login-card{
   position: relative;           /* <— 关键：作为绝对定位参照 */
