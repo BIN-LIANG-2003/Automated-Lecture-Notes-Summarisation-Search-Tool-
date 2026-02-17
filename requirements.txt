@@ -7,6 +7,7 @@ Flask==3.1.2
 flask-cors==6.0.1
 google-auth==2.41.1
 google-auth-oauthlib==1.2.3
+gunicorn==23.0.0
 idna==3.11
 importlib_metadata==8.7.0
 itsdangerous==2.2.0
@@ -14,6 +15,7 @@ Jinja2==3.1.6
 lxml==6.0.2
 MarkupSafe==3.0.3
 oauthlib==3.3.1
+packaging==26.0
 psycopg2-binary==2.9.11
 pyasn1==0.6.1
 pyasn1_modules==0.4.2
