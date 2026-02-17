@@ -83,7 +83,11 @@ export default function AuthMenu({ isLoggedIn, onSignOut }) {
           </div>
         )}
 
-        <button type="button" className="dropdown-item" onClick={onSignOut}>
+        <button type="button" className="dropdown-item" onClick={() => {
+          localStorage.clear();    // 1. 清空浏览器记忆
+          onSignOut();             // 2. 执行原来的退出逻辑
+          window.location.href='/';// 3. 强制刷新并跳回首页
+        }}>
           Sign out
         </button>
       </div>
