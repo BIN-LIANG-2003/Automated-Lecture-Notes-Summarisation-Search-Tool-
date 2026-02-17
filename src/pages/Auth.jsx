@@ -19,7 +19,7 @@ export default function AuthPage() {
     confirm: ''
   });
 
-  const existingUser = localStorage.getItem('username');
+  const existingUser = sessionStorage.getItem('username');
 
   const subtitle =
     mode === 'signup'
@@ -66,8 +66,8 @@ export default function AuthPage() {
       const data = await res.json();
 
       if (res.ok) {
-        localStorage.setItem('username', data.username);
-        localStorage.setItem('loginAt', new Date().toISOString());
+        sessionStorage.setItem('username', data.username);
+        sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {
         alert(data.error || 'Google login failed');
@@ -99,8 +99,8 @@ export default function AuthPage() {
       const data = await response.json();
 
       if (response.ok) {
-        localStorage.setItem('username', data.username);
-        localStorage.setItem('loginAt', new Date().toISOString());
+        sessionStorage.setItem('username', data.username);
+        sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {
         alert(data.error || 'Login failed');
