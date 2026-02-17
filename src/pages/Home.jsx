@@ -17,7 +17,9 @@ export default function HomePage() {
 
   const [filters, setFilters] = useState({ query: '', start: '', end: '', tag: '' });
   const [searchDraft, setSearchDraft] = useState('');
-  const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(localStorage.getItem('username')));
+
+  // 🔴 修改 1：初始化状态改为读取 sessionStorage
+  const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(sessionStorage.getItem('username')));
   
   // 3. 关键修改：初始化 showFiles 时，检查 location.state 是否要求显示
   const [showFiles, setShowFiles] = useState(() => {
@@ -29,7 +31,8 @@ export default function HomePage() {
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
 
-  const username = localStorage.getItem('username');
+  // 🔴 修改 2：获取用户名改为读取 sessionStorage
+  const username = sessionStorage.getItem('username');
 
   const fetchDocuments = async () => {
     if (!username) {
@@ -59,7 +62,8 @@ export default function HomePage() {
   }, [location.state]);
 
   useEffect(() => {
-    const handleStorage = () => setIsLoggedIn(Boolean(localStorage.getItem('username')));
+    // 🔴 修改 3：监听 storage 变化（虽然 session 不跨页，但为了逻辑一致保持检查）
+    const handleStorage = () => setIsLoggedIn(Boolean(sessionStorage.getItem('username')));
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
@@ -136,11 +140,13 @@ export default function HomePage() {
     [documents]
   );
 
+  // 🔴 修改 4：退出登录时，同时清理 session 和 local（双保险）
   const handleSignOut = () => {
-    localStorage.removeItem('username');
-    localStorage.removeItem('loginAt');
+    sessionStorage.clear(); // 清理本次会话
+    localStorage.clear();   // 清理可能残留的旧缓存
     setIsLoggedIn(false);
     setDocuments([]);
+    window.location.reload(); // 强制刷新页面
   };
 
   const describeFiles = (fileList) =>
@@ -174,7 +180,8 @@ export default function HomePage() {
       return;
     }
 
-    const username = localStorage.getItem('username');
+    // 🔴 修改 5：上传时从 sessionStorage 获取用户名
+    const username = sessionStorage.getItem('username');
     let successCount = 0;
     
     for (const file of files) {
