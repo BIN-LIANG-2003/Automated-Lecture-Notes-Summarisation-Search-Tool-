@@ -1,38 +1,79 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-// 1. 引入 useLocation
-import { Link, useNavigate, useLocation } from 'react-router-dom';
-import AuthMenu from '../components/AuthMenu.jsx';
+import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import DocumentsList from '../components/DocumentsList.jsx';
-import OtherDropdown from '../components/OtherDropdown.jsx';
-import RecentList from '../components/RecentList.jsx';
 import UsageChart from '../components/UsageChart.jsx';
 import { todayKey } from '../lib/dates.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
 
+const MAX_SIDEBAR_RECENT = 10;
+
+const toTimeMs = (value) => {
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : 0;
+};
+
+const normalizeTags = (tags) => {
+  if (Array.isArray(tags)) return tags;
+  if (typeof tags === 'string' && tags.trim()) {
+    return tags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+  return [];
+};
+
+const normalizeDocument = (doc) => ({
+  ...doc,
+  uploadedAt: doc.uploadedAt || doc.uploaded_at || '',
+  lastAccessAt: doc.lastAccessAt || doc.last_access_at || '',
+  tags: normalizeTags(doc.tags)
+});
+
+const sortByNewestUpload = (a, b) => {
+  const timeDiff = toTimeMs(b.uploadedAt) - toTimeMs(a.uploadedAt);
+  if (timeDiff !== 0) return timeDiff;
+  return Number(b.id || 0) - Number(a.id || 0);
+};
+
+const getDocExt = (doc) => {
+  if (!doc) return '';
+  const rawType = String(doc.fileType || doc.file_type || '').toLowerCase();
+  if (rawType && !rawType.includes('/')) return rawType;
+  const name = String(doc.filename || doc.title || '').toLowerCase();
+  const parts = name.split('.');
+  return parts.length > 1 ? parts.pop() : '';
+};
+
+const PdfInlineViewer = lazy(() => import('../components/PdfInlineViewer.jsx'));
+
 export default function HomePage() {
   const [documents, setDocuments] = useState([]);
   const navigate = useNavigate();
-  // 2. 获取当前路由状态
   const location = useLocation();
+  const workspaceMenuRef = useRef(null);
+  const recentMenuRef = useRef(null);
 
   const [filters, setFilters] = useState({ query: '', start: '', end: '', tag: '' });
   const [searchDraft, setSearchDraft] = useState('');
-
-  // 🔴 修改 1：初始化状态改为读取 sessionStorage
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(sessionStorage.getItem('username')));
-  
-  // 3. 关键修改：初始化 showFiles 时，检查 location.state 是否要求显示
-  const [showFiles, setShowFiles] = useState(() => {
-    return location.state?.showFiles || false;
-  });
+  const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [sidebarMenuDocId, setSidebarMenuDocId] = useState(null);
+  const [sidebarRecentIds, setSidebarRecentIds] = useState([]);
+  const [activeDoc, setActiveDoc] = useState(null);
+  const [activeDocLoading, setActiveDocLoading] = useState(false);
+  const [activeDocError, setActiveDocError] = useState('');
 
   const [fileHint, setFileHint] = useState('');
   const fileInputRef = useRef(null);
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
+  const [now, setNow] = useState(() => new Date());
 
-  // 🔴 修改 2：获取用户名改为读取 sessionStorage
   const username = sessionStorage.getItem('username');
+  const accountName = username || '访客';
+  const accountEmail = sessionStorage.getItem('email') || (username ? `${username}` : '未登录');
 
   const fetchDocuments = async () => {
     if (!username) {
@@ -43,10 +84,11 @@ export default function HomePage() {
       const res = await fetch(`/api/documents?username=${username}`);
       if (res.ok) {
         const data = await res.json();
-        setDocuments(data);
+        const normalized = Array.isArray(data) ? data.map(normalizeDocument) : [];
+        setDocuments(normalized);
       }
     } catch (err) {
-      console.error("Failed to fetch documents", err);
+      console.error('Failed to fetch documents', err);
     }
   };
 
@@ -54,7 +96,6 @@ export default function HomePage() {
     fetchDocuments();
   }, [username]);
 
-  // 如果通过 Back 按钮回来带了状态，也更新一下（防止只在刷新时生效）
   useEffect(() => {
     if (location.state?.showFiles) {
       setShowFiles(true);
@@ -62,10 +103,43 @@ export default function HomePage() {
   }, [location.state]);
 
   useEffect(() => {
-    // 🔴 修改 3：监听 storage 变化（虽然 session 不跨页，但为了逻辑一致保持检查）
     const handleStorage = () => setIsLoggedIn(Boolean(sessionStorage.getItem('username')));
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 60000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    document.body.classList.add('notion-home-body');
+    return () => document.body.classList.remove('notion-home-body');
+  }, []);
+
+  useEffect(() => {
+    const handleClickOutside = (event) => {
+      if (workspaceMenuRef.current && !workspaceMenuRef.current.contains(event.target)) {
+        setWorkspaceMenuOpen(false);
+      }
+      if (recentMenuRef.current && !recentMenuRef.current.contains(event.target)) {
+        setSidebarMenuDocId(null);
+      }
+    };
+    const handleEscape = (event) => {
+      if (event.key === 'Escape') {
+        setWorkspaceMenuOpen(false);
+        setSidebarMenuDocId(null);
+      }
+    };
+
+    document.addEventListener('click', handleClickOutside);
+    document.addEventListener('keydown', handleEscape);
+    return () => {
+      document.removeEventListener('click', handleClickOutside);
+      document.removeEventListener('keydown', handleEscape);
+    };
   }, []);
 
   useEffect(() => {
@@ -85,14 +159,18 @@ export default function HomePage() {
         return next;
       });
     };
+
     if (document.visibilityState === 'visible') startSession();
+
     const handleVisibility = () => {
       if (document.visibilityState === 'visible') startSession();
       else stopSession();
     };
+
     const handleBeforeUnload = () => stopSession();
     document.addEventListener('visibilitychange', handleVisibility);
     window.addEventListener('beforeunload', handleBeforeUnload);
+
     return () => {
       stopSession();
       document.removeEventListener('visibilitychange', handleVisibility);
@@ -109,7 +187,7 @@ export default function HomePage() {
     return documents.filter((doc) => {
       const matchesQuery = lower
         ? doc.title?.toLowerCase().includes(lower) ||
-          (doc.tags || []).some((t) => t.toLowerCase().includes(lower))
+          (doc.tags || []).some((item) => item.toLowerCase().includes(lower))
         : true;
       const uploaded = new Date(doc.uploadedAt);
       const matchesStart = startDate ? uploaded >= startDate : true;
@@ -125,28 +203,62 @@ export default function HomePage() {
     return Array.from(bag);
   }, [documents]);
 
+  useEffect(() => {
+    // If the selected tag no longer exists after edits, clear stale filter automatically.
+    if (!filters.tag) return;
+    if (!tags.includes(filters.tag)) {
+      setFilters((prev) => ({ ...prev, tag: '' }));
+    }
+  }, [tags, filters.tag]);
+
   const formatDisplayDate = (value) => {
     if (!value) return 'YYYY/MM/DD';
     const [year, month, day] = value.split('-');
     return [year, month, day].filter(Boolean).join('/');
   };
 
-  const recentDocuments = useMemo(
+  const sortedUploadIds = useMemo(
     () =>
       documents
-        .filter((doc) => doc.lastAccessAt)
-        .sort((a, b) => new Date(b.lastAccessAt) - new Date(a.lastAccessAt))
-        .slice(0, 6),
+        .slice()
+        .sort(sortByNewestUpload)
+        .map((doc) => Number(doc.id))
+        .filter((id) => Number.isFinite(id)),
     [documents]
   );
 
-  // 🔴 修改 4：退出登录时，同时清理 session 和 local（双保险）
+  useEffect(() => {
+    // Keep sidebar recent list in a stable LRU order while syncing with current documents.
+    setSidebarRecentIds((prev) => {
+      const validIdSet = new Set(sortedUploadIds);
+      const cleanedPrev = prev.filter((id) => validIdSet.has(id));
+      const existingIdSet = new Set(cleanedPrev);
+      const newlyAdded = sortedUploadIds.filter((id) => !existingIdSet.has(id));
+      const next = [...newlyAdded, ...cleanedPrev].slice(0, MAX_SIDEBAR_RECENT);
+      if (next.length === prev.length && next.every((id, idx) => id === prev[idx])) return prev;
+      return next;
+    });
+  }, [sortedUploadIds]);
+
+  const sidebarDocs = useMemo(() => {
+    const byId = new Map(documents.map((doc) => [Number(doc.id), doc]));
+    return sidebarRecentIds
+      .map((id) => byId.get(id))
+      .filter(Boolean)
+      .slice(0, MAX_SIDEBAR_RECENT);
+  }, [documents, sidebarRecentIds]);
+
+  const nowLabel = useMemo(
+    () => `@今天 ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+    [now]
+  );
+
   const handleSignOut = () => {
-    sessionStorage.clear(); // 清理本次会话
-    localStorage.clear();   // 清理可能残留的旧缓存
+    sessionStorage.clear();
+    localStorage.clear();
     setIsLoggedIn(false);
     setDocuments([]);
-    window.location.reload(); // 强制刷新页面
+    window.location.reload();
   };
 
   const describeFiles = (fileList) =>
@@ -158,6 +270,12 @@ export default function HomePage() {
           })
           .join(', ')}`
       : '';
+
+  const bumpSidebarRecent = (docId) => {
+    const id = Number(docId);
+    if (!Number.isFinite(id)) return;
+    setSidebarRecentIds((prev) => [id, ...prev.filter((item) => item !== id)].slice(0, MAX_SIDEBAR_RECENT));
+  };
 
   const handleFileChange = (event) => {
     const files = Array.from(event.target.files || []);
@@ -180,17 +298,16 @@ export default function HomePage() {
       return;
     }
 
-    // 🔴 修改 5：上传时从 sessionStorage 获取用户名
-    const username = sessionStorage.getItem('username');
+    const activeUser = sessionStorage.getItem('username');
     let successCount = 0;
-    
+
     for (const file of files) {
       const formData = new FormData();
       formData.append('file', file);
-      formData.append('username', username);
+      formData.append('username', activeUser);
 
       try {
-        const response = await fetch('/api/documents/upload', {  
+        const response = await fetch('/api/documents/upload', {
           method: 'POST',
           body: formData,
         });
@@ -199,7 +316,8 @@ export default function HomePage() {
           const errorData = await response.json();
           alert(`Upload failed for ${file.name}: ${errorData.error}`);
         } else {
-          successCount++;
+          successCount += 1;
+          await fetchDocuments();
         }
       } catch (error) {
         console.error('Upload error:', error);
@@ -212,33 +330,70 @@ export default function HomePage() {
       if (fileInputRef.current) fileInputRef.current.value = '';
       setFileHint('');
       alert(`Upload complete! (${successCount}/${files.length} success)`);
-      fetchDocuments();
+    }
+  };
+
+  const openDocumentInPane = async (docId, options = {}) => {
+    const { fromSidebar = false } = options;
+    bumpSidebarRecent(docId);
+    setActiveDocLoading(true);
+    setActiveDocError('');
+    setSidebarMenuDocId(null);
+    setActiveDoc(null);
+
+    if (fromSidebar) {
+      // Sidebar click should open the document pane directly, not stay in file-list mode.
+      setShowFiles(false);
+      window.requestAnimationFrame(() => {
+        document.getElementById('main')?.scrollIntoView({ block: 'start' });
+      });
+    }
+    try {
+      const res = await fetch(`/api/documents/${docId}`);
+      if (!res.ok) throw new Error('Document not found');
+      const data = await res.json();
+      setActiveDoc(normalizeDocument(data));
+    } catch (err) {
+      setActiveDoc(null);
+      setActiveDocError(err.message || 'Failed to load document');
+    } finally {
+      setActiveDocLoading(false);
     }
   };
 
   const handleView = (doc) => {
-    navigate(`/document/${doc.id}`);
+    openDocumentInPane(doc.id);
   };
 
   const handleDelete = (doc) => {
     if (!window.confirm(`Delete “${doc.title}”?`)) return;
     setDocuments((prev) => prev.filter((item) => item.id !== doc.id));
+    setActiveDoc((prev) => (prev?.id === doc.id ? null : prev));
   };
 
-  const handleEdit = (doc) => {
+  const handleEdit = async (doc) => {
     const input = window.prompt('Enter tags separated by commas:', (doc.tags || []).join(','));
     if (input === null) return;
-    const tags = input
+    const nextTags = input
       .split(',')
       .map((tag) => tag.trim())
       .filter(Boolean);
-    setDocuments((prev) =>
-      prev.map((item) =>
-        item.id === doc.id
-          ? { ...item, tags }
-          : item
-      )
-    );
+
+    try {
+      const res = await fetch(`/api/documents/${doc.id}/tags`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tags: nextTags, username: username || '' }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update tags');
+
+      const normalized = normalizeDocument(data);
+      setDocuments((prev) => prev.map((item) => (item.id === doc.id ? normalized : item)));
+      setActiveDoc((prev) => (prev?.id === doc.id ? normalizeDocument({ ...prev, ...data }) : prev));
+    } catch (err) {
+      alert(err.message || '更新标签失败');
+    }
   };
 
   const applySearch = () => {
@@ -250,245 +405,426 @@ export default function HomePage() {
     setSearchDraft('');
   };
 
-  return (
-    <>
-      {!isLoggedIn && (
-        <div id="login-warning" className="login-warning" role="alert">
-          <div className="container login-warning-inner">
-            <div className="login-warning-text">
-              <strong>You&apos;re not signed in.</strong> Some actions (upload / view / delete / edit
-              tags) require sign-in.
-            </div>
-          </div>
-        </div>
-      )}
+  const activeDocFileUrl = activeDoc ? `/uploads/${activeDoc.filename}` : '';
+  const activeDocStreamUrl = activeDoc ? `/api/documents/${activeDoc.id}/file` : '';
+  const activeDocExt = activeDoc ? getDocExt(activeDoc) : '';
+  const activeDocIsImage = ['jpg', 'jpeg', 'png', 'webp'].includes(activeDocExt);
+  const activeDocIsPdf = activeDocExt === 'pdf';
+  const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
 
+  const closeDocumentPane = () => {
+    setActiveDoc(null);
+    setActiveDocError('');
+    setActiveDocLoading(false);
+  };
+
+  return (
+    <div className="notion-shell">
       <a className="skip-link" href="#main">
-        Skip to main content
+        跳到主要内容
       </a>
 
-      <header className="navbar" role="banner">
-        <div className="container nav-inner">
-          <div className="brand">
-            <img src="/logo.png" alt="StudyHub Logo" width="40" height="40" />
-            <strong>StudyHub</strong>
-          </div>
-          <nav aria-label="Primary">
-            <ul className="nav-links">
-              <li className="nav-other">
-                <OtherDropdown />
-              </li>
-              <li>
-                <Link to="/">Home</Link>
-              </li>
-              <li>
-                <AuthMenu isLoggedIn={isLoggedIn} onSignOut={handleSignOut} />
-              </li>
-            </ul>
-          </nav>
-        </div>
-      </header>
-
-      <main id="main" className="container" role="main">
-        <section className="hero" aria-labelledby="hero-title">
-          <div>
-            <h1 id="hero-title">Organise &amp; search your lecture notes</h1>
-            <p className="muted">Browse without signing in; sign in to upload and manage files.</p>
-          </div>
-            <img
-            src="/logo.png"
-            alt="Notes illustration"
-            className="hero-image"
-            width="240"
-            height="160"
-          />
-        </section>
-
-        <section className="quick-actions">
+      <aside className="notion-sidebar" aria-label="左侧导航">
+        <div
+          className={`notion-workspace-picker ${workspaceMenuOpen ? 'open' : ''}`}
+          ref={workspaceMenuRef}
+        >
           <button
-            id="toggle-files-btn"
-            className="btn btn-primary"
             type="button"
-            aria-controls="files-section"
-            aria-expanded={showFiles ? 'true' : 'false'}
-            onClick={() => setShowFiles((prev) => !prev)}
+            className="notion-workspace-trigger"
+            aria-expanded={workspaceMenuOpen ? 'true' : 'false'}
+            aria-controls="workspace-account-menu"
+            onClick={() => setWorkspaceMenuOpen((prev) => !prev)}
           >
-            {showFiles ? 'Hide my files' : 'My files'}
+            <span className="notion-workspace-trigger-main">
+              <span className="notion-avatar" aria-hidden="true">
+                {accountName.slice(0, 1).toUpperCase()}
+              </span>
+              <span className="notion-workspace-trigger-label">{accountName} 的工作空间</span>
+            </span>
+            <span className="notion-workspace-trigger-chevron" aria-hidden="true">
+              ▾
+            </span>
           </button>
+
+          <section
+            id="workspace-account-menu"
+            className="notion-account-panel"
+            aria-label="工作空间账户"
+            hidden={!workspaceMenuOpen}
+          >
+            <div className="notion-space-head">
+              <div className="notion-avatar notion-avatar-large" aria-hidden="true">
+                {accountName.slice(0, 1).toUpperCase()}
+              </div>
+              <div>
+                <strong>{accountName} 的工作空间</strong>
+                <p>{isLoggedIn ? '免费版 · 1位成员' : '访客模式'}</p>
+              </div>
+            </div>
+
+            <div className="notion-account-tools">
+              <button type="button" className="notion-chip-btn">
+                设置
+              </button>
+              <button type="button" className="notion-chip-btn">
+                邀请成员
+              </button>
+            </div>
+
+            <div className="notion-account-email-row">
+              <span>{accountEmail}</span>
+              <button type="button" className="notion-ellipsis-btn" aria-label="更多账号操作">
+                ...
+              </button>
+            </div>
+
+            <button type="button" className="notion-space-switch">
+              <span className="notion-space-switch-main">
+                <span className="notion-avatar" aria-hidden="true">
+                  {accountName.slice(0, 1).toUpperCase()}
+                </span>
+                <span>{accountName} 的工作空间</span>
+              </span>
+              <span aria-hidden="true">✓</span>
+            </button>
+
+            <button type="button" className="notion-plus-link">
+              + 新建工作空间
+            </button>
+
+            <div className="notion-account-divider" />
+
+            <button type="button" className="notion-account-link">
+              添加另一个帐号
+            </button>
+            <button
+              type="button"
+              className="notion-account-link"
+              onClick={() => {
+                if (isLoggedIn) handleSignOut();
+                else navigate('/login');
+              }}
+            >
+              {isLoggedIn ? '登出' : '登录'}
+            </button>
+          </section>
+        </div>
+
+        <nav className="notion-nav" aria-label="主菜单">
+          <button
+            type="button"
+            className={`notion-nav-item ${!showFiles && !docPaneVisible ? 'active' : ''}`}
+            onClick={() => {
+              closeDocumentPane();
+              setShowFiles(false);
+            }}
+          >
+            <span aria-hidden="true">⌂</span>
+            <span>主页</span>
+          </button>
+          <button
+            type="button"
+            className={`notion-nav-item ${showFiles && !docPaneVisible ? 'active' : ''}`}
+            onClick={() => {
+              closeDocumentPane();
+              setShowFiles(true);
+            }}
+          >
+            <span aria-hidden="true">📄</span>
+            <span>我的文件</span>
+          </button>
+        </nav>
+
+        <section
+          className="notion-sidebar-group"
+          aria-labelledby="recent-group-title"
+          ref={recentMenuRef}
+        >
+          <h2 id="recent-group-title">最近</h2>
+          <div className="notion-sidebar-list">
+            {sidebarDocs.length ? (
+              sidebarDocs.map((doc) => (
+                <div
+                  key={doc.id}
+                  className={`notion-sidebar-doc-row ${activeDoc?.id === doc.id ? 'active' : ''} ${sidebarMenuDocId === doc.id ? 'menu-open' : ''}`}
+                >
+                  <button
+                    type="button"
+                    className="notion-sidebar-doc"
+                    onClick={() => openDocumentInPane(doc.id, { fromSidebar: true })}
+                  >
+                    <span className="notion-sidebar-doc-prefix" aria-hidden="true">
+                      {activeDoc?.id === doc.id ? '›' : '📄'}
+                    </span>
+                    <span className="notion-sidebar-doc-label">{doc.title}</span>
+                  </button>
+
+                  <div className="notion-sidebar-doc-actions">
+                    <button
+                      type="button"
+                      className="notion-sidebar-doc-more"
+                      aria-label={`${doc.title} 更多操作`}
+                      aria-expanded={sidebarMenuDocId === doc.id ? 'true' : 'false'}
+                      onClick={() =>
+                        setSidebarMenuDocId((prev) => (prev === doc.id ? null : doc.id))
+                      }
+                    >
+                      ⋯
+                    </button>
+
+                    {sidebarMenuDocId === doc.id && (
+                      <a
+                        className="notion-sidebar-doc-download"
+                        href={`/uploads/${doc.filename}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={() => setSidebarMenuDocId(null)}
+                      >
+                        Download
+                      </a>
+                    )}
+                  </div>
+                </div>
+              ))
+            ) : (
+              <span className="notion-sidebar-empty">暂无最近内容</span>
+            )}
+          </div>
         </section>
 
-        {!showFiles && (
-          <>
-            <UsageChart usageMap={usageMap} />
+      </aside>
 
-            <section className="recent-card" aria-labelledby="recent-title">
-              <div className="list-head">
-                <h2 id="recent-title" className="section-title">
-                  Recently used files
+      <div className="notion-main">
+        <header className="notion-topbar" role="banner">
+          <div className="notion-top-left">
+            <strong>{nowLabel}</strong>
+            <span className="notion-top-muted">{isLoggedIn ? '私人' : '请先登录'}</span>
+          </div>
+          <button type="button" className="notion-more-btn" aria-label="更多操作">
+            ...
+          </button>
+        </header>
+
+        <main id="main" className="notion-content" role="main">
+          {!isLoggedIn && (
+            <div id="login-warning" className="notion-warning" role="alert">
+              你还没有登录，上传、查看、删除和编辑标签需要先登录。
+            </div>
+          )}
+
+          {(activeDocLoading || activeDocError || activeDoc) && (
+            <section className="notion-inline-doc" aria-live="polite">
+              {activeDocLoading && <p className="muted">正在加载文档内容...</p>}
+
+              {!activeDocLoading && activeDocError && (
+                <p className="muted">加载失败: {activeDocError}</p>
+              )}
+
+              {!activeDocLoading && activeDoc && (
+                <article className="document-detail-card">
+                  <header className="notion-inline-doc-head">
+                    <div>
+                      <h2>{activeDoc.title}</h2>
+                      <div className="document-meta">
+                        Uploaded: {activeDoc.uploadedAt ? new Date(activeDoc.uploadedAt).toLocaleString() : ''}
+                      </div>
+                      <div className="document-meta">
+                        Tags: {activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}
+                      </div>
+                    </div>
+                  </header>
+
+                  <section className="document-body notion-inline-doc-body">
+                    {activeDocIsImage ? (
+                      <img src={activeDocFileUrl} alt={activeDoc.title} />
+                    ) : activeDocIsPdf ? (
+                      <Suspense fallback={<p className="muted">正在加载 PDF 预览...</p>}>
+                        <PdfInlineViewer src={activeDocStreamUrl} title={activeDoc.title} />
+                      </Suspense>
+                    ) : (
+                      <pre>{activeDoc.content || 'No text content extracted.'}</pre>
+                    )}
+                  </section>
+                </article>
+              )}
+            </section>
+          )}
+
+          {!docPaneVisible && (
+            <section className="notion-focus-card" aria-label="快速入口">
+              <div>
+                <h2>学习工作台</h2>
+                <p>进入文件区进行上传、筛选、编辑与查看。</p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => setShowFiles((prev) => !prev)}
+                aria-controls="files-section"
+                aria-expanded={showFiles ? 'true' : 'false'}
+              >
+                {showFiles ? '返回概览' : '进入文件区'}
+              </button>
+            </section>
+          )}
+
+          {!showFiles && !docPaneVisible && (
+            <>
+              <UsageChart usageMap={usageMap} />
+            </>
+          )}
+
+          {showFiles && !docPaneVisible && (
+            <section id="files-section" className="files-section notion-files-section">
+              <section className="filters" aria-labelledby="filters-title">
+                <h2 id="filters-title" className="sr-only">
+                  过滤器
                 </h2>
-                <span id="recent-meta" className="muted tiny" aria-live="polite">
-                  {recentDocuments.length ? `Showing ${recentDocuments.length}` : ''}
-                </span>
-              </div>
-              <RecentList documents={recentDocuments} />
-            </section>
-          </>
-        )}
 
-        {showFiles && (
-          <section id="files-section" className="files-section">
-            <section className="filters" aria-labelledby="filters-title">
-              <h2 id="filters-title" className="sr-only">
-                Filters
-              </h2>
-
-              <div className="filter-row">
-                <label htmlFor="search-input" className="sr-only">
-                  Search
-                </label>
-                <div className="input-with-icon">
-                  <svg aria-hidden="true" viewBox="0 0 24 24">
-                    <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                  <input
-                    id="search-input"
-                    type="search"
-                    placeholder="Search title or tag (press Enter)"
-                    inputMode="search"
-                    value={searchDraft}
-                    onChange={(event) => setSearchDraft(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter') {
-                        event.preventDefault();
-                        applySearch();
-                      }
-                    }}
-                  />
-                </div>
-                <button
-                  id="search-btn"
-                  className="btn btn-primary"
-                  type="button"
-                  onClick={applySearch}
-                >
-                  Search
-                </button>
-
-                <div className="date-group">
-                  <label htmlFor="start-date">Start</label>
-                  <div className="date-input-wrapper" data-filled={filters.start ? 'true' : 'false'}>
-                    <input
-                      id="start-date"
-                      type="date"
-                      lang="en-US"
-                      value={filters.start}
-                      onChange={(event) =>
-                        setFilters((prev) => ({ ...prev, start: event.target.value }))
-                      }
-                    />
-                    <span className="date-faux">{formatDisplayDate(filters.start)}</span>
-                  </div>
-                  <label htmlFor="end-date">End</label>
-                  <div className="date-input-wrapper" data-filled={filters.end ? 'true' : 'false'}>
-                    <input
-                      id="end-date"
-                      type="date"
-                      lang="en-US"
-                      value={filters.end}
-                      onChange={(event) =>
-                        setFilters((prev) => ({ ...prev, end: event.target.value }))
-                      }
-                    />
-                    <span className="date-faux">{formatDisplayDate(filters.end)}</span>
-                  </div>
-                </div>
-
-                <button id="clear-filters" className="btn" type="button" onClick={clearFilters}>
-                  Clear
-                </button>
-              </div>
-
-              <div className="tags-row">
-                <span className="muted">Tags:</span>
-                <div id="tags-container" className="tags" role="list" aria-label="Tag filters">
-                  {tags.length ? (
-                    tags.map((tag) => (
-                      <button
-                        type="button"
-                        key={tag}
-                        className={`tag ${filters.tag === tag ? 'selected' : ''}`}
-                        role="listitem"
-                        onClick={() =>
-                          setFilters((prev) => ({
-                            ...prev,
-                            tag: prev.tag === tag ? '' : tag
-                          }))
-                        }
-                      >
-                        {tag}
-                      </button>
-                    ))
-                  ) : (
-                    <span className="muted">No tags yet</span>
-                  )}
-                </div>
-              </div>
-            </section>
-
-            <section className="uploader" aria-labelledby="uploader-title">
-              <h2 id="uploader-title" className="section-title">
-                Upload
-              </h2>
-              <form id="upload-form" onSubmit={handleUpload} noValidate>
-                <input
-                  id="file-input"
-                  type="file"
-                  accept=".pdf,.docx,.txt,image/*"
-                  ref={fileInputRef}
-                  onChange={handleFileChange}
-                  className="sr-only"
-                />
-                <div className="uploader-actions">
-                  <label htmlFor="file-input" className="btn file-btn">
-                    Choose file
+                <div className="filter-row">
+                  <label htmlFor="search-input" className="sr-only">
+                    Search
                   </label>
-                  <button id="upload-btn" className="btn btn-primary" type="submit">
-                    Upload
+                  <div className="input-with-icon">
+                    <svg aria-hidden="true" viewBox="0 0 24 24">
+                      <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
+                    </svg>
+                    <input
+                      id="search-input"
+                      type="search"
+                      placeholder="按标题或标签搜索"
+                      inputMode="search"
+                      value={searchDraft}
+                      onChange={(event) => setSearchDraft(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          event.preventDefault();
+                          applySearch();
+                        }
+                      }}
+                    />
+                  </div>
+
+                  <button
+                    id="search-btn"
+                    className="btn btn-primary"
+                    type="button"
+                    onClick={applySearch}
+                  >
+                    搜索
+                  </button>
+
+                  <div className="date-group">
+                    <label htmlFor="start-date">开始</label>
+                    <div className="date-input-wrapper" data-filled={filters.start ? 'true' : 'false'}>
+                      <input
+                        id="start-date"
+                        type="date"
+                        lang="en-US"
+                        value={filters.start}
+                        onChange={(event) =>
+                          setFilters((prev) => ({ ...prev, start: event.target.value }))
+                        }
+                      />
+                      <span className="date-faux">{formatDisplayDate(filters.start)}</span>
+                    </div>
+                    <label htmlFor="end-date">结束</label>
+                    <div className="date-input-wrapper" data-filled={filters.end ? 'true' : 'false'}>
+                      <input
+                        id="end-date"
+                        type="date"
+                        lang="en-US"
+                        value={filters.end}
+                        onChange={(event) =>
+                          setFilters((prev) => ({ ...prev, end: event.target.value }))
+                        }
+                      />
+                      <span className="date-faux">{formatDisplayDate(filters.end)}</span>
+                    </div>
+                  </div>
+
+                  <button id="clear-filters" className="btn" type="button" onClick={clearFilters}>
+                    清空
                   </button>
                 </div>
-                <span id="file-hint" className="muted file-picker-text" aria-live="polite">
-                  {fileHint || 'No file chosen'}
-                </span>
-              </form>
-              <p className="muted tiny">
-                PDF/DOCX/TXT/Images supported (images used for OCR). Max 20 MB per file.
-              </p>
-            </section>
 
-            <section aria-labelledby="docs-title">
-              <div className="list-head">
-                <h2 id="docs-title" className="section-title">
-                  My documents
+                <div className="tags-row">
+                  <span className="muted">标签:</span>
+                  <div id="tags-container" className="tags" role="list" aria-label="Tag filters">
+                    {tags.length ? (
+                      tags.map((tag) => (
+                        <button
+                          type="button"
+                          key={tag}
+                          className={`tag ${filters.tag === tag ? 'selected' : ''}`}
+                          role="listitem"
+                          onClick={() =>
+                            setFilters((prev) => ({
+                              ...prev,
+                              tag: prev.tag === tag ? '' : tag
+                            }))
+                          }
+                        >
+                          {tag}
+                        </button>
+                      ))
+                    ) : (
+                      <span className="muted">暂无标签</span>
+                    )}
+                  </div>
+                </div>
+              </section>
+
+              <section className="uploader" aria-labelledby="uploader-title">
+                <h2 id="uploader-title" className="section-title">
+                  上传文件
                 </h2>
-              </div>
-              <DocumentsList
-                documents={filteredDocuments}
-                isLoggedIn={isLoggedIn}
-                meta={`Showing ${filteredDocuments.length} (total ${documents.length})`}
-                onView={handleView}
-                onDelete={handleDelete}
-                onEdit={handleEdit}
-              />
-            </section>
-          </section>
-        )}
-      </main>
+                <form id="upload-form" onSubmit={handleUpload} noValidate>
+                  <input
+                    id="file-input"
+                    type="file"
+                    accept=".pdf,.docx,.txt,image/*"
+                    ref={fileInputRef}
+                    onChange={handleFileChange}
+                    className="sr-only"
+                  />
+                  <div className="uploader-actions">
+                    <label htmlFor="file-input" className="btn file-btn">
+                      选择文件
+                    </label>
+                    <button id="upload-btn" className="btn btn-primary" type="submit">
+                      上传
+                    </button>
+                  </div>
+                  <span id="file-hint" className="muted file-picker-text" aria-live="polite">
+                    {fileHint || '尚未选择文件'}
+                  </span>
+                </form>
+                <p className="muted tiny">
+                  支持 PDF / DOCX / TXT / 图片，单文件最大 20MB。
+                </p>
+              </section>
 
-      <footer className="footer container">
-        <small className="muted">
-          Demo for coursework. Backend connected.
-        </small>
-      </footer>
-    </>
+              <section aria-labelledby="docs-title">
+                <div className="list-head">
+                  <h2 id="docs-title" className="section-title">
+                    我的文档
+                  </h2>
+                </div>
+                <DocumentsList
+                  documents={filteredDocuments}
+                  isLoggedIn={isLoggedIn}
+                  meta={`显示 ${filteredDocuments.length} 条（总计 ${documents.length} 条）`}
+                  onView={handleView}
+                  onDelete={handleDelete}
+                  onEdit={handleEdit}
+                />
+              </section>
+            </section>
+          )}
+        </main>
+      </div>
+    </div>
   );
 }

@@ -1,8 +1,10 @@
 import os
 import sqlite3
 import uuid
+import io
+import mimetypes
 from datetime import datetime
-from flask import Flask, request, jsonify, send_from_directory, redirect
+from flask import Flask, request, jsonify, send_from_directory, redirect, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -35,6 +37,17 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
+
+MIME_BY_EXT = {
+    'pdf': 'application/pdf',
+    'docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'txt': 'text/plain',
+    'png': 'image/png',
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+}
 
 # ================= AWS S3 配置 (新增) =================
 # 从环境变量获取密钥
@@ -175,6 +188,15 @@ def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+
+def detect_mimetype(filename, file_ext=''):
+    ext = (file_ext or '').lower().strip('.')
+    if ext in MIME_BY_EXT:
+        return MIME_BY_EXT[ext]
+    guessed = mimetypes.guess_type(filename)[0]
+    return guessed or 'application/octet-stream'
+
+
 def extract_text(filepath, ext):
     text = ""
     try:
@@ -277,10 +299,13 @@ def get_documents():
     conn = get_db_connection()
     try:
         if username:
-            cursor = conn.execute('SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC', (username,))
+            cursor = conn.execute(
+                'SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC, id DESC',
+                (username,)
+            )
             docs = cursor.fetchall()
         else:
-            cursor = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC')
+            cursor = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC, id DESC')
             docs = cursor.fetchall()
         
         return jsonify([dict(doc) for doc in docs])
@@ -370,6 +395,77 @@ def get_document(doc_id):
             return jsonify({'error': 'Document not found'}), 404
     finally:
         conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>/tags', methods=['PUT'])
+def update_document_tags(doc_id):
+    data = request.get_json(silent=True) or {}
+    raw_tags = data.get('tags', [])
+
+    if isinstance(raw_tags, list):
+        tags_list = [str(tag).strip() for tag in raw_tags if str(tag).strip()]
+    elif isinstance(raw_tags, str):
+        tags_list = [tag.strip() for tag in raw_tags.split(',') if tag.strip()]
+    else:
+        return jsonify({'error': 'tags must be a list or comma-separated string'}), 400
+
+    tags_value = ','.join(tags_list)
+
+    conn = get_db_connection()
+    try:
+        conn.execute('UPDATE documents SET tags = ? WHERE id = ?', (tags_value, doc_id))
+        conn.commit()
+
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        return jsonify(dict(doc)), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>/file', methods=['GET'])
+def get_document_file(doc_id):
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('SELECT filename, title, file_type FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+    finally:
+        conn.close()
+
+    if not doc:
+        return jsonify({'error': 'Document not found'}), 404
+
+    filename = doc['filename']
+    title = doc.get('title') if hasattr(doc, 'get') else doc['title']
+    file_ext = doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']
+    mimetype = detect_mimetype(filename, file_ext)
+
+    if S3_BUCKET and s3_client:
+        try:
+            s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=filename)
+            return send_file(
+                io.BytesIO(s3_obj['Body'].read()),
+                mimetype=mimetype,
+                download_name=title or filename,
+                as_attachment=False
+            )
+        except Exception as e:
+            print(f"S3 stream error: {e}")
+            return jsonify({'error': 'Could not read file from S3'}), 500
+
+    local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+    if not os.path.exists(local_path):
+        return jsonify({'error': 'File not found'}), 404
+
+    return send_file(
+        local_path,
+        mimetype=mimetype,
+        download_name=title or filename,
+        as_attachment=False
+    )
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 @app.route('/uploads/<filename>')

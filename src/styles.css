@@ -30,6 +30,16 @@ body{
     radial-gradient(1000px 600px at 50% 100%, #102031, transparent 60%),
     linear-gradient(180deg, var(--bg), var(--bg-2));
 }
+body.auth-light-body{
+  --text:#1f2937;
+  --muted:#667085;
+  --primary:#2f76e8;
+  --primary-600:#1f65d6;
+  background:
+    radial-gradient(1100px 560px at 0% 0%, #dfeaff, transparent 58%),
+    radial-gradient(980px 560px at 100% 100%, #ffe8d7, transparent 58%),
+    linear-gradient(180deg, #f7fafc, #eef3fb);
+}
 img{ display:block; max-width:100%; height:auto; }
 a{ color:inherit; }
 .container{ width:min(1100px,92%); margin-inline:auto; }
@@ -157,8 +167,17 @@ a{ color:inherit; }
 .document-card{
   background: var(--glass); border:1px solid var(--stroke); border-radius:var(--radius); padding:16px;
   display:flex; flex-direction:column; gap:8px;
+  min-width:0;
   box-shadow: var(--shadow);
   transition: transform .12s ease, box-shadow .12s ease;
+}
+.document-card h3{
+  margin:0;
+  min-width:0;
+  max-width:100%;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
 }
 .document-card:hover{ transform: translateY(-2px); box-shadow: 0 14px 40px rgba(0,0,0,.42); }
 .document-meta{ color:var(--muted); font-size:14px; }
@@ -241,8 +260,23 @@ button:disabled:hover,
 /* ===========================
    Auth page (container)
    =========================== */
-.login-body{ display:grid; place-items:center; min-height:100vh; }
-.login-card h1{ margin:10px 0 6px; }
+.login-body{
+  display:grid;
+  place-items:center;
+  min-height:100vh;
+  padding:24px 16px 36px;
+}
+.login-card h1{
+  margin:10px 0 6px;
+  color:#17253a;
+  font-size:48px;
+  line-height:1.05;
+  letter-spacing:-0.02em;
+}
+#auth-subtitle{
+  margin:0;
+  color:#6a7687;
+}
 
 /* ===========================
    Auth overlay switcher
@@ -273,21 +307,78 @@ button:disabled:hover,
   transform: none;
   pointer-events: auto;
 }
+.auth-form label{
+  color:#1f2f45;
+  font-weight:600;
+}
 
 /* Inputs inside auth card */
 .login-card .auth-form input[type="text"],
 .login-card .auth-form input[type="password"],
 .login-card .auth-form input[type="email"]{
-  background: rgba(255,255,255,.05);
-  border:1px solid rgba(255,255,255,.12);
+  background:#fff;
+  border:1px solid #d3dbe8;
+  color:#1f2937;
   border-radius:12px;
   padding:10px 12px;
+  min-width:0;
+}
+.login-card .auth-form input[type="text"]::placeholder,
+.login-card .auth-form input[type="password"]::placeholder,
+.login-card .auth-form input[type="email"]::placeholder{
+  color:#98a3b3;
+}
+.login-card .auth-form input[type="text"]:focus-visible,
+.login-card .auth-form input[type="password"]:focus-visible,
+.login-card .auth-form input[type="email"]:focus-visible{
+  border-color:#2f76e8;
+  box-shadow:0 0 0 3px rgba(47,118,232,0.16);
 }
 
 /* Primary button full width (matches your screenshot) */
 .login-card .auth-form .btn-primary{
   width: 100%;
   justify-self: stretch;
+  border-color:#2f76e8;
+  box-shadow:0 8px 18px rgba(47,118,232,0.22);
+}
+.login-card .auth-form .btn-primary:hover{
+  filter:brightness(1.03);
+}
+
+.auth-social{
+  margin-top:12px;
+  display:grid;
+  gap:12px;
+}
+.auth-divider{
+  position:relative;
+  height:1px;
+  background:#dbe3ef;
+}
+.auth-divider span{
+  position:absolute;
+  left:50%;
+  top:50%;
+  transform:translate(-50%,-50%);
+  padding:0 10px;
+  background:rgba(255,255,255,0.88);
+  color:#8a95a6;
+  font-size:12px;
+  font-weight:600;
+  letter-spacing:.08em;
+}
+.auth-google-wrap{
+  display:flex;
+  justify-content:center;
+}
+.login-card .linklike{
+  color:#2f76e8;
+  font-weight:600;
+}
+.login-card .linklike:hover{
+  background:#ebf3ff;
+  border-color:#d4e4ff;
 }
 
 /* Small utilities */
@@ -338,11 +429,12 @@ button:disabled:hover,
   box-shadow: 0 14px 45px rgba(0,0,0,.4), 0 4px 14px rgba(0,0,0,.25);
   padding:12px;
   z-index: 50;
+}
+.user-menu.open .dropdown{
   display:flex;
   flex-direction:column;
   gap:10px;
 }
-.user-menu.open .dropdown{ display:flex; }
 
 .dropdown-item{
   display:block; width:100%;
@@ -421,7 +513,7 @@ button:disabled:hover,
   background: transparent;
   border: none;
   cursor: pointer;
-  color: var(--muted);
+  color: #7c8798;
   opacity: 0.85;
   padding: 0;
   z-index: 1;      /* 确保在输入框之上 */
@@ -436,10 +528,25 @@ button:disabled:hover,
 
 /* Make the auth card a positioning context */
 .login-card{
-  position: relative;           /* <— 关键：作为绝对定位参照 */
-  margin-top:6vh; width:min(520px,92%); padding:26px;
-  background: var(--glass); border:1px solid var(--stroke);
-  border-radius:22px; box-shadow: var(--shadow);
+  position: relative;
+  margin-top:0;
+  width:min(560px,92vw);
+  padding:26px;
+  background:rgba(255,255,255,0.88);
+  border:1px solid #dfe6f2;
+  border-radius:22px;
+  box-shadow:0 24px 48px rgba(28,44,76,0.15);
+  backdrop-filter: blur(8px);
+}
+.login-logo{
+  width:84px;
+  height:84px;
+  object-fit:contain;
+  padding:14px;
+  border-radius:18px;
+  background:linear-gradient(160deg,#f4f8ff,#e9f2ff);
+  border:1px solid #d8e5ff;
+  box-shadow:0 10px 22px rgba(57,101,171,0.15);
 }
 
 /* Back-to-home button INSIDE the card (top-right corner) */
@@ -452,12 +559,12 @@ button:disabled:hover,
   text-decoration: none;
   padding: 6px 12px;
   border-radius: 10px;
-  background: rgba(255,255,255,0.06);
-  border: 1px solid rgba(255,255,255,0.14);
-  color: var(--text);
+  background:#fff;
+  border:1px solid #d3dbe8;
+  color:#334155;
   transition: background .2s, border-color .2s, transform .05s ease;
 }
-.back-home-btn:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.24); }
+.back-home-btn:hover { background:#f3f7ff; border-color:#bed3f4; }
 .back-home-btn:active { transform: translateY(1px); }
 /* ===== My files toggle button row ===== */
 .quick-actions{
@@ -562,3 +669,961 @@ button:disabled:hover,
 .other-item:hover,
 .other-item:focus-visible { background: rgba(255,255,255,0.06); outline: none; }
 .other-item .icon { width: 18px; text-align: center; }
+
+/* ===========================
+   Notion-like Home Layout
+   =========================== */
+body.notion-home-body{
+  --text:#2f2f2f;
+  --muted:#7a7a76;
+  --primary:#2f76e8;
+  --primary-600:#1f65d6;
+  background:#f7f7f5;
+  color:#2f2f2f;
+  font-family:'Noto Sans SC','PingFang SC','Hiragino Sans GB','Microsoft YaHei',ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,Arial;
+}
+
+body.notion-home-body #root{
+  min-height:100vh;
+}
+
+body.notion-home-body .skip-link:focus-visible{
+  border:1px solid #d7d7d3;
+  background:#fff;
+  color:#222;
+}
+
+.notion-shell{
+  min-height:100vh;
+  display:grid;
+  grid-template-columns:250px minmax(0,1fr);
+  align-items:start;
+  background:#f7f7f5;
+  color:#2f2f2f;
+}
+
+.notion-sidebar{
+  position:sticky;
+  top:0;
+  height:100vh;
+  border-right:1px solid #e6e6e3;
+  background:#f3f3f1;
+  padding:12px 10px 18px;
+  overflow-y:auto;
+  overflow-x:hidden;
+}
+
+.notion-workspace-picker{
+  position:relative;
+  margin-bottom:14px;
+}
+
+.notion-workspace-trigger{
+  width:100%;
+  border:0;
+  background:transparent;
+  border-radius:10px;
+  padding:6px 8px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  cursor:pointer;
+}
+
+.notion-workspace-trigger:hover{
+  background:#e8e8e5;
+}
+
+.notion-workspace-picker.open .notion-workspace-trigger{
+  background:#e3e3e0;
+}
+
+.notion-workspace-trigger-main{
+  min-width:0;
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.notion-workspace-trigger-label{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:14px;
+  color:#2f2f2f;
+  font-weight:600;
+}
+
+.notion-workspace-trigger-chevron{
+  color:#7d7d79;
+  font-size:13px;
+  transition:transform .15s ease;
+}
+
+.notion-workspace-picker.open .notion-workspace-trigger-chevron{
+  transform:rotate(180deg);
+}
+
+.notion-account-panel{
+  background:#fff;
+  border:1px solid #e2e2de;
+  border-radius:12px;
+  padding:10px;
+  box-shadow:0 8px 20px rgba(0,0,0,0.05);
+  position:absolute;
+  top:calc(100% + 8px);
+  left:0;
+  right:0;
+  z-index:30;
+}
+
+.notion-space-head{
+  display:flex;
+  gap:10px;
+  align-items:flex-start;
+  padding:8px;
+  border-radius:10px;
+}
+
+.notion-space-head strong{
+  display:block;
+  font-size:15px;
+  line-height:1.25;
+}
+
+.notion-space-head p{
+  margin:3px 0 0;
+  font-size:12px;
+  color:#8b8b87;
+}
+
+.notion-avatar{
+  width:28px;
+  height:28px;
+  border-radius:8px;
+  background:#e5e5e2;
+  display:grid;
+  place-items:center;
+  font-size:14px;
+  font-weight:700;
+  color:#555;
+}
+
+.notion-avatar-large{
+  width:36px;
+  height:36px;
+  font-size:16px;
+}
+
+.notion-account-tools{
+  display:flex;
+  gap:8px;
+  padding:0 8px;
+  margin-top:4px;
+}
+
+.notion-chip-btn{
+  border:1px solid #dfdfda;
+  background:#fafaf8;
+  border-radius:8px;
+  padding:6px 10px;
+  font-size:13px;
+  cursor:pointer;
+}
+
+.notion-chip-btn:hover{
+  background:#f1f1ee;
+}
+
+.notion-account-email-row{
+  margin-top:10px;
+  padding:8px;
+  border-top:1px solid #ecece8;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  font-size:14px;
+  color:#686864;
+}
+
+.notion-ellipsis-btn{
+  border:0;
+  background:transparent;
+  color:#7f7f7b;
+  border-radius:8px;
+  padding:2px 8px;
+  font-size:16px;
+  line-height:1;
+  cursor:pointer;
+}
+
+.notion-ellipsis-btn:hover{
+  background:#f1f1ee;
+}
+
+.notion-space-switch{
+  margin-top:2px;
+  width:100%;
+  border:0;
+  background:transparent;
+  border-radius:8px;
+  padding:8px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  cursor:pointer;
+  font-size:14px;
+}
+
+.notion-space-switch:hover{
+  background:#f3f3f0;
+}
+
+.notion-space-switch-main{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+}
+
+.notion-space-switch-main span:last-child{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.notion-plus-link{
+  margin-top:2px;
+  width:100%;
+  border:0;
+  background:transparent;
+  border-radius:8px;
+  padding:8px;
+  text-align:left;
+  color:#2f76e8;
+  font-size:14px;
+  cursor:pointer;
+}
+
+.notion-plus-link:hover{
+  background:#edf3ff;
+}
+
+.notion-account-divider{
+  border-top:1px solid #ecece8;
+  margin:8px 0;
+}
+
+.notion-account-link{
+  width:100%;
+  border:0;
+  background:transparent;
+  border-radius:8px;
+  padding:8px;
+  text-align:left;
+  color:#4a4a46;
+  font-size:14px;
+  cursor:pointer;
+}
+
+.notion-account-link:hover{
+  background:#f1f1ee;
+}
+
+.notion-nav,
+.notion-sidebar-group{
+  margin-top:14px;
+  min-width:0;
+}
+
+.notion-sidebar-group h2{
+  margin:0 8px 8px;
+  font-size:12px;
+  font-weight:700;
+  color:#8a8a86;
+}
+
+.notion-nav-item,
+.notion-sidebar-doc{
+  width:100%;
+  border:0;
+  background:transparent;
+  border-radius:8px;
+  padding:8px 10px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  text-align:left;
+  color:#3a3a37;
+  cursor:pointer;
+  font-size:14px;
+}
+
+.notion-nav-item:hover{
+  background:#e8e8e5;
+}
+
+.notion-nav-item.active{
+  background:#e3e3e0;
+  font-weight:600;
+}
+
+.notion-nav-item.subtle{
+  color:#646460;
+}
+
+.notion-sidebar-list{
+  display:grid;
+  gap:2px;
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  overflow:visible;
+}
+
+.notion-sidebar-doc-row{
+  position:relative;
+  display:flex;
+  align-items:center;
+  width:100%;
+  max-width:100%;
+  min-width:0;
+  height:36px;
+  min-height:36px;
+  box-sizing:border-box;
+  border-radius:8px;
+  overflow:visible;
+}
+
+.notion-sidebar-doc-row:hover,
+.notion-sidebar-doc-row:focus-within,
+.notion-sidebar-doc-row.menu-open{
+  background:#e8e8e5;
+}
+
+.notion-sidebar-doc-row.active{
+  background:#e3e3e0;
+}
+
+.notion-sidebar-doc-row.menu-open{
+  z-index:40;
+}
+
+.notion-sidebar-doc-row .notion-sidebar-doc{
+  width:100%;
+  height:100%;
+  flex:1 1 auto;
+  min-width:0;
+  max-width:100%;
+  padding-right:34px;
+  box-sizing:border-box;
+  background:transparent;
+}
+
+.notion-sidebar-doc-row.active .notion-sidebar-doc{
+  background:transparent;
+  font-weight:600;
+}
+
+.notion-sidebar-doc{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  min-width:0;
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+}
+
+.notion-sidebar-doc:hover{
+  background:transparent;
+}
+
+.notion-sidebar-doc-label{
+  display:block;
+  width:100%;
+  flex:1 1 auto;
+  max-width:100%;
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.notion-sidebar-doc-prefix{
+  width:14px;
+  flex-shrink:0;
+  text-align:center;
+  color:#8a8a86;
+  font-size:13px;
+}
+
+.notion-sidebar-doc-actions{
+  position:absolute;
+  top:50%;
+  right:8px;
+  transform:translateY(-50%);
+  width:20px;
+  min-width:20px;
+  display:flex;
+  gap:0;
+  justify-content:flex-end;
+  align-items:center;
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+}
+
+.notion-sidebar-doc-row:hover .notion-sidebar-doc-actions,
+.notion-sidebar-doc-row:focus-within .notion-sidebar-doc-actions,
+.notion-sidebar-doc-row.active .notion-sidebar-doc-actions,
+.notion-sidebar-doc-row.menu-open .notion-sidebar-doc-actions{
+  opacity:1;
+  visibility:visible;
+  pointer-events:auto;
+}
+
+@media (hover:none){
+  .notion-sidebar-doc-actions{
+    opacity:1;
+    visibility:visible;
+    pointer-events:auto;
+  }
+}
+
+.notion-sidebar-doc-more{
+  border:0;
+  background:transparent;
+  width:20px;
+  height:20px;
+  border-radius:6px;
+  display:grid;
+  place-items:center;
+  padding:0;
+  cursor:pointer;
+  color:#6f6f6b;
+  font-size:15px;
+  font-weight:600;
+  line-height:1;
+}
+
+.notion-sidebar-doc-more:hover{
+  background:#ececea;
+}
+
+.notion-sidebar-doc-download{
+  position:absolute;
+  right:0;
+  top:calc(100% + 6px);
+  z-index:60;
+  background:#fff;
+  border:1px solid #dcdcd8;
+  border-radius:8px;
+  box-shadow:0 8px 20px rgba(0,0,0,0.08);
+  color:#2f2f2f;
+  text-decoration:none;
+  padding:7px 10px;
+  font-size:13px;
+  white-space:nowrap;
+}
+
+.notion-sidebar-doc-download:hover{
+  background:#f6f6f4;
+}
+
+.notion-sidebar-empty{
+  font-size:12px;
+  color:#8b8b87;
+  padding:8px 10px;
+}
+
+.notion-sidebar-create{
+  width:100%;
+  margin-top:6px;
+  border:0;
+  background:transparent;
+  border-radius:8px;
+  padding:7px 10px;
+  display:flex;
+  align-items:center;
+  gap:8px;
+  color:#6b6b67;
+  font-size:14px;
+  cursor:pointer;
+  text-align:left;
+}
+
+.notion-sidebar-create:hover{
+  background:#e8e8e5;
+}
+
+.notion-main{
+  min-width:0;
+  display:flex;
+  flex-direction:column;
+}
+
+.notion-topbar{
+  position:sticky;
+  top:0;
+  z-index:10;
+  height:52px;
+  padding:0 18px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  border-bottom:1px solid #e6e6e3;
+  background:rgba(247,247,245,0.92);
+  backdrop-filter:blur(8px);
+}
+
+.notion-top-left{
+  display:flex;
+  align-items:center;
+  gap:12px;
+  font-size:14px;
+}
+
+.notion-top-muted{
+  color:#8b8b87;
+  font-size:13px;
+}
+
+.notion-top-actions{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+.notion-more-btn{
+  border:0;
+  background:transparent;
+  color:#666;
+  font-size:18px;
+  line-height:1;
+  cursor:pointer;
+  padding:4px 8px;
+  border-radius:8px;
+}
+
+.notion-more-btn:hover{
+  background:#ececea;
+}
+
+.notion-content{
+  width:min(1020px,100%);
+  margin:0 auto;
+  padding:24px clamp(16px,4vw,42px) 36px;
+}
+
+.notion-warning{
+  border:1px solid #efded0;
+  background:#fff6ef;
+  color:#8b5c2d;
+  border-radius:12px;
+  padding:11px 12px;
+  margin-bottom:14px;
+  font-size:14px;
+}
+
+.notion-greeting{
+  margin-bottom:14px;
+}
+
+.notion-greeting h1{
+  margin:0;
+  font-size:48px;
+  letter-spacing:.4px;
+  color:#2f2f2c;
+}
+
+.notion-greeting p{
+  margin:10px 0 0;
+  color:#7a7a76;
+  font-size:15px;
+}
+
+.notion-focus-card{
+  margin:0 0 14px;
+  padding:16px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  border-radius:14px;
+  background:#fff;
+  border:1px solid #e4e4e1;
+  box-shadow:0 6px 20px rgba(0,0,0,0.04);
+}
+
+.notion-focus-card h2{
+  margin:0;
+  font-size:24px;
+}
+
+.notion-focus-card p{
+  margin:6px 0 0;
+  color:#787874;
+}
+
+.notion-inline-doc{
+  margin:0 0 14px;
+}
+
+.notion-shell .document-detail-card{
+  background:#fff;
+  border:1px solid #e4e4e1;
+  box-shadow:0 6px 20px rgba(0,0,0,0.04);
+}
+
+.notion-inline-doc-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:14px;
+}
+
+.notion-inline-doc-head h2{
+  margin:0 0 8px;
+  font-size:26px;
+}
+
+.notion-inline-doc-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-shrink:0;
+}
+
+.notion-shell .document-body.notion-inline-doc-body{
+  margin-top:14px;
+  background:#fbfbfa;
+  border:1px solid #e4e4e1;
+  color:#2f2f2f;
+}
+
+.notion-shell .document-body.notion-inline-doc-body pre{
+  color:#2f2f2f;
+  line-height:1.65;
+}
+
+.notion-inline-doc-body img{
+  max-width:100%;
+  border-radius:10px;
+}
+
+.notion-pdf-inline{
+  display:grid;
+  gap:12px;
+}
+
+.notion-pdf-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  padding:8px 10px;
+  border:1px solid #e1e4ea;
+  border-radius:10px;
+  background:#f6f8fc;
+}
+
+.notion-pdf-title{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  font-size:13px;
+  color:#475569;
+}
+
+.notion-pdf-toolbar-actions{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:6px;
+  flex-wrap:wrap;
+}
+
+.notion-pdf-btn{
+  border:1px solid #ccd5e2;
+  border-radius:8px;
+  background:#fff;
+  color:#334155;
+  font-size:12px;
+  padding:5px 10px;
+  cursor:pointer;
+}
+
+.notion-pdf-btn:hover{
+  background:#f8fbff;
+}
+
+.notion-pdf-btn:disabled{
+  opacity:0.45;
+  cursor:not-allowed;
+}
+
+.notion-pdf-page-indicator,
+.notion-pdf-zoom-indicator{
+  min-width:56px;
+  text-align:center;
+  font-size:12px;
+  color:#64748b;
+}
+
+.notion-pdf-canvas-wrap{
+  position:relative;
+  overflow:auto;
+  border:1px solid #e1e4ea;
+  border-radius:10px;
+  padding:14px;
+  background:#eef2f8;
+}
+
+.notion-pdf-canvas{
+  display:block;
+  margin:0 auto;
+  background:#fff;
+  max-width:100%;
+  height:auto;
+  border-radius:2px;
+  box-shadow:0 10px 26px rgba(15,23,42,0.12);
+}
+
+.notion-pdf-status{
+  position:absolute;
+  top:10px;
+  left:50%;
+  transform:translateX(-50%);
+  margin:0;
+  padding:6px 12px;
+  border-radius:999px;
+  background:rgba(255,255,255,0.95);
+  border:1px solid #dbe3ef;
+  color:#55657d;
+  font-size:12px;
+}
+
+.notion-pdf-status-error{
+  color:#a4232f;
+  border-color:#f2c7cd;
+  background:rgba(255,245,246,0.95);
+}
+
+.notion-pdf-overview{
+  border:1px solid #e1e4ea;
+  border-radius:10px;
+  background:#f7f9fd;
+  padding:10px;
+}
+
+.notion-pdf-overview-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:8px;
+}
+
+.notion-pdf-thumb-grid{
+  display:grid;
+  grid-template-columns:repeat(auto-fill, minmax(120px, 1fr));
+  gap:10px;
+  max-height:260px;
+  overflow:auto;
+  padding-right:2px;
+}
+
+.notion-pdf-thumb{
+  border:1px solid #d8deea;
+  background:#fff;
+  border-radius:8px;
+  padding:6px;
+  cursor:pointer;
+  display:grid;
+  gap:6px;
+}
+
+.notion-pdf-thumb:hover{
+  border-color:#b9c9e8;
+  background:#fbfdff;
+}
+
+.notion-pdf-thumb.active{
+  border-color:#2f76e8;
+  box-shadow:0 0 0 2px rgba(47,118,232,0.18);
+}
+
+.notion-pdf-thumb-canvas-wrap{
+  min-height:88px;
+  border:1px solid #e5e9f1;
+  border-radius:6px;
+  background:#f4f7fc;
+  display:grid;
+  place-items:center;
+  overflow:hidden;
+}
+
+.notion-pdf-thumb-canvas-wrap img{
+  width:100%;
+  height:auto;
+  display:block;
+}
+
+.notion-pdf-thumb-placeholder{
+  font-size:12px;
+  color:#7a8799;
+}
+
+.notion-pdf-thumb-index{
+  font-size:12px;
+  color:#64748b;
+  text-align:center;
+}
+
+.notion-shell input,
+.notion-shell button,
+.notion-shell select{
+  color:#2f2f2f;
+}
+
+.notion-shell input[type="search"],
+.notion-shell input[type="text"],
+.notion-shell input[type="password"],
+.notion-shell input[type="date"],
+.notion-shell input[type="file"],
+.notion-shell input[type="email"]{
+  background:#fff;
+  border:1px solid #dcdcd8;
+  color:#2f2f2f;
+  min-width:180px;
+}
+
+.notion-shell input:focus-visible{
+  border-color:#2f76e8;
+  box-shadow:0 0 0 3px rgba(47,118,232,0.2);
+}
+
+.notion-shell .btn{
+  background:#fff;
+  border:1px solid #d8d8d3;
+  color:#2f2f2f;
+}
+
+.notion-shell .edit-tags{
+  background:#fff;
+  border:1px solid #d8d8d3;
+  color:#2f2f2f;
+  border-radius:12px;
+  padding:8px 12px;
+}
+
+.notion-shell .edit-tags:hover{
+  background:#f7f7f5;
+}
+
+.notion-shell .btn-primary{
+  background:linear-gradient(180deg,#3b82f6,#2f76e8);
+  border-color:#2f76e8;
+  color:#fff;
+}
+
+.notion-shell .filters,
+.notion-shell .uploader,
+.notion-shell .usage-card,
+.notion-shell .recent-card,
+.notion-shell .document-card,
+.notion-shell .empty{
+  background:#fff;
+  border:1px solid #e4e4e1;
+  box-shadow:0 6px 20px rgba(0,0,0,0.04);
+  color:#2f2f2f;
+}
+
+.notion-shell .document-meta,
+.notion-shell .muted{
+  color:#787874;
+}
+
+.notion-shell .cards{
+  grid-template-columns:repeat(auto-fill,minmax(210px,1fr));
+}
+
+.notion-shell .tag{
+  background:#f3f3f1;
+  border-color:#dfdfdc;
+}
+
+.notion-shell .tag.selected{
+  background:linear-gradient(180deg,#3b82f6,#2f76e8);
+  border-color:#2f76e8;
+  color:#fff;
+}
+
+.notion-shell .user-button{
+  background:#fff;
+  border:1px solid #d8d8d4;
+  color:#2f2f2f;
+}
+
+.notion-shell .user-button:hover{
+  background:#f5f5f3;
+  border-color:#cececa;
+}
+
+.notion-shell .user-menu .dropdown{
+  background:#fff;
+  border:1px solid #dddcd8;
+  box-shadow:0 18px 36px rgba(0,0,0,0.1);
+}
+
+.notion-shell .dropdown-item:hover,
+.notion-shell .settings-item:hover,
+.notion-shell .settings-item:focus-visible{
+  background:#f2f2f0;
+  border-color:#e1e1dd;
+}
+
+.notion-shell .settings-panel{
+  background:#fafaf9;
+  border-color:#ecece9;
+}
+
+.notion-shell .settings-item.active{
+  background:#eef4ff;
+  border-color:#c8dafb;
+  box-shadow:inset 3px 0 0 #2f76e8;
+}
+
+@media (max-width: 980px){
+  .notion-shell{
+    grid-template-columns:1fr;
+  }
+
+  .notion-sidebar{
+    position:static;
+    top:auto;
+    height:auto;
+    border-right:0;
+    border-bottom:1px solid #e6e6e3;
+    padding-bottom:12px;
+    overflow:visible;
+  }
+}
+
+@media (max-width: 720px){
+  .notion-greeting h1{
+    font-size:38px;
+  }
+
+  .notion-focus-card{
+    flex-direction:column;
+    align-items:flex-start;
+  }
+
+  .notion-topbar{
+    padding:0 12px;
+  }
+}

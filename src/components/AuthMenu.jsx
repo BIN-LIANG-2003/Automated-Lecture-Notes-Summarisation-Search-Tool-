@@ -13,7 +13,7 @@ export default function AuthMenu({ isLoggedIn, onSignOut }) {
   const [open, setOpen] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const wrapperRef = useRef(null);
-  const username = localStorage.getItem('username') || 'Account';
+  const username = sessionStorage.getItem('username') || localStorage.getItem('username') || 'Account';
 
   useEffect(() => {
     const handleClick = (event) => {

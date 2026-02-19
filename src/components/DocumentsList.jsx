@@ -49,7 +49,7 @@ export default function DocumentsList({ documents, isLoggedIn, meta, onView, onD
         </div>
       ) : (
         <div id="empty-state" className="empty">
-          No matching documents. Try another query or clear filters.
+          没有匹配的文档。请尝试其他条件，或点击“清空”筛选。
         </div>
       )}
     </>

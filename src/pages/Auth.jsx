@@ -24,9 +24,14 @@ export default function AuthPage() {
   const subtitle =
     mode === 'signup'
       ? 'Create a new account to manage your notes.'
-      : existingUser
+        : existingUser
         ? 'You are already signed in.'
         : 'Welcome back! Please sign in to continue.';
+
+  useEffect(() => {
+    document.body.classList.add('auth-light-body');
+    return () => document.body.classList.remove('auth-light-body');
+  }, []);
 
   useEffect(() => {
     const resize = () => {
@@ -201,24 +206,21 @@ export default function AuthPage() {
               Sign in
             </button>
 
-            {/* === Google Login Button Section === */}
-            <div style={{ marginTop: '20px', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '10px' }}>
-              <div style={{ width: '100%', height: '1px', background: 'rgba(255,255,255,0.1)', position: 'relative' }}>
-                <span style={{ position: 'absolute', top: '-10px', left: '50%', transform: 'translateX(-50%)', background: '#161b22', padding: '0 10px', color: '#8b949e', fontSize: '12px' }}>
-                  OR
-                </span>
+            <div className="auth-social">
+              <div className="auth-divider" role="presentation">
+                <span>OR</span>
               </div>
-              
-              <div style={{ marginTop: '10px' }}>
+
+              <div className="auth-google-wrap">
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={() => {
                     console.log('Login Failed');
                     alert('Google Login Failed');
                   }}
-                  theme="filled_black" 
-                  shape="pill"         
-                  width="280"          
+                  theme="outline"
+                  shape="pill"
+                  width="260"
                 />
               </div>
             </div>
