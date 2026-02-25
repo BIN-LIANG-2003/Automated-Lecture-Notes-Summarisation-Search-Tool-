@@ -1,5 +1,6 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
@@ -8,8 +9,41 @@ const MIN_SCALE = 0.8;
 const MAX_SCALE = 2.4;
 const SCALE_STEP = 0.2;
 const THUMB_SCALE = 0.2;
+const MIN_FONT_SIZE = 8;
+const MAX_FONT_SIZE = 48;
 
-export default function PdfInlineViewer({ src, title }) {
+const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
+
+const makeAnnotationId = () => {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `ann-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+};
+
+const toRgbColor = (hex) => {
+  const raw = String(hex || '')
+    .trim()
+    .replace(/^#/, '');
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return rgb(0.78, 0.16, 0.16);
+  const r = parseInt(raw.slice(0, 2), 16) / 255;
+  const g = parseInt(raw.slice(2, 4), 16) / 255;
+  const b = parseInt(raw.slice(4, 6), 16) / 255;
+  return rgb(r, g, b);
+};
+
+export default function PdfInlineViewer({
+  src,
+  title,
+  uploadedAt = '',
+  tags = [],
+  downloadUrl = '',
+  editable = false,
+  onSaveEditedPdf,
+  saveLoading = false,
+  saveError = '',
+  onClearSaveError,
+}) {
   const canvasRef = useRef(null);
   const renderTaskRef = useRef(null);
 
@@ -22,8 +56,19 @@ export default function PdfInlineViewer({ src, title }) {
   const [loadingDoc, setLoadingDoc] = useState(true);
   const [loadingPage, setLoadingPage] = useState(false);
   const [error, setError] = useState('');
+  const [editorError, setEditorError] = useState('');
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+
+  const [editMode, setEditMode] = useState(false);
+  const [annotationColor, setAnnotationColor] = useState('#c62828');
+  const [annotationSize, setAnnotationSize] = useState(14);
+  const [annotations, setAnnotations] = useState([]);
 
   const totalPages = pdfDoc?.numPages || 0;
+  const pageAnnotations = useMemo(
+    () => annotations.filter((item) => item.page === pageNum),
+    [annotations, pageNum]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -37,6 +82,10 @@ export default function PdfInlineViewer({ src, title }) {
     setThumbsLoading(false);
     setError('');
     setLoadingDoc(true);
+    setCanvasSize({ width: 0, height: 0 });
+    setEditorError('');
+    setEditMode(false);
+    setAnnotations([]);
 
     try {
       loadingTask = pdfjsLib.getDocument(src);
@@ -143,6 +192,7 @@ export default function PdfInlineViewer({ src, title }) {
         canvas.height = Math.floor(viewport.height * dpr);
         canvas.style.width = `${viewport.width}px`;
         canvas.style.height = `${viewport.height}px`;
+        setCanvasSize({ width: viewport.width, height: viewport.height });
 
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, canvas.width, canvas.height);
@@ -179,14 +229,135 @@ export default function PdfInlineViewer({ src, title }) {
   const canPrev = pageNum > 1;
   const canNext = pageNum < totalPages;
   const thumbReadyCount = Object.keys(thumbnails).length;
+  const hasPendingAnnotations = annotations.length > 0;
+  const uploadedLabel = uploadedAt ? new Date(uploadedAt).toLocaleString() : '';
+  const tagsLabel = Array.isArray(tags) && tags.length ? tags.join(', ') : 'None';
+
+  const handleLayerClick = (event) => {
+    if (!editable || !editMode || loadingDoc || loadingPage || saveLoading) return;
+    if (!canvasSize.width || !canvasSize.height) return;
+
+    const textInput = window.prompt('输入要写入 PDF 的文本：');
+    if (textInput === null) return;
+
+    const text = textInput.trimEnd();
+    if (!text.trim()) return;
+
+    onClearSaveError?.();
+    setEditorError('');
+
+    const rect = event.currentTarget.getBoundingClientRect();
+    const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+
+    setAnnotations((prev) => [
+      ...prev,
+      {
+        id: makeAnnotationId(),
+        page: pageNum,
+        x: normalizedX,
+        y: normalizedY,
+        text,
+        color: annotationColor,
+        size: clamp(Number(annotationSize) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE),
+      },
+    ]);
+  };
+
+  const removeAnnotation = (annotationId) => {
+    setAnnotations((prev) => prev.filter((item) => item.id !== annotationId));
+  };
+
+  const removeLastAnnotationOnPage = () => {
+    setAnnotations((prev) => {
+      let removeIndex = -1;
+      for (let idx = prev.length - 1; idx >= 0; idx -= 1) {
+        if (prev[idx].page === pageNum) {
+          removeIndex = idx;
+          break;
+        }
+      }
+      if (removeIndex < 0) return prev;
+      return prev.filter((_, idx) => idx !== removeIndex);
+    });
+  };
+
+  const saveEditedPdf = async () => {
+    if (!editable || !onSaveEditedPdf) return;
+    if (!annotations.length) {
+      setEditorError('请先在页面上添加至少一个文本标注。');
+      return;
+    }
+
+    onClearSaveError?.();
+    setEditorError('');
+
+    try {
+      const response = await fetch(src);
+      if (!response.ok) throw new Error('无法读取当前 PDF 文件。');
+      const sourceBytes = await response.arrayBuffer();
+
+      const pdfDocForEdit = await PDFDocument.load(sourceBytes, { ignoreEncryption: true });
+      const font = await pdfDocForEdit.embedFont(StandardFonts.Helvetica);
+      const pages = pdfDocForEdit.getPages();
+
+      annotations.forEach((annotation) => {
+        const page = pages[annotation.page - 1];
+        if (!page) return;
+
+        const { width, height } = page.getSize();
+        const baseX = clamp(annotation.x, 0, 1) * width;
+        const baseY = height - clamp(annotation.y, 0, 1) * height;
+        const drawColor = toRgbColor(annotation.color);
+        const drawSize = clamp(Number(annotation.size) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE);
+        const lineHeight = drawSize + 2;
+
+        String(annotation.text || '')
+          .split('\n')
+          .forEach((line, lineIndex) => {
+            const y = baseY - lineIndex * lineHeight;
+            if (y < 0) return;
+            page.drawText(line || ' ', {
+              x: baseX,
+              y,
+              size: drawSize,
+              font,
+              color: drawColor,
+            });
+          });
+      });
+
+      const editedBytes = await pdfDocForEdit.save();
+      await onSaveEditedPdf(editedBytes);
+      setAnnotations([]);
+      setEditMode(false);
+    } catch (err) {
+      console.error('Save edited PDF failed:', err);
+      setEditorError(err?.message || '保存 PDF 失败。');
+    }
+  };
 
   return (
     <div className="notion-pdf-inline">
       <div className="notion-pdf-toolbar">
-        <strong className="notion-pdf-title" title={title}>
-          {title}
-        </strong>
+        <div className="notion-pdf-doc-meta">
+          <strong className="notion-pdf-title" title={title}>
+            {title}
+          </strong>
+          <span className="notion-pdf-doc-sub">Uploaded: {uploadedLabel}</span>
+          <span className="notion-pdf-doc-sub">Tags: {tagsLabel}</span>
+        </div>
         <div className="notion-pdf-toolbar-actions">
+          {downloadUrl && (
+            <a
+              href={downloadUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="notion-pdf-btn notion-pdf-btn-link"
+            >
+              下载文件
+            </a>
+          )}
           <button
             type="button"
             className="notion-pdf-btn"
@@ -234,6 +405,72 @@ export default function PdfInlineViewer({ src, title }) {
         </div>
       </div>
 
+      {editable && (
+        <div className="notion-pdf-editbar">
+          <button
+            type="button"
+            className="notion-pdf-btn"
+            onClick={() => {
+              setEditMode((prev) => !prev);
+              onClearSaveError?.();
+              setEditorError('');
+            }}
+            disabled={loadingDoc || saveLoading}
+          >
+            {editMode ? '退出标注' : '添加标注'}
+          </button>
+          <button
+            type="button"
+            className="notion-pdf-btn"
+            onClick={removeLastAnnotationOnPage}
+            disabled={!pageAnnotations.length || saveLoading}
+          >
+            撤销本页
+          </button>
+          <button
+            type="button"
+            className="notion-pdf-btn"
+            onClick={() => setAnnotations([])}
+            disabled={!hasPendingAnnotations || saveLoading}
+          >
+            清空标注
+          </button>
+          <label className="notion-pdf-config">
+            字号
+            <input
+              type="number"
+              min={MIN_FONT_SIZE}
+              max={MAX_FONT_SIZE}
+              value={annotationSize}
+              onChange={(event) =>
+                setAnnotationSize(clamp(Number(event.target.value) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE))
+              }
+              disabled={saveLoading}
+            />
+          </label>
+          <label className="notion-pdf-config">
+            颜色
+            <input
+              type="color"
+              value={annotationColor}
+              onChange={(event) => setAnnotationColor(event.target.value)}
+              disabled={saveLoading}
+            />
+          </label>
+          <span className="notion-pdf-edit-meta">
+            {hasPendingAnnotations ? `待保存 ${annotations.length} 条标注` : '暂无待保存标注'}
+          </span>
+          <button
+            type="button"
+            className="notion-pdf-btn notion-pdf-btn-primary"
+            onClick={saveEditedPdf}
+            disabled={!hasPendingAnnotations || saveLoading}
+          >
+            {saveLoading ? '保存中...' : '保存到原PDF'}
+          </button>
+        </div>
+      )}
+
       {overviewOpen && (
         <div className="notion-pdf-overview">
           <div className="notion-pdf-overview-head">
@@ -278,8 +515,56 @@ export default function PdfInlineViewer({ src, title }) {
             {error}
           </p>
         )}
-        <canvas ref={canvasRef} className="notion-pdf-canvas" />
+
+        <div
+          className={`notion-pdf-stage ${editMode ? 'edit-mode' : ''}`}
+          style={
+            canvasSize.width && canvasSize.height
+              ? { width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }
+              : undefined
+          }
+        >
+          <canvas ref={canvasRef} className="notion-pdf-canvas" />
+          <div
+            className={`notion-pdf-annotation-layer ${editMode ? 'editable' : ''}`}
+            onClick={handleLayerClick}
+            aria-label={editMode ? '点击 PDF 页面添加标注文本' : undefined}
+          >
+            {pageAnnotations.map((item) => (
+              <button
+                key={item.id}
+                type="button"
+                className={`notion-pdf-annotation ${editMode ? 'editable' : ''}`}
+                style={{
+                  left: `${item.x * 100}%`,
+                  top: `${item.y * 100}%`,
+                  color: item.color,
+                  fontSize: `${item.size}px`,
+                }}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  if (!editMode) return;
+                  if (window.confirm('删除这条标注？')) removeAnnotation(item.id);
+                }}
+                title={editMode ? '点击删除此标注' : item.text}
+              >
+                {item.text}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
+
+      {editable && editMode && (
+        <p className="muted tiny notion-pdf-edit-hint">
+          点击页面空白处可添加文字标注；点击已有标注可删除。免费版为追加标注，不做原对象精修。
+        </p>
+      )}
+      {(saveError || editorError) && (
+        <p className="notion-pdf-edit-error" role="alert">
+          保存失败: {saveError || editorError}
+        </p>
+      )}
     </div>
   );
 }

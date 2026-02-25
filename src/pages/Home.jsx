@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import DocumentsList from '../components/DocumentsList.jsx';
+import RichTextEditor from '../components/RichTextEditor.jsx';
 import UsageChart from '../components/UsageChart.jsx';
 import { todayKey } from '../lib/dates.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
@@ -25,8 +26,9 @@ const normalizeTags = (tags) => {
 
 const normalizeDocument = (doc) => ({
   ...doc,
-  uploadedAt: doc.uploadedAt || doc.uploaded_at || '',
-  lastAccessAt: doc.lastAccessAt || doc.last_access_at || '',
+  uploadedAt: doc.uploaded_at ?? doc.uploadedAt ?? '',
+  lastAccessAt: doc.last_access_at ?? doc.lastAccessAt ?? '',
+  contentHtml: doc.content_html ?? doc.contentHtml ?? '',
   tags: normalizeTags(doc.tags)
 });
 
@@ -45,6 +47,45 @@ const getDocExt = (doc) => {
   return parts.length > 1 ? parts.pop() : '';
 };
 
+const escapeHtml = (value) =>
+  String(value || '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+const plainTextToRichHtml = (value) => {
+  const text = String(value || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines = text.split('\n');
+  if (!lines.length) return '<p><br></p>';
+  return lines.map((line) => (line ? `<p>${escapeHtml(line)}</p>` : '<p><br></p>')).join('');
+};
+
+const richHtmlToPlainText = (value) => {
+  if (typeof value !== 'string' || !value.trim()) return '';
+  const normalizedHtml = value
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|h[1-6]|blockquote|pre|ul|ol)>/gi, '\n');
+  try {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(`<div>${normalizedHtml}</div>`, 'text/html');
+    return (parsed.body.textContent || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+  } catch {
+    return normalizedHtml.replace(/<[^>]+>/g, '').trim();
+  }
+};
+
+const getDocumentRichHtml = (doc) => {
+  if (!doc) return '';
+  if (typeof doc.content_html === 'string' && doc.content_html.trim()) return doc.content_html;
+  if (typeof doc.contentHtml === 'string' && doc.contentHtml.trim()) return doc.contentHtml;
+  return plainTextToRichHtml(doc.content || '');
+};
+
 const PdfInlineViewer = lazy(() => import('../components/PdfInlineViewer.jsx'));
 
 export default function HomePage() {
@@ -53,17 +94,28 @@ export default function HomePage() {
   const location = useLocation();
   const workspaceMenuRef = useRef(null);
   const recentMenuRef = useRef(null);
+  const aiImageInputRef = useRef(null);
 
   const [filters, setFilters] = useState({ query: '', start: '', end: '', tag: '' });
   const [searchDraft, setSearchDraft] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(() => Boolean(sessionStorage.getItem('username')));
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
+  const [showAI, setShowAI] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [sidebarMenuDocId, setSidebarMenuDocId] = useState(null);
   const [sidebarRecentIds, setSidebarRecentIds] = useState([]);
   const [activeDoc, setActiveDoc] = useState(null);
   const [activeDocLoading, setActiveDocLoading] = useState(false);
   const [activeDocError, setActiveDocError] = useState('');
+  const [activeDocFileVersion, setActiveDocFileVersion] = useState(0);
+  const [activeDocEditMode, setActiveDocEditMode] = useState(false);
+  const [activeDocDraftHtml, setActiveDocDraftHtml] = useState('');
+  const [activeDocSaveLoading, setActiveDocSaveLoading] = useState(false);
+  const [activeDocSaveError, setActiveDocSaveError] = useState('');
+  const [extractedText, setExtractedText] = useState('');
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const [fileHint, setFileHint] = useState('');
   const fileInputRef = useRef(null);
@@ -97,8 +149,15 @@ export default function HomePage() {
   }, [username]);
 
   useEffect(() => {
+    setActiveDocEditMode(false);
+    setActiveDocSaveError('');
+    setActiveDocDraftHtml(getDocumentRichHtml(activeDoc));
+  }, [activeDoc?.id, activeDoc?.content, activeDoc?.contentHtml]);
+
+  useEffect(() => {
     if (location.state?.showFiles) {
       setShowFiles(true);
+      setShowAI(false);
     }
   }, [location.state]);
 
@@ -109,8 +168,16 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    const timer = window.setInterval(() => setNow(new Date()), 60000);
-    return () => window.clearInterval(timer);
+    let timer = null;
+    const tick = () => {
+      setNow(new Date());
+      const delay = 1000 - (Date.now() % 1000);
+      timer = window.setTimeout(tick, delay);
+    };
+    tick();
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
   }, []);
 
   useEffect(() => {
@@ -249,7 +316,13 @@ export default function HomePage() {
   }, [documents, sidebarRecentIds]);
 
   const nowLabel = useMemo(
-    () => `@今天 ${now.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false })}`,
+    () =>
+      `@今天 ${now.toLocaleTimeString('zh-CN', {
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false,
+      })}`,
     [now]
   );
 
@@ -333,17 +406,96 @@ export default function HomePage() {
     }
   };
 
+  const handleExtractText = async (imageFile) => {
+    if (!imageFile) {
+      alert('请先选择一张图片！');
+      return;
+    }
+
+    setIsExtracting(true);
+    const formData = new FormData();
+    formData.append('image', imageFile);
+
+    try {
+      const response = await fetch('/api/extract-text', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        alert(`文字提取失败：${data.error || '服务异常'}`);
+        return;
+      }
+
+      const nextText = typeof data.text === 'string' ? data.text : '';
+      setExtractedText(nextText);
+      setAnalysisResult(null);
+    } catch (error) {
+      console.error('Extract text failed:', error);
+      alert('文字提取请求失败，请稍后重试。');
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleAIImageChange = async (event) => {
+    const file = event.target.files?.[0] || null;
+    event.target.value = '';
+    if (!file) return;
+    await handleExtractText(file);
+  };
+
+  const openAIImagePicker = () => {
+    if (isExtracting) return;
+    aiImageInputRef.current?.click();
+  };
+
+  const handleAnalyzeText = async () => {
+    if (!extractedText.trim()) {
+      alert('文本框为空，无法分析！');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const response = await fetch('/api/analyze-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText }),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        alert(`分析失败：${data.error || '服务异常'}`);
+        return;
+      }
+
+      setAnalysisResult(data);
+    } catch (error) {
+      console.error('Analyze text failed:', error);
+      alert('文本分析请求失败，请稍后重试。');
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   const openDocumentInPane = async (docId, options = {}) => {
     const { fromSidebar = false } = options;
     bumpSidebarRecent(docId);
     setActiveDocLoading(true);
     setActiveDocError('');
+    setActiveDocFileVersion(0);
+    setActiveDocEditMode(false);
+    setActiveDocDraftHtml('');
+    setActiveDocSaveError('');
     setSidebarMenuDocId(null);
     setActiveDoc(null);
 
     if (fromSidebar) {
       // Sidebar click should open the document pane directly, not stay in file-list mode.
       setShowFiles(false);
+      setShowAI(false);
       window.requestAnimationFrame(() => {
         document.getElementById('main')?.scrollIntoView({ block: 'start' });
       });
@@ -353,6 +505,7 @@ export default function HomePage() {
       if (!res.ok) throw new Error('Document not found');
       const data = await res.json();
       setActiveDoc(normalizeDocument(data));
+      setActiveDocFileVersion(Date.now());
     } catch (err) {
       setActiveDoc(null);
       setActiveDocError(err.message || 'Failed to load document');
@@ -390,9 +543,85 @@ export default function HomePage() {
 
       const normalized = normalizeDocument(data);
       setDocuments((prev) => prev.map((item) => (item.id === doc.id ? normalized : item)));
-      setActiveDoc((prev) => (prev?.id === doc.id ? normalizeDocument({ ...prev, ...data }) : prev));
+      setActiveDoc((prev) => (prev?.id === doc.id ? normalized : prev));
     } catch (err) {
       alert(err.message || '更新标签失败');
+    }
+  };
+
+  const handleSaveActiveDocContent = async () => {
+    if (!activeDoc) return;
+    const targetDocId = Number(activeDoc.id);
+    setActiveDocSaveLoading(true);
+    setActiveDocSaveError('');
+
+    try {
+      const contentHtml = activeDocDraftHtml || '';
+      const contentText = richHtmlToPlainText(contentHtml);
+      const res = await fetch(`/api/documents/${activeDoc.id}/content`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          content: contentText,
+          content_html: contentHtml,
+          username: username || '',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save document content');
+
+      const normalized = normalizeDocument(data);
+      setActiveDoc((prev) => (Number(prev?.id) === targetDocId ? normalized : prev));
+      setDocuments((prev) =>
+        prev.map((item) =>
+          Number(item.id) === targetDocId ? normalized : item
+        )
+      );
+      if (typeof data.content_html === 'string') {
+        setActiveDocDraftHtml(data.content_html);
+      } else if (typeof data.content === 'string') {
+        setActiveDocDraftHtml(plainTextToRichHtml(data.content));
+      }
+      setActiveDocFileVersion(Date.now());
+      setActiveDocEditMode(false);
+    } catch (err) {
+      setActiveDocSaveError(err.message || '保存文档内容失败');
+    } finally {
+      setActiveDocSaveLoading(false);
+    }
+  };
+
+  const handleSaveActivePdfFile = async (pdfBytes) => {
+    if (!activeDoc) throw new Error('No active document selected');
+    const targetDocId = Number(activeDoc.id);
+    setActiveDocSaveLoading(true);
+    setActiveDocSaveError('');
+
+    try {
+      const payload = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
+      const res = await fetch(`/api/documents/${activeDoc.id}/pdf`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/pdf' },
+        body: payload,
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save PDF file');
+
+      const normalized = normalizeDocument(data);
+      setActiveDoc((prev) => (Number(prev?.id) === targetDocId ? normalized : prev));
+      setDocuments((prev) =>
+        prev.map((item) =>
+          Number(item.id) === targetDocId ? normalized : item
+        )
+      );
+      setActiveDocFileVersion(Date.now());
+      return data;
+    } catch (err) {
+      const message = err.message || '保存 PDF 失败';
+      setActiveDocSaveError(message);
+      throw err;
+    } finally {
+      setActiveDocSaveLoading(false);
     }
   };
 
@@ -405,17 +634,33 @@ export default function HomePage() {
     setSearchDraft('');
   };
 
-  const activeDocFileUrl = activeDoc ? `/uploads/${activeDoc.filename}` : '';
-  const activeDocStreamUrl = activeDoc ? `/api/documents/${activeDoc.id}/file` : '';
+  const activeDocFileUrl = activeDoc
+    ? `/uploads/${activeDoc.filename}${activeDocFileVersion ? `?v=${activeDocFileVersion}` : ''}`
+    : '';
+  const activeDocStreamUrl = activeDoc
+    ? `/api/documents/${activeDoc.id}/file${activeDocFileVersion ? `?v=${activeDocFileVersion}` : ''}`
+    : '';
   const activeDocExt = activeDoc ? getDocExt(activeDoc) : '';
   const activeDocIsImage = ['jpg', 'jpeg', 'png', 'webp'].includes(activeDocExt);
   const activeDocIsPdf = activeDocExt === 'pdf';
+  const activeDocCanEditText = ['txt', 'docx'].includes(activeDocExt);
+  const activeDocViewHtml = useMemo(() => getDocumentRichHtml(activeDoc), [activeDoc]);
+  const showOuterDocHeader = !activeDocIsPdf;
+  const activeDocEditButtonLabel = '编辑内容';
+  const activeDocSaveButtonLabel = '保存内容';
+  const activeDocEditHint = activeDocExt === 'txt'
+    ? 'TXT 原文件只能保存纯文本；样式会保留在系统内的编辑显示中。'
+    : '保存后会覆盖原 DOCX，并保留常见文本样式（标题、加粗、斜体、列表、颜色、对齐等）。';
   const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
 
   const closeDocumentPane = () => {
     setActiveDoc(null);
     setActiveDocError('');
     setActiveDocLoading(false);
+    setActiveDocFileVersion(0);
+    setActiveDocEditMode(false);
+    setActiveDocDraftHtml('');
+    setActiveDocSaveError('');
   };
 
   return (
@@ -514,10 +759,11 @@ export default function HomePage() {
         <nav className="notion-nav" aria-label="主菜单">
           <button
             type="button"
-            className={`notion-nav-item ${!showFiles && !docPaneVisible ? 'active' : ''}`}
+            className={`notion-nav-item ${!showFiles && !showAI && !docPaneVisible ? 'active' : ''}`}
             onClick={() => {
               closeDocumentPane();
               setShowFiles(false);
+              setShowAI(false);
             }}
           >
             <span aria-hidden="true">⌂</span>
@@ -525,14 +771,27 @@ export default function HomePage() {
           </button>
           <button
             type="button"
-            className={`notion-nav-item ${showFiles && !docPaneVisible ? 'active' : ''}`}
+            className={`notion-nav-item ${showFiles && !showAI && !docPaneVisible ? 'active' : ''}`}
             onClick={() => {
               closeDocumentPane();
               setShowFiles(true);
+              setShowAI(false);
             }}
           >
             <span aria-hidden="true">📄</span>
             <span>我的文件</span>
+          </button>
+          <button
+            type="button"
+            className={`notion-nav-item ${showAI && !docPaneVisible ? 'active' : ''}`}
+            onClick={() => {
+              closeDocumentPane();
+              setShowFiles(false);
+              setShowAI(true);
+            }}
+          >
+            <span aria-hidden="true">✨</span>
+            <span>AI助手</span>
           </button>
         </nav>
 
@@ -623,24 +882,95 @@ export default function HomePage() {
 
               {!activeDocLoading && activeDoc && (
                 <article className="document-detail-card">
-                  <header className="notion-inline-doc-head">
-                    <div>
-                      <h2>{activeDoc.title}</h2>
-                      <div className="document-meta">
-                        Uploaded: {activeDoc.uploadedAt ? new Date(activeDoc.uploadedAt).toLocaleString() : ''}
+                  {showOuterDocHeader && (
+                    <header className="notion-inline-doc-head">
+                      <div>
+                        <h2>{activeDoc.title}</h2>
+                        <div className="document-meta">
+                          Uploaded: {activeDoc.uploadedAt ? new Date(activeDoc.uploadedAt).toLocaleString() : ''}
+                        </div>
+                        <div className="document-meta">
+                          Tags: {activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}
+                        </div>
                       </div>
-                      <div className="document-meta">
-                        Tags: {activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}
+                      <div className="notion-inline-doc-actions">
+                        <a
+                          href={activeDocFileUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="btn"
+                        >
+                          下载文件
+                        </a>
+                        {activeDocCanEditText && (
+                          <button
+                            type="button"
+                            className="edit-tags"
+                            onClick={() => {
+                              setActiveDocEditMode((prev) => !prev);
+                              setActiveDocSaveError('');
+                              setActiveDocDraftHtml(getDocumentRichHtml(activeDoc));
+                            }}
+                            disabled={activeDocSaveLoading}
+                          >
+                            {activeDocEditMode ? '取消编辑' : activeDocEditButtonLabel}
+                          </button>
+                        )}
+                        {activeDocCanEditText && activeDocEditMode && (
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={handleSaveActiveDocContent}
+                            disabled={activeDocSaveLoading}
+                          >
+                            {activeDocSaveLoading ? '保存中...' : activeDocSaveButtonLabel}
+                          </button>
+                        )}
                       </div>
-                    </div>
-                  </header>
+                    </header>
+                  )}
 
-                  <section className="document-body notion-inline-doc-body">
-                    {activeDocIsImage ? (
+                  <section
+                    className={`document-body notion-inline-doc-body${activeDocIsPdf ? ' notion-inline-doc-body-pdf' : ''}`}
+                  >
+                    {activeDocCanEditText && activeDocEditMode ? (
+                      <div className="notion-doc-editor">
+                        <RichTextEditor
+                          value={activeDocDraftHtml}
+                          onChange={setActiveDocDraftHtml}
+                          disabled={activeDocSaveLoading}
+                          placeholder="在这里编辑文档内容..."
+                        />
+                        <p className="muted tiny">
+                          {activeDocEditHint}
+                        </p>
+                        {activeDocSaveError && (
+                          <p className="notion-doc-editor-error" role="alert">
+                            保存失败: {activeDocSaveError}
+                          </p>
+                        )}
+                      </div>
+                    ) : activeDocCanEditText ? (
+                      <div
+                        className="notion-doc-rich-view"
+                        dangerouslySetInnerHTML={{ __html: activeDocViewHtml || '<p><br></p>' }}
+                      />
+                    ) : activeDocIsImage ? (
                       <img src={activeDocFileUrl} alt={activeDoc.title} />
                     ) : activeDocIsPdf ? (
                       <Suspense fallback={<p className="muted">正在加载 PDF 预览...</p>}>
-                        <PdfInlineViewer src={activeDocStreamUrl} title={activeDoc.title} />
+                        <PdfInlineViewer
+                          src={activeDocStreamUrl}
+                          title={activeDoc.title}
+                          uploadedAt={activeDoc.uploadedAt}
+                          tags={activeDoc.tags}
+                          downloadUrl={activeDocFileUrl}
+                          editable
+                          saveLoading={activeDocSaveLoading}
+                          saveError={activeDocSaveError}
+                          onClearSaveError={() => setActiveDocSaveError('')}
+                          onSaveEditedPdf={handleSaveActivePdfFile}
+                        />
                       </Suspense>
                     ) : (
                       <pre>{activeDoc.content || 'No text content extracted.'}</pre>
@@ -651,7 +981,7 @@ export default function HomePage() {
             </section>
           )}
 
-          {!docPaneVisible && (
+          {!showFiles && !showAI && !docPaneVisible && (
             <section className="notion-focus-card" aria-label="快速入口">
               <div>
                 <h2>学习工作台</h2>
@@ -669,10 +999,68 @@ export default function HomePage() {
             </section>
           )}
 
-          {!showFiles && !docPaneVisible && (
+          {!showFiles && !showAI && !docPaneVisible && (
             <>
               <UsageChart usageMap={usageMap} />
             </>
+          )}
+
+          {showAI && !docPaneVisible && (
+            <section id="ai-section" className="notion-ai-section">
+              <article className="notion-ai-shell" aria-live="polite">
+                <input
+                  ref={aiImageInputRef}
+                  type="file"
+                  accept="image/*"
+                  className="sr-only"
+                  onChange={handleAIImageChange}
+                />
+
+                <div className="notion-ai-actions-simple">
+                  <button
+                    type="button"
+                    className="btn notion-ai-action-chip"
+                    onClick={openAIImagePicker}
+                    disabled={isExtracting}
+                  >
+                    {isExtracting ? '图像识别中...' : '图像识别'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-primary notion-ai-action-chip"
+                    onClick={handleAnalyzeText}
+                    disabled={isAnalyzing || !extractedText.trim()}
+                  >
+                    {isAnalyzing ? '文本摘要中...' : '文本摘要'}
+                  </button>
+                </div>
+
+                {(extractedText || analysisResult) && (
+                  <section className="notion-ai-results">
+                    {extractedText && (
+                      <article className="notion-ai-output">
+                        <h3>识别结果</h3>
+                        <pre>{extractedText}</pre>
+                      </article>
+                    )}
+
+                    {analysisResult && (
+                      <article className="notion-ai-output">
+                        <h3>摘要结果</h3>
+                        <p>{analysisResult.summary || '暂无摘要结果。'}</p>
+                        <h4>关键词</h4>
+                        <ul>
+                          {(analysisResult.keywords || []).map((keyword, index) => (
+                            <li key={`${keyword}-${index}`}>{keyword}</li>
+                          ))}
+                        </ul>
+                      </article>
+                    )}
+                  </section>
+                )}
+
+              </article>
+            </section>
           )}
 
           {showFiles && !docPaneVisible && (
