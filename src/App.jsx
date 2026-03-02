@@ -2,6 +2,7 @@ import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
 import HomePage from './pages/Home.jsx';
 import AuthPage from './pages/Auth.jsx';
 import DocumentDetail from './pages/DocumentDetail.jsx';
+import InviteJoinPage from './pages/InviteJoin.jsx';
 
 export default function App() {
   return (
@@ -10,6 +11,7 @@ export default function App() {
         <Route path="/" element={<HomePage />} />
         <Route path="/login" element={<AuthPage />} />
         <Route path="/document/:docId" element={<DocumentDetail />} />
+        <Route path="/invite/:token" element={<InviteJoinPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </HashRouter>

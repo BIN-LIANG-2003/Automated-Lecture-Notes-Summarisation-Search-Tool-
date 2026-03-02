@@ -75,6 +75,8 @@ const upsertAccount = (rawList, account) => {
 
 const memberCountOfWorkspace = (workspace, accountName) => {
   if (!workspace) return 0;
+  const countFromServer = Number(workspace.members_count ?? workspace.membersCount);
+  if (Number.isFinite(countFromServer) && countFromServer > 0) return countFromServer;
   const bag = new Set();
   const owner = String(accountName || '').trim();
   if (owner) bag.add(owner);
@@ -190,8 +192,11 @@ export default function HomePage() {
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceActionLoading, setWorkspaceActionLoading] = useState(false);
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
   const [workspaceInviteDraft, setWorkspaceInviteDraft] = useState('');
+  const [latestInviteLinks, setLatestInviteLinks] = useState([]);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
   const [savedAccounts, setSavedAccounts] = useState(() => normalizeAccounts(loadAccounts()));
@@ -233,12 +238,72 @@ export default function HomePage() {
     () => memberCountOfWorkspace(activeWorkspace, accountName),
     [activeWorkspace, accountName]
   );
-  const inviteCount = Array.isArray(activeWorkspace?.invites) ? activeWorkspace.invites.length : 0;
+  const inviteItems = useMemo(
+    () => (Array.isArray(activeWorkspace?.invites) ? activeWorkspace.invites : []),
+    [activeWorkspace?.invites]
+  );
+  const inviteCount = inviteItems.length;
+  const pendingRequestCount = useMemo(
+    () =>
+      inviteItems.filter((item) => {
+        if (typeof item === 'string') return false;
+        return item?.status === 'requested';
+      }).length,
+    [inviteItems]
+  );
   const workspaceInviteLink = useMemo(() => {
-    if (!activeWorkspace?.id) return '';
-    const root = window.location.origin + window.location.pathname;
-    return `${root}#/workspace/${activeWorkspace.id}/invite`;
-  }, [activeWorkspace?.id]);
+    if (latestInviteLinks.length) return latestInviteLinks[0];
+    const latestInvite = inviteItems.find((item) => typeof item === 'object' && item?.invite_url);
+    return latestInvite?.invite_url || '';
+  }, [latestInviteLinks, inviteItems]);
+
+  const refreshWorkspaces = async (options = {}) => {
+    const preserveActive = options.preserveActive ?? true;
+    const preferredWorkspaceId = String(options.preferredWorkspaceId || '');
+
+    if (!isLoggedIn || !username) {
+      const localState = loadWorkspaceState(accountName);
+      const activeId = preserveActive && workspaceState?.activeWorkspaceId &&
+        localState.workspaces.some((item) => item.id === workspaceState.activeWorkspaceId)
+        ? workspaceState.activeWorkspaceId
+        : localState.activeWorkspaceId;
+      const nextState = {
+        activeWorkspaceId: activeId,
+        workspaces: localState.workspaces || [],
+      };
+      setWorkspaceState(nextState);
+      const current = nextState.workspaces.find((item) => item.id === nextState.activeWorkspaceId) || nextState.workspaces[0];
+      setWorkspaceNameDraft(current?.name || '');
+      return nextState;
+    }
+
+    setWorkspaceLoading(true);
+    try {
+      const res = await fetch(`/api/workspaces?username=${encodeURIComponent(username)}`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || '加载工作空间失败');
+
+      const list = Array.isArray(payload) ? payload : [];
+      const candidateId =
+        preferredWorkspaceId ||
+        (preserveActive ? workspaceState?.activeWorkspaceId || '' : '');
+      const hasCandidate = list.some((item) => item.id === candidateId);
+      const activeId = hasCandidate ? candidateId : (list[0]?.id || '');
+      const nextState = {
+        activeWorkspaceId: activeId,
+        workspaces: list,
+      };
+      setWorkspaceState(nextState);
+      const current = list.find((item) => item.id === activeId) || list[0] || null;
+      setWorkspaceNameDraft(current?.name || '');
+      return nextState;
+    } catch (err) {
+      console.error('Failed to refresh workspaces', err);
+      return workspaceState;
+    } finally {
+      setWorkspaceLoading(false);
+    }
+  };
 
   const fetchDocuments = async () => {
     if (!username) {
@@ -303,23 +368,19 @@ export default function HomePage() {
   }, [savedAccounts]);
 
   useEffect(() => {
-    const nextWorkspaceState = loadWorkspaceState(accountName);
-    setWorkspaceState(nextWorkspaceState);
-    const currentWorkspace =
-      nextWorkspaceState.workspaces.find((item) => item.id === nextWorkspaceState.activeWorkspaceId) ||
-      nextWorkspaceState.workspaces[0] ||
-      null;
-    setWorkspaceNameDraft(currentWorkspace?.name || '');
+    refreshWorkspaces({ preserveActive: false });
     setWorkspaceInviteDraft('');
+    setLatestInviteLinks([]);
     setInviteCopied(false);
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
-  }, [accountName]);
+  }, [accountName, isLoggedIn, username]);
 
   useEffect(() => {
+    if (isLoggedIn) return;
     persistWorkspaceState(accountName, workspaceState);
-  }, [accountName, workspaceState]);
+  }, [accountName, workspaceState, isLoggedIn]);
 
   useEffect(() => {
     if (!username) return;
@@ -512,6 +573,7 @@ export default function HomePage() {
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
     setInviteCopied(false);
+    setLatestInviteLinks([]);
   };
 
   const handleSignOut = ({ forgetCurrent = false } = {}) => {
@@ -567,10 +629,29 @@ export default function HomePage() {
     setSavedAccounts((prev) => upsertAccount(prev, target));
   };
 
-  const handleCreateWorkspace = () => {
+  const handleCreateWorkspace = async () => {
     const proposedName = window.prompt('请输入工作空间名称：', `${accountName} 的工作空间`);
     if (proposedName === null) return;
     const nextName = proposedName.trim() || `${accountName} 的工作空间`;
+
+    if (isLoggedIn && username) {
+      setWorkspaceActionLoading(true);
+      try {
+        const res = await fetch('/api/workspaces', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, name: nextName }),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || '新建工作空间失败');
+        await refreshWorkspaces({ preferredWorkspaceId: payload.id, preserveActive: false });
+      } catch (err) {
+        alert(err.message || '新建工作空间失败');
+      } finally {
+        setWorkspaceActionLoading(false);
+      }
+      return;
+    }
 
     const nextWorkspace = createWorkspace(accountName, {
       name: nextName,
@@ -604,6 +685,28 @@ export default function HomePage() {
       alert('工作空间名称不能为空。');
       return;
     }
+    if (isLoggedIn && username) {
+      setWorkspaceActionLoading(true);
+      fetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username,
+          name: nextName,
+        }),
+      })
+        .then(async (res) => {
+          const payload = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(payload.error || '保存工作空间设置失败');
+          await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+          setWorkspaceSettingsOpen(false);
+        })
+        .catch((err) => {
+          alert(err.message || '保存工作空间设置失败');
+        })
+        .finally(() => setWorkspaceActionLoading(false));
+      return;
+    }
     setWorkspaceState((prev) => ({
       ...prev,
       workspaces: prev.workspaces.map((item) =>
@@ -618,7 +721,7 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
   };
 
-  const handleInviteMembers = () => {
+  const handleInviteMembers = async () => {
     if (!activeWorkspace) return;
     const candidates = workspaceInviteDraft
       .split(/[,;\n]/)
@@ -632,6 +735,43 @@ export default function HomePage() {
     const invalidEmails = candidates.filter((email) => !EMAIL_REGEX.test(email));
     if (invalidEmails.length) {
       alert(`以下邮箱格式不正确：${invalidEmails.join(', ')}`);
+      return;
+    }
+
+    if (isLoggedIn && username) {
+      setWorkspaceActionLoading(true);
+      try {
+        const res = await fetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username,
+            emails: candidates,
+            expiry_days: 7,
+          }),
+        });
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || '创建邀请失败');
+
+        const links = Array.isArray(payload.created)
+          ? payload.created.map((item) => item?.invite_url).filter(Boolean)
+          : [];
+        setLatestInviteLinks(links);
+        setWorkspaceInviteDraft('');
+        setInviteCopied(false);
+        await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+
+        const failedEmails = Array.isArray(payload.send_errors)
+          ? payload.send_errors.map((item) => item?.email).filter(Boolean)
+          : [];
+        if (failedEmails.length) {
+          alert(`以下邮箱未发送成功（通常是 Resend 配置问题）：${failedEmails.join(', ')}`);
+        }
+      } catch (err) {
+        alert(err.message || '创建邀请失败');
+      } finally {
+        setWorkspaceActionLoading(false);
+      }
       return;
     }
 
@@ -650,24 +790,93 @@ export default function HomePage() {
     setInviteCopied(false);
   };
 
-  const handleRemoveInvite = (email) => {
+  const handleRemoveInvite = async (inviteItem) => {
     if (!activeWorkspace) return;
-    const target = String(email || '').trim().toLowerCase();
-    if (!target) return;
+    const target =
+      typeof inviteItem === 'string'
+        ? inviteItem
+        : inviteItem?.email || '';
+    const targetInvitationId =
+      typeof inviteItem === 'object' && inviteItem
+        ? Number(inviteItem.id)
+        : NaN;
+    const normalizedTarget = String(target || '').trim().toLowerCase();
+    const hasServerInvitationId = Number.isFinite(targetInvitationId) && targetInvitationId > 0;
+
+    if (isLoggedIn && username && hasServerInvitationId) {
+      setWorkspaceActionLoading(true);
+      try {
+        const res = await fetch(
+          `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${targetInvitationId}`,
+          {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username }),
+          }
+        );
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || '移除邀请失败');
+        await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+      } catch (err) {
+        alert(err.message || '移除邀请失败');
+      } finally {
+        setWorkspaceActionLoading(false);
+      }
+      return;
+    }
+
+    const targetEmail = normalizedTarget;
+    if (!targetEmail) return;
     setWorkspaceState((prev) => ({
       ...prev,
       workspaces: prev.workspaces.map((item) => {
         if (item.id !== activeWorkspace.id) return item;
         return {
           ...item,
-          invites: (item.invites || []).filter((invite) => invite.toLowerCase() !== target),
+          invites: (item.invites || []).filter((invite) => {
+            if (typeof invite === 'string') return invite.toLowerCase() !== targetEmail;
+            const inviteEmail = String(invite?.email || '').trim().toLowerCase();
+            return inviteEmail !== targetEmail;
+          }),
         };
       }),
     }));
   };
 
+  const handleReviewInvitation = async (inviteItem, action) => {
+    if (!activeWorkspace || !isLoggedIn || !username) return;
+    const invitationId = Number(inviteItem?.id);
+    if (!Number.isFinite(invitationId) || invitationId <= 0) return;
+    if (!['approve', 'reject'].includes(action)) return;
+
+    setWorkspaceActionLoading(true);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${invitationId}/review`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username,
+            action,
+          }),
+        }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || '审批失败');
+      await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+    } catch (err) {
+      alert(err.message || '审批失败');
+    } finally {
+      setWorkspaceActionLoading(false);
+    }
+  };
+
   const handleCopyInviteLink = async () => {
-    if (!workspaceInviteLink) return;
+    if (!workspaceInviteLink) {
+      alert('当前没有可复制的邀请链接。');
+      return;
+    }
     try {
       await navigator.clipboard.writeText(workspaceInviteLink);
       setInviteCopied(true);
@@ -791,7 +1000,12 @@ export default function HomePage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const detail = [data?.error, data?.details?.huggingface, data?.details?.local].filter(Boolean).join(' | ');
+        const runtimeHints = Array.isArray(data?.details?.runtime?.hints)
+          ? data.details.runtime.hints.join(' | ')
+          : '';
+        const detail = [data?.error, data?.details?.huggingface, data?.details?.local, runtimeHints]
+          .filter(Boolean)
+          .join(' | ');
         alert(`文字提取失败：${detail || '服务异常'}`);
         return;
       }
@@ -1089,7 +1303,9 @@ export default function HomePage() {
                 <strong>{activeWorkspace?.name || `${accountName} 的工作空间`}</strong>
                 <p>
                   {isLoggedIn
-                    ? `${activeWorkspace?.plan || '免费版'} · ${workspaceMemberCount || 1}位成员`
+                    ? `${activeWorkspace?.plan || '免费版'} · ${workspaceMemberCount || 1}位成员${
+                        pendingRequestCount ? ` · ${pendingRequestCount}条待确认` : ''
+                      }`
                     : '访客模式'}
                 </p>
               </div>
@@ -1105,6 +1321,12 @@ export default function HomePage() {
                   setWorkspaceInviteOpen(false);
                   setAccountManagerOpen(false);
                 }}
+                disabled={
+                  !activeWorkspace ||
+                  workspaceLoading ||
+                  workspaceActionLoading ||
+                  (isLoggedIn && activeWorkspace?.is_owner === false)
+                }
               >
                 设置
               </button>
@@ -1117,6 +1339,12 @@ export default function HomePage() {
                   setAccountManagerOpen(false);
                   setInviteCopied(false);
                 }}
+                disabled={
+                  !activeWorkspace ||
+                  workspaceLoading ||
+                  workspaceActionLoading ||
+                  (isLoggedIn && activeWorkspace?.is_owner === false)
+                }
               >
                 邀请成员
               </button>
@@ -1144,6 +1372,7 @@ export default function HomePage() {
                 type="button"
                 className={`notion-space-switch ${workspace.id === workspaceState.activeWorkspaceId ? 'active' : ''}`}
                 onClick={() => handleSelectWorkspace(workspace.id)}
+                disabled={workspaceLoading || workspaceActionLoading}
               >
                 <span className="notion-space-switch-main">
                   <span className="notion-avatar" aria-hidden="true">
@@ -1155,7 +1384,12 @@ export default function HomePage() {
               </button>
             ))}
 
-            <button type="button" className="notion-plus-link" onClick={handleCreateWorkspace}>
+            <button
+              type="button"
+              className="notion-plus-link"
+              onClick={handleCreateWorkspace}
+              disabled={workspaceLoading || workspaceActionLoading}
+            >
               + 新建工作空间
             </button>
 
@@ -1195,12 +1429,23 @@ export default function HomePage() {
                   value={workspaceNameDraft}
                   onChange={(event) => setWorkspaceNameDraft(event.target.value)}
                   placeholder="输入工作空间名称"
+                  disabled={workspaceActionLoading}
                 />
                 <div className="notion-inline-panel-actions">
-                  <button type="button" className="btn btn-primary" onClick={handleSaveWorkspaceSettings}>
-                    保存
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleSaveWorkspaceSettings}
+                    disabled={workspaceActionLoading}
+                  >
+                    {workspaceActionLoading ? '保存中...' : '保存'}
                   </button>
-                  <button type="button" className="btn" onClick={() => setWorkspaceSettingsOpen(false)}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setWorkspaceSettingsOpen(false)}
+                    disabled={workspaceActionLoading}
+                  >
                     取消
                   </button>
                 </div>
@@ -1219,12 +1464,23 @@ export default function HomePage() {
                   value={workspaceInviteDraft}
                   onChange={(event) => setWorkspaceInviteDraft(event.target.value)}
                   placeholder="输入邮箱，多个可用逗号分隔"
+                  disabled={workspaceActionLoading}
                 />
                 <div className="notion-inline-panel-actions">
-                  <button type="button" className="btn btn-primary" onClick={handleInviteMembers}>
-                    添加邀请
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleInviteMembers}
+                    disabled={workspaceActionLoading}
+                  >
+                    {workspaceActionLoading ? '处理中...' : '添加邀请'}
                   </button>
-                  <button type="button" className="btn" onClick={handleCopyInviteLink}>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={handleCopyInviteLink}
+                    disabled={workspaceActionLoading}
+                  >
                     {inviteCopied ? '已复制链接' : '复制邀请链接'}
                   </button>
                 </div>
@@ -1233,14 +1489,57 @@ export default function HomePage() {
                 )}
                 {inviteCount > 0 && (
                   <ul className="notion-inline-list">
-                    {(activeWorkspace?.invites || []).map((invite) => (
-                      <li key={invite}>
-                        <span>{invite}</span>
-                        <button type="button" className="notion-inline-list-remove" onClick={() => handleRemoveInvite(invite)}>
-                          移除
-                        </button>
-                      </li>
-                    ))}
+                    {inviteItems.map((invite) => {
+                      const inviteId = typeof invite === 'object' ? invite?.id || invite?.email : invite;
+                      const inviteEmail = typeof invite === 'string' ? invite : invite?.email;
+                      const inviteStatus = typeof invite === 'object' ? invite?.status || 'pending' : 'pending';
+                      const isRequested = inviteStatus === 'requested';
+
+                      return (
+                        <li key={`${inviteId}`}>
+                          <span>{inviteEmail}</span>
+                          <div className="notion-inline-list-actions">
+                            <span className={`notion-invite-status notion-invite-status-${inviteStatus}`}>
+                              {inviteStatus === 'requested'
+                                ? '待确认'
+                                : inviteStatus === 'pending'
+                                  ? '待申请'
+                                  : inviteStatus}
+                            </span>
+                            {isRequested && (
+                              <>
+                                <button
+                                  type="button"
+                                  className="notion-inline-list-switch"
+                                  onClick={() => handleReviewInvitation(invite, 'approve')}
+                                  disabled={workspaceActionLoading}
+                                >
+                                  通过
+                                </button>
+                                <button
+                                  type="button"
+                                  className="notion-inline-list-remove"
+                                  onClick={() => handleReviewInvitation(invite, 'reject')}
+                                  disabled={workspaceActionLoading}
+                                >
+                                  拒绝
+                                </button>
+                              </>
+                            )}
+                            {!isRequested && (
+                              <button
+                                type="button"
+                                className="notion-inline-list-remove"
+                                onClick={() => handleRemoveInvite(invite)}
+                                disabled={workspaceActionLoading}
+                              >
+                                移除
+                              </button>
+                            )}
+                          </div>
+                        </li>
+                      );
+                    })}
                   </ul>
                 )}
               </section>

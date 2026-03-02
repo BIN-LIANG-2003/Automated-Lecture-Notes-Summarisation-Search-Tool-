@@ -837,6 +837,11 @@ body.notion-home-body .skip-link:focus-visible{
   background:#f1f1ee;
 }
 
+.notion-chip-btn:disabled{
+  opacity:.55;
+  cursor:not-allowed;
+}
+
 .notion-account-email-row{
   margin-top:10px;
   padding:8px;
@@ -886,6 +891,11 @@ body.notion-home-body .skip-link:focus-visible{
   font-weight:600;
 }
 
+.notion-space-switch:disabled{
+  opacity:.6;
+  cursor:not-allowed;
+}
+
 .notion-space-switch-main{
   display:flex;
   align-items:center;
@@ -914,6 +924,11 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-plus-link:hover{
   background:#edf3ff;
+}
+
+.notion-plus-link:disabled{
+  opacity:.6;
+  cursor:not-allowed;
 }
 
 .notion-account-divider{
@@ -1003,6 +1018,37 @@ body.notion-home-body .skip-link:focus-visible{
   display:flex;
   align-items:center;
   gap:6px;
+}
+
+.notion-invite-status{
+  display:inline-flex;
+  align-items:center;
+  border-radius:999px;
+  padding:2px 8px;
+  font-size:11px;
+  font-weight:600;
+}
+
+.notion-invite-status-pending{
+  background:#eef2ff;
+  color:#3f51b5;
+}
+
+.notion-invite-status-requested{
+  background:#fff6ea;
+  color:#b45309;
+}
+
+.notion-invite-status-approved{
+  background:#ecfdf3;
+  color:#027a48;
+}
+
+.notion-invite-status-rejected,
+.notion-invite-status-cancelled,
+.notion-invite-status-expired{
+  background:#fff1f1;
+  color:#b4232f;
 }
 
 .notion-inline-list-switch,

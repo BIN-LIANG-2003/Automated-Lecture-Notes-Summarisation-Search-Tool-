@@ -7,7 +7,7 @@ import mimetypes
 import re
 import requests
 from html import escape as html_escape
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify, send_from_directory, redirect, send_file
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -137,6 +137,13 @@ S3_BUCKET = os.environ.get('S3_BUCKET_NAME')
 S3_KEY = os.environ.get('AWS_ACCESS_KEY_ID')
 S3_SECRET = os.environ.get('AWS_SECRET_ACCESS_KEY')
 S3_REGION = os.environ.get('AWS_REGION', 'us-west-2')
+
+# ================= 工作空间邀请配置 =================
+DEFAULT_INVITE_BASE_URL = 'https://automated-lecture-notes-summarisation.onrender.com'
+INVITE_BASE_URL = (os.environ.get('APP_BASE_URL') or DEFAULT_INVITE_BASE_URL).rstrip('/')
+RESEND_API_KEY = (os.environ.get('RESEND_API_KEY') or '').strip()
+RESEND_FROM_EMAIL = (os.environ.get('RESEND_FROM_EMAIL') or 'StudyHub <onboarding@resend.dev>').strip()
+INVITE_EXPIRY_DAYS = 7
 
 # 创建 S3 客户端
 try:
@@ -274,9 +281,69 @@ def init_db():
         );
     '''
 
+    workspaces_sql = f'''
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            plan TEXT NOT NULL DEFAULT '免费版',
+            owner_username TEXT NOT NULL,
+            created_at {timestamp_type},
+            updated_at {timestamp_type}
+        );
+    '''
+
+    workspace_members_sql = f'''
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            id {id_type},
+            workspace_id TEXT NOT NULL,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'member',
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at {timestamp_type}
+        );
+    '''
+
+    workspace_invitations_sql = f'''
+        CREATE TABLE IF NOT EXISTS workspace_invitations (
+            id {id_type},
+            workspace_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            token TEXT UNIQUE NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            expires_at {timestamp_type},
+            created_at {timestamp_type},
+            requested_username TEXT,
+            requested_at {timestamp_type},
+            reviewed_by TEXT,
+            reviewed_at {timestamp_type},
+            review_note TEXT
+        );
+    '''
+
+    workspace_members_unique_sql = '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
+        ON workspace_members(workspace_id, username);
+    '''
+
+    workspace_owner_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_workspaces_owner_username
+        ON workspaces(owner_username);
+    '''
+
+    workspace_invitation_lookup_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_workspace_invitations_workspace_status
+        ON workspace_invitations(workspace_id, status);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
+        conn.execute(workspaces_sql)
+        conn.execute(workspace_members_sql)
+        conn.execute(workspace_invitations_sql)
+        conn.execute(workspace_members_unique_sql)
+        conn.execute(workspace_owner_idx_sql)
+        conn.execute(workspace_invitation_lookup_sql)
         ensure_documents_columns(conn)
         conn.commit()
         print("✅ Database tables initialized successfully.")
@@ -289,6 +356,247 @@ def init_db():
 init_db()
 
 # ================= 辅助函数 =================
+def utcnow_iso():
+    return datetime.utcnow().isoformat()
+
+
+def row_to_dict(row):
+    if row is None:
+        return None
+    if isinstance(row, dict):
+        return dict(row)
+    if hasattr(row, 'keys'):
+        return {key: row[key] for key in row.keys()}
+    return dict(row)
+
+
+def parse_iso_datetime(value):
+    raw = str(value or '').strip()
+    if not raw:
+        return None
+    normalized = raw.replace('Z', '+00:00')
+    try:
+        dt = datetime.fromisoformat(normalized)
+    except Exception:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+    return dt
+
+
+def invitation_is_expired(expires_at):
+    dt = parse_iso_datetime(expires_at)
+    if dt is None:
+        return True
+    return dt < datetime.utcnow()
+
+
+def normalize_email(value):
+    return str(value or '').strip().lower()
+
+
+def is_valid_email(value):
+    email = normalize_email(value)
+    return bool(re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email))
+
+
+def expires_at_for_days(days):
+    safe_days = max(1, int(days or INVITE_EXPIRY_DAYS))
+    return (datetime.utcnow() + timedelta(days=safe_days)).isoformat()
+
+
+def create_invite_token():
+    return f'{uuid.uuid4().hex}{uuid.uuid4().hex}'
+
+
+def build_invite_url(token):
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return ''
+    return f'{INVITE_BASE_URL}/#/invite/{safe_token}'
+
+
+def send_workspace_invite_email(to_email, workspace_name, inviter_username, invite_url, expires_at):
+    recipient = normalize_email(to_email)
+    if not recipient:
+        return False, 'Missing recipient email'
+    if not RESEND_API_KEY:
+        return False, 'RESEND_API_KEY is not configured'
+
+    expiry_label = expires_at or ''
+    subject = f'邀请加入工作空间：{workspace_name}'
+    html = f'''
+        <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
+          <h2 style="margin-bottom: 12px;">你收到了 StudyHub 工作空间邀请</h2>
+          <p><strong>{inviter_username}</strong> 邀请你加入工作空间：<strong>{workspace_name}</strong>。</p>
+          <p>该邀请需要空间拥有者确认后才会生效。</p>
+          <p style="margin: 18px 0;">
+            <a href="{invite_url}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; text-decoration: none; background: #2563eb; color: #ffffff;">
+              查看邀请并申请加入
+            </a>
+          </p>
+          <p>邀请有效期至：{expiry_label}</p>
+        </div>
+    '''
+    payload = {
+        'from': RESEND_FROM_EMAIL,
+        'to': [recipient],
+        'subject': subject,
+        'html': html,
+    }
+    try:
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {RESEND_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json=payload,
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            return False, f'Resend failed ({response.status_code}): {response.text[:220]}'
+        return True, ''
+    except Exception as e:
+        return False, f'Resend request error: {e}'
+
+
+def expire_workspace_invitations(conn, workspace_id=''):
+    now_iso = utcnow_iso()
+    if workspace_id:
+        conn.execute(
+            '''
+            UPDATE workspace_invitations
+            SET status = 'expired'
+            WHERE workspace_id = ?
+              AND status IN ('pending', 'requested')
+              AND expires_at < ?
+            ''',
+            (workspace_id, now_iso)
+        )
+    else:
+        conn.execute(
+            '''
+            UPDATE workspace_invitations
+            SET status = 'expired'
+            WHERE status IN ('pending', 'requested')
+              AND expires_at < ?
+            ''',
+            (now_iso,)
+        )
+
+
+def serialize_invitation_row(row):
+    data = row_to_dict(row) or {}
+    return {
+        'id': data.get('id'),
+        'workspace_id': data.get('workspace_id', ''),
+        'email': data.get('email', ''),
+        'token': data.get('token', ''),
+        'status': data.get('status', ''),
+        'expires_at': data.get('expires_at', ''),
+        'created_at': data.get('created_at', ''),
+        'requested_username': data.get('requested_username', ''),
+        'requested_at': data.get('requested_at', ''),
+        'reviewed_by': data.get('reviewed_by', ''),
+        'reviewed_at': data.get('reviewed_at', ''),
+        'review_note': data.get('review_note', ''),
+        'invite_url': build_invite_url(data.get('token', '')),
+    }
+
+
+def ensure_owner_membership(conn, workspace_id, owner_username):
+    cursor = conn.execute(
+        'SELECT id FROM workspace_members WHERE workspace_id = ? AND username = ?',
+        (workspace_id, owner_username)
+    )
+    existing = cursor.fetchone()
+    if existing:
+        conn.execute(
+            '''
+            UPDATE workspace_members
+            SET role = ?, status = ?
+            WHERE workspace_id = ? AND username = ?
+            ''',
+            ('owner', 'active', workspace_id, owner_username)
+        )
+    else:
+        conn.execute(
+            '''
+            INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            ''',
+            (workspace_id, owner_username, 'owner', 'active', utcnow_iso())
+        )
+
+
+def get_workspace_record(conn, workspace_id):
+    cursor = conn.execute('SELECT * FROM workspaces WHERE id = ?', (workspace_id,))
+    return row_to_dict(cursor.fetchone())
+
+
+def workspace_belongs_to_user(conn, workspace_id, username):
+    if not username:
+        return False
+    cursor = conn.execute(
+        '''
+        SELECT 1
+        FROM workspace_members
+        WHERE workspace_id = ? AND username = ? AND status = 'active'
+        ''',
+        (workspace_id, username)
+    )
+    return cursor.fetchone() is not None
+
+
+def get_workspace_details(conn, workspace_row, for_username=''):
+    workspace = row_to_dict(workspace_row) or {}
+    workspace_id = workspace.get('id', '')
+    owner_username = workspace.get('owner_username', '')
+    is_owner = bool(for_username and for_username == owner_username)
+
+    members_cursor = conn.execute(
+        '''
+        SELECT username, role, status, created_at
+        FROM workspace_members
+        WHERE workspace_id = ? AND status = 'active'
+        ORDER BY created_at ASC
+        ''',
+        (workspace_id,)
+    )
+    members = [row_to_dict(item) for item in members_cursor.fetchall()]
+
+    pending_requests = []
+    invitations = []
+    if is_owner:
+        invite_cursor = conn.execute(
+            '''
+            SELECT *
+            FROM workspace_invitations
+            WHERE workspace_id = ?
+              AND status IN ('pending', 'requested')
+            ORDER BY created_at DESC
+            ''',
+            (workspace_id,)
+        )
+        invitations = [serialize_invitation_row(item) for item in invite_cursor.fetchall()]
+        pending_requests = [item for item in invitations if item.get('status') == 'requested']
+
+    return {
+        'id': workspace_id,
+        'name': workspace.get('name', ''),
+        'plan': workspace.get('plan', '免费版'),
+        'owner_username': owner_username,
+        'created_at': workspace.get('created_at', ''),
+        'updated_at': workspace.get('updated_at', ''),
+        'is_owner': is_owner,
+        'members_count': len(members),
+        'members': members if is_owner else [],
+        'invites': invitations,
+        'pending_requests': pending_requests,
+    }
+
+
 def allowed_file(filename):
     return '.' in filename and \
            filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
@@ -1269,6 +1577,573 @@ def google_login():
         print(f"Google login error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
+
+@app.route('/api/workspaces', methods=['GET'])
+def get_workspaces():
+    username = (request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        expire_workspace_invitations(conn)
+
+        owned_cursor = conn.execute(
+            'SELECT * FROM workspaces WHERE owner_username = ? ORDER BY created_at DESC',
+            (username,)
+        )
+        owned_rows = [row_to_dict(item) for item in owned_cursor.fetchall()]
+
+        member_cursor = conn.execute(
+            '''
+            SELECT workspace_id
+            FROM workspace_members
+            WHERE username = ? AND status = 'active'
+            ''',
+            (username,)
+        )
+        member_workspace_ids = [
+            row_to_dict(item).get('workspace_id')
+            for item in member_cursor.fetchall()
+            if row_to_dict(item).get('workspace_id')
+        ]
+        owned_ids = {item.get('id') for item in owned_rows}
+        extra_ids = [workspace_id for workspace_id in member_workspace_ids if workspace_id not in owned_ids]
+
+        extra_rows = []
+        if extra_ids:
+            placeholders = ','.join(['?'] * len(extra_ids))
+            query = f'SELECT * FROM workspaces WHERE id IN ({placeholders}) ORDER BY created_at DESC'
+            extra_cursor = conn.execute(query, tuple(extra_ids))
+            extra_rows = [row_to_dict(item) for item in extra_cursor.fetchall()]
+
+        workspace_rows = [*owned_rows, *extra_rows]
+        if not workspace_rows:
+            # 首次登录自动创建默认空间，确保基础功能可用。
+            now_iso = utcnow_iso()
+            workspace_id = f'ws-{uuid.uuid4().hex[:12]}'
+            conn.execute(
+                '''
+                INSERT INTO workspaces (id, name, plan, owner_username, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (workspace_id, f'{username} 的工作空间', '免费版', username, now_iso, now_iso)
+            )
+            ensure_owner_membership(conn, workspace_id, username)
+            conn.commit()
+            workspace_rows = [{
+                'id': workspace_id,
+                'name': f'{username} 的工作空间',
+                'plan': '免费版',
+                'owner_username': username,
+                'created_at': now_iso,
+                'updated_at': now_iso,
+            }]
+        else:
+            conn.commit()
+
+        payload = [get_workspace_details(conn, item, username) for item in workspace_rows]
+        return jsonify(payload), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces', methods=['POST'])
+def create_workspace():
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    name = (data.get('name') or '').strip() or f'{username} 的工作空间'
+    plan = (data.get('plan') or '').strip() or '免费版'
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    workspace_id = f'ws-{uuid.uuid4().hex[:12]}'
+    now_iso = utcnow_iso()
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        conn.execute(
+            '''
+            INSERT INTO workspaces (id, name, plan, owner_username, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (workspace_id, name, plan, username, now_iso, now_iso)
+        )
+        ensure_owner_membership(conn, workspace_id, username)
+        conn.commit()
+        workspace_row = get_workspace_record(conn, workspace_id)
+        return jsonify(get_workspace_details(conn, workspace_row, username)), 201
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>', methods=['PUT'])
+def update_workspace(workspace_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    name = (data.get('name') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+    if not name:
+        return jsonify({'error': 'name is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can update settings'}), 403
+
+        conn.execute(
+            'UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?',
+            (name, utcnow_iso(), workspace_id)
+        )
+        conn.commit()
+        updated = get_workspace_record(conn, workspace_id)
+        return jsonify(get_workspace_details(conn, updated, username)), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>/invitations', methods=['GET'])
+def list_workspace_invitations(workspace_id):
+    username = (request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can view invitations'}), 403
+
+        expire_workspace_invitations(conn, workspace_id)
+        conn.commit()
+        cursor = conn.execute(
+            '''
+            SELECT *
+            FROM workspace_invitations
+            WHERE workspace_id = ?
+            ORDER BY created_at DESC
+            LIMIT 200
+            ''',
+            (workspace_id,)
+        )
+        invitations = [serialize_invitation_row(item) for item in cursor.fetchall()]
+        return jsonify(invitations), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>/invitations', methods=['POST'])
+def create_workspace_invitations(workspace_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    raw_emails = data.get('emails', [])
+    expiry_days = data.get('expiry_days', INVITE_EXPIRY_DAYS)
+
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    if isinstance(raw_emails, str):
+        candidates = [item.strip() for item in re.split(r'[\n,;]+', raw_emails) if item.strip()]
+    elif isinstance(raw_emails, list):
+        candidates = [str(item).strip() for item in raw_emails if str(item).strip()]
+    else:
+        return jsonify({'error': 'emails must be an array or a comma-separated string'}), 400
+
+    normalized_emails = []
+    invalid_emails = []
+    for item in candidates:
+        email = normalize_email(item)
+        if is_valid_email(email):
+            normalized_emails.append(email)
+        else:
+            invalid_emails.append(item)
+    normalized_emails = list(dict.fromkeys(normalized_emails))
+
+    if not normalized_emails:
+        return jsonify({'error': 'No valid email addresses provided', 'invalid_emails': invalid_emails}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can invite members'}), 403
+
+        expire_workspace_invitations(conn, workspace_id)
+        now_iso = utcnow_iso()
+        expires_at = expires_at_for_days(expiry_days)
+        created_items = []
+        send_errors = []
+
+        for email in normalized_emails:
+            conn.execute(
+                '''
+                UPDATE workspace_invitations
+                SET status = 'cancelled', reviewed_by = ?, reviewed_at = ?, review_note = ?
+                WHERE workspace_id = ?
+                  AND email = ?
+                  AND status IN ('pending', 'requested')
+                ''',
+                (username, now_iso, 'Replaced by newer invitation', workspace_id, email)
+            )
+
+            token = create_invite_token()
+            conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id, email, token, status, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (workspace_id, email, token, 'pending', expires_at, now_iso)
+            )
+
+            invite_row_cursor = conn.execute(
+                '''
+                SELECT *
+                FROM workspace_invitations
+                WHERE token = ?
+                ''',
+                (token,)
+            )
+            invite_row = row_to_dict(invite_row_cursor.fetchone())
+            invite_payload = serialize_invitation_row(invite_row)
+
+            ok, send_error = send_workspace_invite_email(
+                email,
+                workspace_row.get('name', ''),
+                username,
+                invite_payload.get('invite_url', ''),
+                expires_at
+            )
+            invite_payload['email_sent'] = bool(ok)
+            if not ok:
+                invite_payload['email_error'] = send_error
+                send_errors.append({'email': email, 'error': send_error})
+
+            created_items.append(invite_payload)
+
+        conn.commit()
+        return jsonify({
+            'workspace_id': workspace_id,
+            'created': created_items,
+            'invalid_emails': invalid_emails,
+            'send_errors': send_errors,
+            'requires_owner_confirmation': True,
+        }), 201
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>/invitations/<int:invitation_id>', methods=['DELETE'])
+def cancel_workspace_invitation(workspace_id, invitation_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can cancel invitations'}), 403
+
+        cursor = conn.execute(
+            '''
+            SELECT *
+            FROM workspace_invitations
+            WHERE id = ? AND workspace_id = ?
+            ''',
+            (invitation_id, workspace_id)
+        )
+        invitation = row_to_dict(cursor.fetchone())
+        if not invitation:
+            return jsonify({'error': 'Invitation not found'}), 404
+
+        if invitation.get('status') in ('approved', 'rejected', 'expired', 'cancelled'):
+            return jsonify({'error': f'Invitation is already {invitation.get("status")}'}), 400
+
+        conn.execute(
+            '''
+            UPDATE workspace_invitations
+            SET status = 'cancelled', reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            ''',
+            (username, utcnow_iso(), 'Cancelled by owner', invitation_id)
+        )
+        conn.commit()
+
+        refreshed_cursor = conn.execute(
+            'SELECT * FROM workspace_invitations WHERE id = ?',
+            (invitation_id,)
+        )
+        refreshed = serialize_invitation_row(refreshed_cursor.fetchone())
+        return jsonify(refreshed), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>/invitations/<int:invitation_id>/review', methods=['POST'])
+def review_workspace_invitation(workspace_id, invitation_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    action = (data.get('action') or '').strip().lower()
+    note = (data.get('note') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+    if action not in ('approve', 'reject'):
+        return jsonify({'error': 'action must be approve or reject'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can review requests'}), 403
+
+        expire_workspace_invitations(conn, workspace_id)
+        cursor = conn.execute(
+            '''
+            SELECT *
+            FROM workspace_invitations
+            WHERE id = ? AND workspace_id = ?
+            ''',
+            (invitation_id, workspace_id)
+        )
+        invitation = row_to_dict(cursor.fetchone())
+        if not invitation:
+            return jsonify({'error': 'Invitation not found'}), 404
+        if invitation.get('status') != 'requested':
+            return jsonify({'error': f'Invitation status must be requested, current: {invitation.get("status")}'}), 400
+
+        requested_username = (invitation.get('requested_username') or '').strip()
+        if action == 'approve':
+            if not requested_username:
+                return jsonify({'error': 'No applicant found for this invitation'}), 400
+            user_cursor = conn.execute('SELECT username FROM users WHERE username = ?', (requested_username,))
+            applicant = user_cursor.fetchone()
+            if not applicant:
+                return jsonify({'error': 'Applicant account not found'}), 404
+
+            ensure_owner_membership(conn, workspace_id, workspace_row.get('owner_username', ''))
+            member_cursor = conn.execute(
+                '''
+                SELECT id
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (workspace_id, requested_username)
+            )
+            existing_member = member_cursor.fetchone()
+            if existing_member:
+                conn.execute(
+                    '''
+                    UPDATE workspace_members
+                    SET status = 'active', role = 'member'
+                    WHERE workspace_id = ? AND username = ?
+                    ''',
+                    (workspace_id, requested_username)
+                )
+            else:
+                conn.execute(
+                    '''
+                    INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    ''',
+                    (workspace_id, requested_username, 'member', 'active', utcnow_iso())
+                )
+
+            next_status = 'approved'
+        else:
+            next_status = 'rejected'
+
+        conn.execute(
+            '''
+            UPDATE workspace_invitations
+            SET status = ?, reviewed_by = ?, reviewed_at = ?, review_note = ?
+            WHERE id = ?
+            ''',
+            (next_status, username, utcnow_iso(), note, invitation_id)
+        )
+        conn.commit()
+
+        updated_cursor = conn.execute('SELECT * FROM workspace_invitations WHERE id = ?', (invitation_id,))
+        updated_invitation = serialize_invitation_row(updated_cursor.fetchone())
+        return jsonify(updated_invitation), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/invitations/<token>', methods=['GET'])
+def get_invitation_by_token(token):
+    safe_token = (token or '').strip()
+    username = (request.args.get('username') or '').strip()
+    if not safe_token:
+        return jsonify({'error': 'token is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute(
+            '''
+            SELECT inv.*, ws.name AS workspace_name, ws.owner_username
+            FROM workspace_invitations inv
+            JOIN workspaces ws ON ws.id = inv.workspace_id
+            WHERE inv.token = ?
+            ''',
+            (safe_token,)
+        )
+        invitation = row_to_dict(cursor.fetchone())
+        if not invitation:
+            return jsonify({'error': 'Invitation not found'}), 404
+
+        if invitation.get('status') in ('pending', 'requested') and invitation_is_expired(invitation.get('expires_at')):
+            conn.execute(
+                'UPDATE workspace_invitations SET status = ? WHERE token = ?',
+                ('expired', safe_token)
+            )
+            conn.commit()
+            invitation['status'] = 'expired'
+
+        can_request = False
+        mismatch_reason = ''
+        user_email = ''
+        if username:
+            user_cursor = conn.execute('SELECT email FROM users WHERE username = ?', (username,))
+            user_row = row_to_dict(user_cursor.fetchone()) or {}
+            user_email = normalize_email(user_row.get('email', ''))
+            invite_email = normalize_email(invitation.get('email', ''))
+            if not user_email:
+                mismatch_reason = '当前账号未绑定邮箱，无法验证邀请归属'
+            elif user_email != invite_email:
+                mismatch_reason = '当前账号邮箱与邀请邮箱不匹配'
+            elif invitation.get('status') == 'pending':
+                can_request = True
+            elif invitation.get('status') == 'requested':
+                can_request = invitation.get('requested_username') == username
+
+        payload = serialize_invitation_row(invitation)
+        payload.update({
+            'workspace_name': invitation.get('workspace_name', ''),
+            'owner_username': invitation.get('owner_username', ''),
+            'requires_owner_confirmation': True,
+            'can_request': can_request,
+            'mismatch_reason': mismatch_reason,
+            'viewer_username': username,
+            'viewer_email': user_email,
+        })
+        return jsonify(payload), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/invitations/<token>/request-join', methods=['POST'])
+def request_join_by_invitation(token):
+    safe_token = (token or '').strip()
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    if not safe_token:
+        return jsonify({'error': 'token is required'}), 400
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute(
+            '''
+            SELECT inv.*, ws.name AS workspace_name, ws.owner_username
+            FROM workspace_invitations inv
+            JOIN workspaces ws ON ws.id = inv.workspace_id
+            WHERE inv.token = ?
+            ''',
+            (safe_token,)
+        )
+        invitation = row_to_dict(cursor.fetchone())
+        if not invitation:
+            return jsonify({'error': 'Invitation not found'}), 404
+
+        if invitation.get('status') in ('approved', 'rejected', 'expired', 'cancelled'):
+            return jsonify({'error': f'Invitation is {invitation.get("status")}'}), 400
+        if invitation_is_expired(invitation.get('expires_at')):
+            conn.execute(
+                'UPDATE workspace_invitations SET status = ? WHERE token = ?',
+                ('expired', safe_token)
+            )
+            conn.commit()
+            return jsonify({'error': 'Invitation has expired'}), 400
+
+        user_cursor = conn.execute('SELECT email FROM users WHERE username = ?', (username,))
+        user_row = row_to_dict(user_cursor.fetchone()) or {}
+        user_email = normalize_email(user_row.get('email', ''))
+        invite_email = normalize_email(invitation.get('email', ''))
+        if not user_email:
+            return jsonify({'error': 'Your account has no email address; cannot match invitation'}), 400
+        if user_email != invite_email:
+            return jsonify({'error': 'Your account email does not match this invitation'}), 403
+
+        if invitation.get('status') == 'requested':
+            if invitation.get('requested_username') == username:
+                return jsonify({'message': 'Join request already submitted and pending owner approval'}), 200
+            return jsonify({'error': 'This invitation is already requested by another account'}), 409
+
+        conn.execute(
+            '''
+            UPDATE workspace_invitations
+            SET status = 'requested', requested_username = ?, requested_at = ?, reviewed_by = NULL, reviewed_at = NULL, review_note = ''
+            WHERE token = ?
+            ''',
+            (username, utcnow_iso(), safe_token)
+        )
+        conn.commit()
+
+        refreshed_cursor = conn.execute(
+            '''
+            SELECT inv.*, ws.name AS workspace_name, ws.owner_username
+            FROM workspace_invitations inv
+            JOIN workspaces ws ON ws.id = inv.workspace_id
+            WHERE inv.token = ?
+            ''',
+            (safe_token,)
+        )
+        refreshed = row_to_dict(refreshed_cursor.fetchone())
+        payload = serialize_invitation_row(refreshed)
+        payload.update({
+            'workspace_name': refreshed.get('workspace_name', ''),
+            'owner_username': refreshed.get('owner_username', ''),
+            'requires_owner_confirmation': True,
+        })
+        return jsonify(payload), 200
+    finally:
+        conn.close()
+
+
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     username = request.args.get('username')
@@ -1685,6 +2560,67 @@ def run_local_ocr(img_bytes):
     except Exception as e:
         return '', f'Local OCR error: {e}'
 
+
+def get_ocr_runtime_status():
+    status = {
+        'hf_token_configured': bool(HF_TOKEN),
+        'hf_ocr_model': OCR_MODEL_ID,
+        'hf_model_base_url': HF_MODEL_BASE_URL,
+        'cv2_available': cv2 is not None,
+        'numpy_available': np is not None,
+        'rapidocr_available': RapidOCR is not None,
+        'cv2_import_error': CV2_IMPORT_ERROR,
+        'rapidocr_import_error': RAPIDOCR_IMPORT_ERROR,
+        'local_engine_ready': False,
+        'local_engine_error': '',
+        'hints': [],
+    }
+
+    if status['rapidocr_available'] and status['cv2_available'] and status['numpy_available']:
+        try:
+            get_local_ocr_engine()
+            status['local_engine_ready'] = True
+        except Exception as e:
+            status['local_engine_error'] = str(e)
+    else:
+        missing = []
+        if not status['rapidocr_available']:
+            missing.append('rapidocr_onnxruntime')
+        if not status['cv2_available']:
+            missing.append('opencv-python-headless')
+        if not status['numpy_available']:
+            missing.append('numpy')
+        if missing:
+            status['local_engine_error'] = f"Missing local OCR dependencies: {', '.join(missing)}"
+
+    if not status['hf_token_configured']:
+        status['hints'].append('Set HF_API_TOKEN in Render environment variables to enable remote OCR fallback.')
+
+    local_error_lower = str(status['local_engine_error'] or '').lower()
+    import_error_lower = str(status['rapidocr_import_error'] or '').lower()
+    cv2_error_lower = str(status['cv2_import_error'] or '').lower()
+    joined_errors = ' | '.join([local_error_lower, import_error_lower, cv2_error_lower])
+
+    if 'libgomp.so.1' in joined_errors:
+        status['hints'].append('Install system package libgomp1 in Docker image for onnxruntime.')
+    if 'libgl.so.1' in joined_errors:
+        status['hints'].append('Install libgl1-mesa-glx or libgl1 in Docker image.')
+    if 'libglib-2.0.so.0' in joined_errors:
+        status['hints'].append('Install libglib2.0-0 in Docker image.')
+
+    return status
+
+
+@app.route('/api/ocr/health', methods=['GET'])
+def ocr_health():
+    status = get_ocr_runtime_status()
+    ok = bool(status.get('local_engine_ready') or status.get('hf_token_configured'))
+    status['ok'] = ok
+    status['checked_at'] = utcnow_iso()
+    if not ok:
+        status['hints'].append('Neither remote OCR nor local OCR is ready, image recognition will fail.')
+    return jsonify(status), (200 if ok else 503)
+
 # ==========================================
 # 专家 1 号：视觉专家 (负责看图识字)
 # 对应前端的【按钮 1】
@@ -1764,6 +2700,8 @@ def extract_text_from_image(doc_id=None):
     if local_text:
         return jsonify({"text": local_text, "source": "rapidocr", "note": hf_error or None})
 
+    runtime_status = get_ocr_runtime_status()
+
     if '404' in hf_error:
         hf_error = (
             hf_error
@@ -1777,6 +2715,7 @@ def extract_text_from_image(doc_id=None):
         "details": {
             "huggingface": hf_error,
             "local": local_error,
+            "runtime": runtime_status,
             "hint": "Install/enable RapidOCR fallback or configure another OCR provider."
         }
     }), 502

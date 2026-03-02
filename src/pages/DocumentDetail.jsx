@@ -76,7 +76,12 @@ export default function DocumentDetail() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        const detail = [data?.error, data?.details?.huggingface, data?.details?.local].filter(Boolean).join(' | ');
+        const runtimeHints = Array.isArray(data?.details?.runtime?.hints)
+          ? data.details.runtime.hints.join(' | ')
+          : '';
+        const detail = [data?.error, data?.details?.huggingface, data?.details?.local, runtimeHints]
+          .filter(Boolean)
+          .join(' | ');
         throw new Error(detail || '服务异常');
       }
 
