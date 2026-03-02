@@ -25,6 +25,18 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
 from lxml import etree, html as lxml_html
 
+try:
+    import cv2
+    import numpy as np
+except Exception:
+    cv2 = None
+    np = None
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except Exception:
+    RapidOCR = None
+
 # --- PostgreSQL 驱动 ---
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -47,10 +59,12 @@ ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
 
 # ================= Hugging Face AI 服务配置 =================
-HF_TOKEN = os.environ.get("HF_API_TOKEN")
-headers = {"Authorization": f"Bearer {HF_TOKEN}"}
-OCR_API_URL = "https://api-inference.huggingface.co/models/microsoft/trocr-base-handwritten"
-SUMMARIZER_API_URL = "https://api-inference.huggingface.co/models/facebook/bart-large-cnn"
+HF_TOKEN = (os.environ.get("HF_API_TOKEN") or "").strip()
+HF_MODEL_BASE_URL = (os.environ.get("HF_MODEL_BASE_URL") or "https://router.huggingface.co/hf-inference/models").rstrip("/")
+OCR_MODEL_ID = os.environ.get("HF_OCR_MODEL") or "microsoft/trocr-base-printed"
+SUMMARIZER_MODEL_ID = os.environ.get("HF_SUMMARIZER_MODEL") or "csebuetnlp/mT5_multilingual_XLSum"
+
+_rapid_ocr_engine = None
 
 MIME_BY_EXT = {
     'pdf': 'application/pdf',
@@ -1532,6 +1546,73 @@ def get_document_file(doc_id):
         as_attachment=False
     )
 
+
+def get_hf_headers(content_type=None):
+    if not HF_TOKEN:
+        return None
+    result = {"Authorization": f"Bearer {HF_TOKEN}"}
+    if content_type:
+        result["Content-Type"] = content_type
+    return result
+
+
+def hf_model_url(model_id):
+    return f"{HF_MODEL_BASE_URL}/{model_id}"
+
+
+def hf_error_message(response):
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            if body.get('error'):
+                return str(body['error'])
+            if body.get('message'):
+                return str(body['message'])
+    except Exception:
+        pass
+    return (response.text or '').strip()[:240] or 'Unknown error'
+
+
+def get_local_ocr_engine():
+    global _rapid_ocr_engine
+    if RapidOCR is None or cv2 is None or np is None:
+        return None
+    if _rapid_ocr_engine is None:
+        _rapid_ocr_engine = RapidOCR()
+    return _rapid_ocr_engine
+
+
+def run_local_ocr(img_bytes):
+    engine = get_local_ocr_engine()
+    if engine is None:
+        return '', 'RapidOCR dependencies are missing'
+
+    try:
+        image_arr = np.frombuffer(img_bytes, dtype=np.uint8)
+        image = cv2.imdecode(image_arr, cv2.IMREAD_COLOR)
+        if image is None:
+            return '', 'Failed to decode image for local OCR'
+
+        result, _ = engine(image)
+        if not result:
+            return '', 'Local OCR returned empty text'
+
+        lines = []
+        for item in result:
+            if not isinstance(item, (list, tuple)) or len(item) < 2:
+                continue
+            line = str(item[1]).strip()
+            if line:
+                lines.append(line)
+
+        text = '\n'.join(lines).strip()
+        if not text:
+            return '', 'Local OCR returned empty text'
+
+        return text, ''
+    except Exception as e:
+        return '', f'Local OCR error: {e}'
+
 # ==========================================
 # 专家 1 号：视觉专家 (负责看图识字)
 # 对应前端的【按钮 1】
@@ -1543,17 +1624,53 @@ def extract_text_from_image():
 
     file = request.files['image']
     img_bytes = file.read()
+    if not img_bytes:
+        return jsonify({"error": "Empty image file"}), 400
 
-    try:
-        response = requests.post(OCR_API_URL, headers=headers, data=img_bytes, timeout=60)
-        ocr_result = response.json()
+    hf_error = ''
+    hf_headers = get_hf_headers(file.mimetype or 'application/octet-stream')
+    if hf_headers:
+        try:
+            response = requests.post(hf_model_url(OCR_MODEL_ID), headers=hf_headers, data=img_bytes, timeout=90)
+            if response.status_code < 400:
+                try:
+                    ocr_result = response.json()
+                    extracted_text = ''
+                    if isinstance(ocr_result, list) and ocr_result and isinstance(ocr_result[0], dict):
+                        extracted_text = str(ocr_result[0].get('generated_text', '')).strip()
+                    elif isinstance(ocr_result, dict):
+                        extracted_text = str(ocr_result.get('generated_text', '')).strip()
 
-        if isinstance(ocr_result, list) and ocr_result and 'generated_text' in ocr_result[0]:
-            extracted_text = ocr_result[0]['generated_text']
-            return jsonify({"text": extracted_text})
-        return jsonify({"error": "OCR failed"}), 500
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+                    if extracted_text:
+                        return jsonify({"text": extracted_text, "source": "huggingface"})
+                    hf_error = "HF OCR returned empty text"
+                except Exception:
+                    hf_error = f"HF OCR returned non-JSON response: {hf_error_message(response)}"
+            else:
+                hf_error = f"HF OCR failed ({response.status_code}): {hf_error_message(response)}"
+        except Exception as e:
+            hf_error = f"HF OCR error: {e}"
+    else:
+        hf_error = "HF_API_TOKEN is not configured on server"
+
+    local_text, local_error = run_local_ocr(img_bytes)
+    if local_text:
+        return jsonify({"text": local_text, "source": "rapidocr", "note": hf_error or None})
+
+    if '404' in hf_error:
+        hf_error = (
+            hf_error
+            + ". Hugging Face hf-inference currently has no OCR image endpoint for this model/account."
+        )
+
+    return jsonify({
+        "error": "OCR failed",
+        "details": {
+            "huggingface": hf_error,
+            "local": local_error,
+            "hint": "Install/enable RapidOCR fallback or configure another OCR provider."
+        }
+    }), 502
 
 
 # ==========================================
@@ -1563,23 +1680,41 @@ def extract_text_from_image():
 @app.route('/api/analyze-text', methods=['POST'])
 def analyze_text():
     data = request.get_json(silent=True) or {}
-    text_content = data.get('text', '')
+    text_content = (data.get('text') or '').strip()
 
     if not text_content:
         return jsonify({"error": "No text provided"}), 400
 
     summary = ""
-    try:
-        payload = {"inputs": text_content[:1024]}
-        response = requests.post(SUMMARIZER_API_URL, headers=headers, json=payload, timeout=60)
-        summary_res = response.json()
+    summary_source = "fallback"
+    summary_note = ""
+    hf_headers = get_hf_headers('application/json')
+    if hf_headers:
+        try:
+            payload = {
+                "inputs": text_content[:4000],
+                "parameters": {"max_new_tokens": 120, "min_new_tokens": 24, "do_sample": False},
+                "options": {"wait_for_model": True}
+            }
+            response = requests.post(hf_model_url(SUMMARIZER_MODEL_ID), headers=hf_headers, json=payload, timeout=90)
+            if response.status_code < 400:
+                summary_res = response.json()
+                if isinstance(summary_res, list) and summary_res and isinstance(summary_res[0], dict):
+                    summary = str(summary_res[0].get('summary_text') or summary_res[0].get('generated_text') or '').strip()
+                elif isinstance(summary_res, dict):
+                    summary = str(summary_res.get('summary_text') or summary_res.get('generated_text') or '').strip()
+                if summary:
+                    summary_source = "huggingface"
+            else:
+                summary_note = f"Summary service failed ({response.status_code})."
+        except Exception:
+            summary_note = "AI service busy."
+    else:
+        summary_note = "HF_API_TOKEN is not configured on server."
 
-        if isinstance(summary_res, list) and summary_res and 'summary_text' in summary_res[0]:
-            summary = summary_res[0]['summary_text']
-        else:
-            summary = "Summary generation failed."
-    except Exception:
-        summary = "AI service busy."
+    if not summary:
+        cleaned = re.sub(r'\s+', ' ', text_content)
+        summary = cleaned[:220]
 
     keywords = []
     try:
@@ -1592,7 +1727,9 @@ def analyze_text():
 
     return jsonify({
         "summary": summary,
-        "keywords": keywords
+        "keywords": keywords,
+        "summary_source": summary_source,
+        "summary_note": summary_note
     })
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================

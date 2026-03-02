@@ -424,7 +424,8 @@ export default function HomePage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        alert(`文字提取失败：${data.error || '服务异常'}`);
+        const detail = [data?.error, data?.details?.huggingface, data?.details?.local].filter(Boolean).join(' | ');
+        alert(`文字提取失败：${detail || '服务异常'}`);
         return;
       }
 

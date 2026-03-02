@@ -1,20 +1,50 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
+const normalizeDocument = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+
+  let tags = [];
+  if (Array.isArray(raw.tags)) {
+    tags = raw.tags.map((tag) => String(tag).trim()).filter(Boolean);
+  } else if (typeof raw.tags === 'string') {
+    tags = raw.tags
+      .split(',')
+      .map((tag) => tag.trim())
+      .filter(Boolean);
+  }
+
+  return {
+    id: raw.id,
+    title: raw.title || 'Untitled',
+    filename: raw.filename || '',
+    content: raw.content || '',
+    uploadedAt: raw.uploadedAt ?? raw.uploaded_at ?? '',
+    fileType: String(raw.fileType ?? raw.file_type ?? '').toLowerCase(),
+    tags,
+  };
+};
+
 export default function DocumentDetail() {
   const { docId } = useParams();
   const navigate = useNavigate();
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [extractedText, setExtractedText] = useState('');
+  const [analysisResult, setAnalysisResult] = useState(null);
+  const [isExtracting, setIsExtracting] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   useEffect(() => {
     const fetchDoc = async () => {
       try {
         const res = await fetch(`/api/documents/${docId}`);
         if (!res.ok) throw new Error('Document not found');
-        const data = await res.json();
+        const data = normalizeDocument(await res.json());
         setDocument(data);
+        setExtractedText(data?.content || '');
+        setAnalysisResult(null);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -28,6 +58,7 @@ export default function DocumentDetail() {
   if (error || !document) return <div className="container document-detail"><p>Error: {error}</p></div>;
 
   const fileUrl = `/uploads/${document.filename}`;
+  const fileStreamUrl = `/api/documents/${docId}/file`;
   const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(document.fileType);
   
   const headerStyle = {
@@ -38,12 +69,66 @@ export default function DocumentDetail() {
     marginBottom: '16px'
   };
 
+  const handleExtractText = async () => {
+    if (!isImage) return;
+
+    setIsExtracting(true);
+    try {
+      const imgResponse = await fetch(fileStreamUrl);
+      if (!imgResponse.ok) {
+        throw new Error('无法读取图片文件');
+      }
+      const blob = await imgResponse.blob();
+
+      const formData = new FormData();
+      formData.append('image', blob, document.filename || `image-${docId}.png`);
+      const response = await fetch('/api/extract-text', {
+        method: 'POST',
+        body: formData,
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        const detail = [data?.error, data?.details?.huggingface, data?.details?.local].filter(Boolean).join(' | ');
+        throw new Error(detail || '服务异常');
+      }
+
+      const text = typeof data.text === 'string' ? data.text : '';
+      setExtractedText(text);
+      setAnalysisResult(null);
+    } catch (err) {
+      alert(`文字提取失败：${err.message || '未知错误'}`);
+    } finally {
+      setIsExtracting(false);
+    }
+  };
+
+  const handleAnalyzeText = async () => {
+    if (!extractedText.trim()) {
+      alert('文本框为空，无法分析！');
+      return;
+    }
+
+    setIsAnalyzing(true);
+    try {
+      const response = await fetch('/api/analyze-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: extractedText }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || '服务异常');
+      }
+      setAnalysisResult(data);
+    } catch (err) {
+      alert(`分析失败：${err.message || '未知错误'}`);
+    } finally {
+      setIsAnalyzing(false);
+    }
+  };
+
   return (
     <main className="container document-detail" role="main">
-      {/* 关键修改在这里：
-         使用 navigate('/', { state: ... }) 
-         告诉主页：我回来了，请把文件列表打开 (showFiles: true)
-      */}
       <button 
         className="btn" 
         type="button" 
@@ -68,7 +153,7 @@ export default function DocumentDetail() {
 
         <section className="document-body">
           {isImage ? (
-            <img src={fileUrl} alt="Preview" style={{maxWidth: '100%', borderRadius: '8px'}} />
+            <img src={fileUrl} alt="Preview" style={{maxWidth: '100%', borderRadius: '8px', marginBottom: '16px'}} />
           ) : (
             <>
               <h3 style={{marginTop:0}}>Document Content:</h3>
@@ -77,6 +162,55 @@ export default function DocumentDetail() {
               </pre>
             </>
           )}
+
+          <section className="notion-ai-section" style={{ marginTop: '20px' }}>
+            <article className="notion-ai-shell">
+              <div className="notion-ai-actions-simple">
+                {isImage && (
+                  <button
+                    type="button"
+                    className="btn notion-ai-action-chip"
+                    onClick={handleExtractText}
+                    disabled={isExtracting}
+                  >
+                    {isExtracting ? '图像识别中...' : '图像识别'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="btn btn-primary notion-ai-action-chip"
+                  onClick={handleAnalyzeText}
+                  disabled={isAnalyzing || !extractedText.trim()}
+                >
+                  {isAnalyzing ? '文本摘要中...' : '文本摘要'}
+                </button>
+              </div>
+
+              <article className="notion-ai-output">
+                <h3>文本内容</h3>
+                <textarea
+                  value={extractedText}
+                  onChange={(event) => setExtractedText(event.target.value)}
+                  rows={8}
+                  style={{ width: '100%' }}
+                  placeholder="OCR 识别结果会显示在这里，也可以手动修改。"
+                />
+              </article>
+
+              {analysisResult && (
+                <article className="notion-ai-output">
+                  <h3>摘要结果</h3>
+                  <p>{analysisResult.summary || '暂无摘要结果。'}</p>
+                  <h4>关键词</h4>
+                  <ul>
+                    {(Array.isArray(analysisResult.keywords) ? analysisResult.keywords : []).map((keyword, index) => (
+                      <li key={`${keyword}-${index}`}>{keyword}</li>
+                    ))}
+                  </ul>
+                </article>
+              )}
+            </article>
+          </section>
         </section>
       </article>
     </main>
