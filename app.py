@@ -1618,17 +1618,52 @@ def run_local_ocr(img_bytes):
 # 对应前端的【按钮 1】
 # ==========================================
 @app.route('/api/extract-text', methods=['POST'])
-def extract_text_from_image():
-    if 'image' not in request.files:
-        return jsonify({"error": "No image provided"}), 400
+@app.route('/api/extract-text/<int:doc_id>', methods=['POST'])
+def extract_text_from_image(doc_id=None):
+    img_bytes = b''
+    mimetype = 'application/octet-stream'
 
-    file = request.files['image']
-    img_bytes = file.read()
+    if doc_id is not None:
+        conn = get_db_connection()
+        try:
+            cursor = conn.execute('SELECT filename, file_type FROM documents WHERE id = ?', (doc_id,))
+            doc = cursor.fetchone()
+        finally:
+            conn.close()
+
+        if not doc:
+            return jsonify({"error": "Document not found"}), 404
+
+        filename = doc.get('filename') if hasattr(doc, 'get') else doc['filename']
+        file_type = doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']
+        if str(file_type or '').lower() not in ('png', 'jpg', 'jpeg', 'webp', 'gif'):
+            return jsonify({"error": "This endpoint only supports image documents"}), 400
+        mimetype = detect_mimetype(filename, file_type)
+
+        try:
+            if S3_BUCKET and s3_client:
+                s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=filename)
+                img_bytes = s3_obj['Body'].read()
+            else:
+                local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                if not os.path.exists(local_path):
+                    return jsonify({"error": "Source image not found"}), 404
+                with open(local_path, 'rb') as f:
+                    img_bytes = f.read()
+        except Exception as e:
+            return jsonify({"error": f"Failed to read source image: {e}"}), 500
+    else:
+        if 'image' not in request.files:
+            return jsonify({"error": "No image provided"}), 400
+        file = request.files['image']
+        mimetype = file.mimetype or 'application/octet-stream'
+        img_bytes = file.read()
+
     if not img_bytes:
         return jsonify({"error": "Empty image file"}), 400
 
     hf_error = ''
-    hf_headers = get_hf_headers(file.mimetype or 'application/octet-stream')
+    hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
     if hf_headers:
         try:
             response = requests.post(hf_model_url(OCR_MODEL_ID), headers=hf_headers, data=img_bytes, timeout=90)

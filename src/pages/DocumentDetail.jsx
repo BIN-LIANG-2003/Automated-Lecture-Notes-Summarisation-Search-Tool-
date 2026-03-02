@@ -58,7 +58,6 @@ export default function DocumentDetail() {
   if (error || !document) return <div className="container document-detail"><p>Error: {error}</p></div>;
 
   const fileUrl = `/uploads/${document.filename}`;
-  const fileStreamUrl = `/api/documents/${docId}/file`;
   const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(document.fileType);
   
   const headerStyle = {
@@ -70,21 +69,10 @@ export default function DocumentDetail() {
   };
 
   const handleExtractText = async () => {
-    if (!isImage) return;
-
     setIsExtracting(true);
     try {
-      const imgResponse = await fetch(fileStreamUrl);
-      if (!imgResponse.ok) {
-        throw new Error('无法读取图片文件');
-      }
-      const blob = await imgResponse.blob();
-
-      const formData = new FormData();
-      formData.append('image', blob, document.filename || `image-${docId}.png`);
-      const response = await fetch('/api/extract-text', {
+      const response = await fetch(`/api/extract-text/${docId}`, {
         method: 'POST',
-        body: formData,
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
