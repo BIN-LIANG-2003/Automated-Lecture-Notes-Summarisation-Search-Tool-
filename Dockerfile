@@ -4,8 +4,11 @@ FROM python:3.9-slim
 # 必须使用 root 用户安装系统包
 USER root
 
-# 安装 OpenCV 和 RapidOCR 所需的底层库
-RUN apt-get update && apt-get install -y \
+# 修复 Exit Code 100：清理旧源并使用 Debian 官方稳定源
+RUN sed -i 's/deb.debian.org/archive.debian.org/g' /etc/apt/sources.list && \
+    sed -i '/security/d' /etc/apt/sources.list && \
+    apt-get update -y || apt-get update -y && \
+    apt-get install -y --no-install-recommends \
     libgl1-mesa-glx \
     libglib2.0-0 \
     ffmpeg \
