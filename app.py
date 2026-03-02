@@ -28,14 +28,20 @@ from lxml import etree, html as lxml_html
 try:
     import cv2
     import numpy as np
-except Exception:
+    CV2_IMPORT_ERROR = ''
+except Exception as e:
     cv2 = None
     np = None
+    CV2_IMPORT_ERROR = str(e)
+    print(f"⚠️ OpenCV unavailable: {CV2_IMPORT_ERROR}")
 
 try:
     from rapidocr_onnxruntime import RapidOCR
-except Exception:
+    RAPIDOCR_IMPORT_ERROR = ''
+except Exception as e:
     RapidOCR = None
+    RAPIDOCR_IMPORT_ERROR = str(e)
+    print(f"⚠️ RapidOCR unavailable: {RAPIDOCR_IMPORT_ERROR}")
 
 # --- PostgreSQL 驱动 ---
 import psycopg2
@@ -1583,9 +1589,21 @@ def get_local_ocr_engine():
 
 
 def run_local_ocr(img_bytes):
-    engine = get_local_ocr_engine()
+    try:
+        engine = get_local_ocr_engine()
+    except Exception as e:
+        return '', f'RapidOCR engine init failed: {e}'
+
     if engine is None:
-        return '', 'RapidOCR dependencies are missing'
+        reasons = []
+        if cv2 is None:
+            reasons.append(f'cv2 unavailable: {CV2_IMPORT_ERROR or "not installed"}')
+        if np is None:
+            reasons.append('numpy unavailable')
+        if RapidOCR is None:
+            reasons.append(f'rapidocr unavailable: {RAPIDOCR_IMPORT_ERROR or "not installed"}')
+        reason_text = '; '.join(reasons) if reasons else 'unknown reason'
+        return '', f'RapidOCR dependencies are missing ({reason_text})'
 
     try:
         image_arr = np.frombuffer(img_bytes, dtype=np.uint8)
@@ -1698,8 +1716,10 @@ def extract_text_from_image(doc_id=None):
             + ". Hugging Face hf-inference currently has no OCR image endpoint for this model/account."
         )
 
+    error_parts = [hf_error, local_error]
+    error_text = ' | '.join([part for part in error_parts if part])
     return jsonify({
-        "error": "OCR failed",
+        "error": f"OCR failed: {error_text}" if error_text else "OCR failed",
         "details": {
             "huggingface": hf_error,
             "local": local_error,
