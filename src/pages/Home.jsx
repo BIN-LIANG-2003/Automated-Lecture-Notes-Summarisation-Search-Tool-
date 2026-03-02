@@ -5,8 +5,93 @@ import RichTextEditor from '../components/RichTextEditor.jsx';
 import UsageChart from '../components/UsageChart.jsx';
 import { todayKey } from '../lib/dates.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
+import { loadAccounts, persistAccounts } from '../lib/accounts.js';
+import {
+  createWorkspace,
+  loadWorkspaceState,
+  persistWorkspaceState,
+} from '../lib/workspaces.js';
 
 const MAX_SIDEBAR_RECENT = 10;
+const MAX_SAVED_ACCOUNTS = 8;
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+const normalizeAccountRecord = (raw) => {
+  if (!raw) return null;
+  if (typeof raw === 'string') {
+    const username = raw.trim();
+    if (!username) return null;
+    return {
+      username,
+      email: '',
+      lastActiveAt: '',
+    };
+  }
+  if (typeof raw !== 'object') return null;
+
+  const username = String(raw.username || '').trim();
+  if (!username) return null;
+  return {
+    username,
+    email: String(raw.email || '').trim(),
+    lastActiveAt: String(raw.lastActiveAt || ''),
+  };
+};
+
+const normalizeAccounts = (rawList) => {
+  if (!Array.isArray(rawList)) return [];
+  const map = new Map();
+  rawList.forEach((item) => {
+    const normalized = normalizeAccountRecord(item);
+    if (!normalized) return;
+    const existing = map.get(normalized.username);
+    if (!existing) {
+      map.set(normalized.username, normalized);
+      return;
+    }
+    map.set(normalized.username, {
+      username: normalized.username,
+      email: normalized.email || existing.email,
+      lastActiveAt: normalized.lastActiveAt || existing.lastActiveAt,
+    });
+  });
+  return Array.from(map.values()).slice(0, MAX_SAVED_ACCOUNTS);
+};
+
+const upsertAccount = (rawList, account) => {
+  const normalizedAccount = normalizeAccountRecord(account);
+  const normalizedList = normalizeAccounts(rawList);
+  if (!normalizedAccount) return normalizedList;
+
+  const next = [
+    {
+      ...normalizedAccount,
+      lastActiveAt: new Date().toISOString(),
+    },
+    ...normalizedList.filter((item) => item.username !== normalizedAccount.username),
+  ];
+  return next.slice(0, MAX_SAVED_ACCOUNTS);
+};
+
+const memberCountOfWorkspace = (workspace, accountName) => {
+  if (!workspace) return 0;
+  const bag = new Set();
+  const owner = String(accountName || '').trim();
+  if (owner) bag.add(owner);
+  if (Array.isArray(workspace.members)) {
+    workspace.members.forEach((member) => {
+      const value = String(member || '').trim();
+      if (value) bag.add(value);
+    });
+  }
+  if (Array.isArray(workspace.invites)) {
+    workspace.invites.forEach((invite) => {
+      const value = String(invite || '').trim();
+      if (value) bag.add(value.toLowerCase());
+    });
+  }
+  return bag.size;
+};
 
 const toTimeMs = (value) => {
   const ms = new Date(value).getTime();
@@ -102,6 +187,17 @@ export default function HomePage() {
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
   const [showAI, setShowAI] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
+  const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
+  const [accountManagerOpen, setAccountManagerOpen] = useState(false);
+  const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
+  const [workspaceInviteDraft, setWorkspaceInviteDraft] = useState('');
+  const [inviteCopied, setInviteCopied] = useState(false);
+  const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
+  const [savedAccounts, setSavedAccounts] = useState(() => normalizeAccounts(loadAccounts()));
+  const [workspaceState, setWorkspaceState] = useState(() =>
+    loadWorkspaceState(sessionStorage.getItem('username') || '访客')
+  );
   const [sidebarMenuDocId, setSidebarMenuDocId] = useState(null);
   const [sidebarRecentIds, setSidebarRecentIds] = useState([]);
   const [activeDoc, setActiveDoc] = useState(null);
@@ -125,7 +221,24 @@ export default function HomePage() {
 
   const username = sessionStorage.getItem('username');
   const accountName = username || '访客';
-  const accountEmail = sessionStorage.getItem('email') || (username ? `${username}` : '未登录');
+  const accountEmail = sessionStorage.getItem('email') || (username ? `${username}` : '');
+  const activeWorkspace = useMemo(() => {
+    if (!workspaceState?.workspaces?.length) return null;
+    return (
+      workspaceState.workspaces.find((item) => item.id === workspaceState.activeWorkspaceId) ||
+      workspaceState.workspaces[0]
+    );
+  }, [workspaceState]);
+  const workspaceMemberCount = useMemo(
+    () => memberCountOfWorkspace(activeWorkspace, accountName),
+    [activeWorkspace, accountName]
+  );
+  const inviteCount = Array.isArray(activeWorkspace?.invites) ? activeWorkspace.invites.length : 0;
+  const workspaceInviteLink = useMemo(() => {
+    if (!activeWorkspace?.id) return '';
+    const root = window.location.origin + window.location.pathname;
+    return `${root}#/workspace/${activeWorkspace.id}/invite`;
+  }, [activeWorkspace?.id]);
 
   const fetchDocuments = async () => {
     if (!username) {
@@ -162,10 +275,74 @@ export default function HomePage() {
   }, [location.state]);
 
   useEffect(() => {
-    const handleStorage = () => setIsLoggedIn(Boolean(sessionStorage.getItem('username')));
+    const handleStorage = () => {
+      setIsLoggedIn(Boolean(sessionStorage.getItem('username')));
+    };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
+
+  useEffect(() => {
+    const normalized = normalizeAccounts(savedAccounts);
+    if (
+      normalized.length !== savedAccounts.length ||
+      normalized.some((item, idx) => {
+        const original = savedAccounts[idx];
+        return (
+          !original ||
+          original.username !== item.username ||
+          original.email !== item.email ||
+          original.lastActiveAt !== item.lastActiveAt
+        );
+      })
+    ) {
+      setSavedAccounts(normalized);
+      return;
+    }
+    persistAccounts(normalized);
+  }, [savedAccounts]);
+
+  useEffect(() => {
+    const nextWorkspaceState = loadWorkspaceState(accountName);
+    setWorkspaceState(nextWorkspaceState);
+    const currentWorkspace =
+      nextWorkspaceState.workspaces.find((item) => item.id === nextWorkspaceState.activeWorkspaceId) ||
+      nextWorkspaceState.workspaces[0] ||
+      null;
+    setWorkspaceNameDraft(currentWorkspace?.name || '');
+    setWorkspaceInviteDraft('');
+    setInviteCopied(false);
+    setWorkspaceSettingsOpen(false);
+    setWorkspaceInviteOpen(false);
+    setAccountManagerOpen(false);
+  }, [accountName]);
+
+  useEffect(() => {
+    persistWorkspaceState(accountName, workspaceState);
+  }, [accountName, workspaceState]);
+
+  useEffect(() => {
+    if (!username) return;
+    const nextAccounts = upsertAccount(savedAccounts, {
+      username,
+      email: accountEmail,
+      lastActiveAt: new Date().toISOString(),
+    });
+    setSavedAccounts((prev) => {
+      if (
+        prev.length === nextAccounts.length &&
+        prev.every(
+          (item, idx) =>
+            item.username === nextAccounts[idx].username &&
+            item.email === nextAccounts[idx].email &&
+            item.lastActiveAt === nextAccounts[idx].lastActiveAt
+        )
+      ) {
+        return prev;
+      }
+      return nextAccounts;
+    });
+  }, [username, accountEmail]);
 
   useEffect(() => {
     let timer = null;
@@ -198,6 +375,10 @@ export default function HomePage() {
       if (event.key === 'Escape') {
         setWorkspaceMenuOpen(false);
         setSidebarMenuDocId(null);
+        setWorkspaceSettingsOpen(false);
+        setWorkspaceInviteOpen(false);
+        setAccountManagerOpen(false);
+        setInviteCopied(false);
       }
     };
 
@@ -326,12 +507,198 @@ export default function HomePage() {
     [now]
   );
 
-  const handleSignOut = () => {
-    sessionStorage.clear();
-    localStorage.clear();
+  const closeWorkspaceDialogs = () => {
+    setWorkspaceSettingsOpen(false);
+    setWorkspaceInviteOpen(false);
+    setAccountManagerOpen(false);
+    setInviteCopied(false);
+  };
+
+  const handleSignOut = ({ forgetCurrent = false } = {}) => {
+    const currentUsername = sessionStorage.getItem('username') || '';
+    sessionStorage.removeItem('username');
+    sessionStorage.removeItem('email');
+    sessionStorage.removeItem('loginAt');
     setIsLoggedIn(false);
     setDocuments([]);
-    window.location.reload();
+    setSidebarRecentIds([]);
+    setSidebarMenuDocId(null);
+    setActiveDoc(null);
+    setActiveDocError('');
+    setActiveDocLoading(false);
+    setActiveDocFileVersion(0);
+    setActiveDocEditMode(false);
+    setActiveDocDraftHtml('');
+    setActiveDocSaveError('');
+    setShowFiles(false);
+    setShowAI(false);
+    setWorkspaceMenuOpen(false);
+    closeWorkspaceDialogs();
+
+    if (forgetCurrent && currentUsername) {
+      setSavedAccounts((prev) => prev.filter((item) => item.username !== currentUsername));
+    }
+  };
+
+  const handleSwitchAccount = (account) => {
+    const target = normalizeAccountRecord(account);
+    if (!target) return;
+
+    sessionStorage.setItem('username', target.username);
+    if (target.email) sessionStorage.setItem('email', target.email);
+    else sessionStorage.removeItem('email');
+    sessionStorage.setItem('loginAt', new Date().toISOString());
+
+    setIsLoggedIn(true);
+    setDocuments([]);
+    setSidebarRecentIds([]);
+    setWorkspaceMenuOpen(false);
+    closeWorkspaceDialogs();
+    setSidebarMenuDocId(null);
+    setActiveDoc(null);
+    setActiveDocError('');
+    setActiveDocLoading(false);
+    setActiveDocFileVersion(0);
+    setActiveDocEditMode(false);
+    setActiveDocDraftHtml('');
+    setActiveDocSaveError('');
+    setShowFiles(false);
+    setShowAI(false);
+    setSavedAccounts((prev) => upsertAccount(prev, target));
+  };
+
+  const handleCreateWorkspace = () => {
+    const proposedName = window.prompt('请输入工作空间名称：', `${accountName} 的工作空间`);
+    if (proposedName === null) return;
+    const nextName = proposedName.trim() || `${accountName} 的工作空间`;
+
+    const nextWorkspace = createWorkspace(accountName, {
+      name: nextName,
+      members: [accountName],
+    });
+    setWorkspaceState((prev) => {
+      const current = prev?.workspaces?.length ? prev : loadWorkspaceState(accountName);
+      return {
+        activeWorkspaceId: nextWorkspace.id,
+        workspaces: [nextWorkspace, ...current.workspaces],
+      };
+    });
+  };
+
+  const handleSelectWorkspace = (workspaceId) => {
+    const targetId = String(workspaceId || '');
+    if (!targetId) return;
+    setWorkspaceState((prev) => {
+      if (!prev?.workspaces?.some((item) => item.id === targetId)) return prev;
+      return {
+        ...prev,
+        activeWorkspaceId: targetId,
+      };
+    });
+  };
+
+  const handleSaveWorkspaceSettings = () => {
+    if (!activeWorkspace) return;
+    const nextName = workspaceNameDraft.trim();
+    if (!nextName) {
+      alert('工作空间名称不能为空。');
+      return;
+    }
+    setWorkspaceState((prev) => ({
+      ...prev,
+      workspaces: prev.workspaces.map((item) =>
+        item.id === activeWorkspace.id
+          ? {
+              ...item,
+              name: nextName,
+            }
+          : item
+      ),
+    }));
+    setWorkspaceSettingsOpen(false);
+  };
+
+  const handleInviteMembers = () => {
+    if (!activeWorkspace) return;
+    const candidates = workspaceInviteDraft
+      .split(/[,;\n]/)
+      .map((item) => item.trim().toLowerCase())
+      .filter(Boolean);
+    if (!candidates.length) {
+      alert('请输入至少一个邮箱地址。');
+      return;
+    }
+
+    const invalidEmails = candidates.filter((email) => !EMAIL_REGEX.test(email));
+    if (invalidEmails.length) {
+      alert(`以下邮箱格式不正确：${invalidEmails.join(', ')}`);
+      return;
+    }
+
+    setWorkspaceState((prev) => ({
+      ...prev,
+      workspaces: prev.workspaces.map((item) => {
+        if (item.id !== activeWorkspace.id) return item;
+        const nextInvites = Array.from(new Set([...(item.invites || []), ...candidates]));
+        return {
+          ...item,
+          invites: nextInvites,
+        };
+      }),
+    }));
+    setWorkspaceInviteDraft('');
+    setInviteCopied(false);
+  };
+
+  const handleRemoveInvite = (email) => {
+    if (!activeWorkspace) return;
+    const target = String(email || '').trim().toLowerCase();
+    if (!target) return;
+    setWorkspaceState((prev) => ({
+      ...prev,
+      workspaces: prev.workspaces.map((item) => {
+        if (item.id !== activeWorkspace.id) return item;
+        return {
+          ...item,
+          invites: (item.invites || []).filter((invite) => invite.toLowerCase() !== target),
+        };
+      }),
+    }));
+  };
+
+  const handleCopyInviteLink = async () => {
+    if (!workspaceInviteLink) return;
+    try {
+      await navigator.clipboard.writeText(workspaceInviteLink);
+      setInviteCopied(true);
+    } catch {
+      alert('复制失败，请手动复制链接。');
+    }
+  };
+
+  const handleSaveManualAccount = () => {
+    const target = normalizeAccountRecord(accountDraft);
+    if (!target) {
+      alert('请填写账号名。');
+      return;
+    }
+    if (target.email && !EMAIL_REGEX.test(target.email)) {
+      alert('邮箱格式不正确。');
+      return;
+    }
+    setSavedAccounts((prev) => upsertAccount(prev, target));
+    setAccountDraft({ username: '', email: '' });
+    handleSwitchAccount(target);
+  };
+
+  const handleRemoveSavedAccount = (targetUsername) => {
+    const target = String(targetUsername || '').trim();
+    if (!target) return;
+    if (target === username) {
+      handleSignOut({ forgetCurrent: true });
+      return;
+    }
+    setSavedAccounts((prev) => prev.filter((item) => item.username !== target));
   };
 
   const describeFiles = (fileList) =>
@@ -519,10 +886,23 @@ export default function HomePage() {
     openDocumentInPane(doc.id);
   };
 
-  const handleDelete = (doc) => {
+  const handleDelete = async (doc) => {
     if (!window.confirm(`Delete “${doc.title}”?`)) return;
-    setDocuments((prev) => prev.filter((item) => item.id !== doc.id));
-    setActiveDoc((prev) => (prev?.id === doc.id ? null : prev));
+    try {
+      const res = await fetch(`/api/documents/${doc.id}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username || '' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Delete failed');
+
+      setDocuments((prev) => prev.filter((item) => item.id !== doc.id));
+      setSidebarRecentIds((prev) => prev.filter((id) => id !== Number(doc.id)));
+      setActiveDoc((prev) => (prev?.id === doc.id ? null : prev));
+    } catch (err) {
+      alert(err.message || '删除失败');
+    }
   };
 
   const handleEdit = async (doc) => {
@@ -686,7 +1066,9 @@ export default function HomePage() {
               <span className="notion-avatar" aria-hidden="true">
                 {accountName.slice(0, 1).toUpperCase()}
               </span>
-              <span className="notion-workspace-trigger-label">{accountName} 的工作空间</span>
+              <span className="notion-workspace-trigger-label">
+                {activeWorkspace?.name || `${accountName} 的工作空间`}
+              </span>
             </span>
             <span className="notion-workspace-trigger-chevron" aria-hidden="true">
               ▾
@@ -704,44 +1086,90 @@ export default function HomePage() {
                 {accountName.slice(0, 1).toUpperCase()}
               </div>
               <div>
-                <strong>{accountName} 的工作空间</strong>
-                <p>{isLoggedIn ? '免费版 · 1位成员' : '访客模式'}</p>
+                <strong>{activeWorkspace?.name || `${accountName} 的工作空间`}</strong>
+                <p>
+                  {isLoggedIn
+                    ? `${activeWorkspace?.plan || '免费版'} · ${workspaceMemberCount || 1}位成员`
+                    : '访客模式'}
+                </p>
               </div>
             </div>
 
             <div className="notion-account-tools">
-              <button type="button" className="notion-chip-btn">
+              <button
+                type="button"
+                className="notion-chip-btn"
+                onClick={() => {
+                  setWorkspaceNameDraft(activeWorkspace?.name || `${accountName} 的工作空间`);
+                  setWorkspaceSettingsOpen(true);
+                  setWorkspaceInviteOpen(false);
+                  setAccountManagerOpen(false);
+                }}
+              >
                 设置
               </button>
-              <button type="button" className="notion-chip-btn">
+              <button
+                type="button"
+                className="notion-chip-btn"
+                onClick={() => {
+                  setWorkspaceInviteOpen(true);
+                  setWorkspaceSettingsOpen(false);
+                  setAccountManagerOpen(false);
+                  setInviteCopied(false);
+                }}
+              >
                 邀请成员
               </button>
             </div>
 
             <div className="notion-account-email-row">
-              <span>{accountEmail}</span>
-              <button type="button" className="notion-ellipsis-btn" aria-label="更多账号操作">
+              <span>{accountEmail || '未设置邮箱'}</span>
+              <button
+                type="button"
+                className="notion-ellipsis-btn"
+                aria-label="更多账号操作"
+                onClick={() => {
+                  setAccountManagerOpen((prev) => !prev);
+                  setWorkspaceSettingsOpen(false);
+                  setWorkspaceInviteOpen(false);
+                }}
+              >
                 ...
               </button>
             </div>
 
-            <button type="button" className="notion-space-switch">
-              <span className="notion-space-switch-main">
-                <span className="notion-avatar" aria-hidden="true">
-                  {accountName.slice(0, 1).toUpperCase()}
+            {(workspaceState.workspaces || []).map((workspace) => (
+              <button
+                key={workspace.id}
+                type="button"
+                className={`notion-space-switch ${workspace.id === workspaceState.activeWorkspaceId ? 'active' : ''}`}
+                onClick={() => handleSelectWorkspace(workspace.id)}
+              >
+                <span className="notion-space-switch-main">
+                  <span className="notion-avatar" aria-hidden="true">
+                    {String(workspace.name || accountName).slice(0, 1).toUpperCase()}
+                  </span>
+                  <span>{workspace.name}</span>
                 </span>
-                <span>{accountName} 的工作空间</span>
-              </span>
-              <span aria-hidden="true">✓</span>
-            </button>
+                <span aria-hidden="true">{workspace.id === workspaceState.activeWorkspaceId ? '✓' : ''}</span>
+              </button>
+            ))}
 
-            <button type="button" className="notion-plus-link">
+            <button type="button" className="notion-plus-link" onClick={handleCreateWorkspace}>
               + 新建工作空间
             </button>
 
             <div className="notion-account-divider" />
 
-            <button type="button" className="notion-account-link">
+            <button
+              type="button"
+              className="notion-account-link"
+              onClick={() => {
+                setAccountManagerOpen(true);
+                setWorkspaceSettingsOpen(false);
+                setWorkspaceInviteOpen(false);
+              }}
+            >
               添加另一个帐号
             </button>
             <button
@@ -754,6 +1182,144 @@ export default function HomePage() {
             >
               {isLoggedIn ? '登出' : '登录'}
             </button>
+
+            {workspaceSettingsOpen && (
+              <section className="notion-inline-panel" aria-label="工作空间设置">
+                <h3>工作空间设置</h3>
+                <label htmlFor="workspace-name-input" className="sr-only">
+                  工作空间名称
+                </label>
+                <input
+                  id="workspace-name-input"
+                  type="text"
+                  value={workspaceNameDraft}
+                  onChange={(event) => setWorkspaceNameDraft(event.target.value)}
+                  placeholder="输入工作空间名称"
+                />
+                <div className="notion-inline-panel-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleSaveWorkspaceSettings}>
+                    保存
+                  </button>
+                  <button type="button" className="btn" onClick={() => setWorkspaceSettingsOpen(false)}>
+                    取消
+                  </button>
+                </div>
+              </section>
+            )}
+
+            {workspaceInviteOpen && (
+              <section className="notion-inline-panel" aria-label="邀请成员">
+                <h3>邀请成员</h3>
+                <label htmlFor="invite-email-input" className="sr-only">
+                  邀请邮箱
+                </label>
+                <input
+                  id="invite-email-input"
+                  type="text"
+                  value={workspaceInviteDraft}
+                  onChange={(event) => setWorkspaceInviteDraft(event.target.value)}
+                  placeholder="输入邮箱，多个可用逗号分隔"
+                />
+                <div className="notion-inline-panel-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleInviteMembers}>
+                    添加邀请
+                  </button>
+                  <button type="button" className="btn" onClick={handleCopyInviteLink}>
+                    {inviteCopied ? '已复制链接' : '复制邀请链接'}
+                  </button>
+                </div>
+                {workspaceInviteLink && (
+                  <p className="notion-inline-panel-hint">{workspaceInviteLink}</p>
+                )}
+                {inviteCount > 0 && (
+                  <ul className="notion-inline-list">
+                    {(activeWorkspace?.invites || []).map((invite) => (
+                      <li key={invite}>
+                        <span>{invite}</span>
+                        <button type="button" className="notion-inline-list-remove" onClick={() => handleRemoveInvite(invite)}>
+                          移除
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            )}
+
+            {accountManagerOpen && (
+              <section className="notion-inline-panel" aria-label="账号管理">
+                <h3>账号管理</h3>
+                <ul className="notion-inline-list">
+                  {(savedAccounts || []).length ? (
+                    savedAccounts.map((account) => (
+                      <li key={account.username}>
+                        <span>{account.username}</span>
+                        <div className="notion-inline-list-actions">
+                          <button
+                            type="button"
+                            className="notion-inline-list-switch"
+                            onClick={() => handleSwitchAccount(account)}
+                          >
+                            切换
+                          </button>
+                          <button
+                            type="button"
+                            className="notion-inline-list-remove"
+                            onClick={() => handleRemoveSavedAccount(account.username)}
+                          >
+                            删除
+                          </button>
+                        </div>
+                      </li>
+                    ))
+                  ) : (
+                    <li>
+                      <span>暂无保存账号</span>
+                    </li>
+                  )}
+                </ul>
+                <div className="notion-inline-panel-grid">
+                  <input
+                    type="text"
+                    value={accountDraft.username}
+                    onChange={(event) =>
+                      setAccountDraft((prev) => ({
+                        ...prev,
+                        username: event.target.value,
+                      }))
+                    }
+                    placeholder="账号名"
+                  />
+                  <input
+                    type="email"
+                    value={accountDraft.email}
+                    onChange={(event) =>
+                      setAccountDraft((prev) => ({
+                        ...prev,
+                        email: event.target.value,
+                      }))
+                    }
+                    placeholder="邮箱（可选）"
+                  />
+                </div>
+                <div className="notion-inline-panel-actions">
+                  <button type="button" className="btn btn-primary" onClick={handleSaveManualAccount}>
+                    保存并切换
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      setWorkspaceMenuOpen(false);
+                      closeWorkspaceDialogs();
+                      navigate('/login');
+                    }}
+                  >
+                    去登录页添加
+                  </button>
+                </div>
+              </section>
+            )}
           </section>
         </div>
 

@@ -1197,7 +1197,11 @@ def register():
         conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                      (username, email, hashed_pw))
         conn.commit()
-        return jsonify({'message': 'User created successfully'}), 201
+        return jsonify({
+            'message': 'User created successfully',
+            'username': username,
+            'email': email
+        }), 201
     except Exception as e:
         return jsonify({'error': f'Registration failed (User may exist): {str(e)}'}), 409
     finally:
@@ -1216,7 +1220,12 @@ def login():
     conn.close()
 
     if user and check_password_hash(user['password_hash'], password):
-        return jsonify({'message': 'Login successful', 'username': user['username']}), 200
+        user_email = user.get('email') if hasattr(user, 'get') else user['email']
+        return jsonify({
+            'message': 'Login successful',
+            'username': user['username'],
+            'email': user_email
+        }), 200
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
 
@@ -1248,7 +1257,12 @@ def google_login():
                 conn.close()
                 return jsonify({'error': f'Register failed: {str(e)}'}), 500
         conn.close()
-        return jsonify({'message': 'Login successful', 'username': user['username']}), 200
+        user_email = user.get('email') if hasattr(user, 'get') else user['email']
+        return jsonify({
+            'message': 'Login successful',
+            'username': user['username'],
+            'email': user_email
+        }), 200
     except ValueError:
         return jsonify({'error': 'Invalid Google token'}), 401
     except Exception as e:
@@ -1374,6 +1388,46 @@ def get_document(doc_id):
             return jsonify({'error': 'Document not found'}), 404
     finally:
         conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>', methods=['DELETE'])
+def delete_document(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('SELECT id, filename, username FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        owner = (doc.get('username') if hasattr(doc, 'get') else doc['username']) or ''
+        if username and owner and username != owner:
+            return jsonify({'error': 'You can only delete your own documents'}), 403
+
+        conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    filename = doc.get('filename') if hasattr(doc, 'get') else doc['filename']
+    cleanup_warning = ''
+    try:
+        if S3_BUCKET and s3_client:
+            s3_client.delete_object(Bucket=S3_BUCKET, Key=filename)
+        else:
+            local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+            if os.path.exists(local_path):
+                os.remove(local_path)
+    except Exception as e:
+        cleanup_warning = f'File cleanup failed: {e}'
+        print(f"⚠️ {cleanup_warning}")
+
+    response = {'message': 'Document deleted successfully', 'id': doc_id}
+    if cleanup_warning:
+        response['warning'] = cleanup_warning
+    return jsonify(response), 200
 
 
 @app.route('/api/documents/<int:doc_id>/tags', methods=['PUT'])

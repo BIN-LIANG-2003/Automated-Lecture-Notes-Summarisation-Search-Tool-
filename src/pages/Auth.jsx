@@ -72,6 +72,7 @@ export default function AuthPage() {
 
       if (res.ok) {
         sessionStorage.setItem('username', data.username);
+        sessionStorage.setItem('email', data.email || decoded.email || '');
         sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {
@@ -105,6 +106,7 @@ export default function AuthPage() {
 
       if (response.ok) {
         sessionStorage.setItem('username', data.username);
+        sessionStorage.setItem('email', data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''));
         sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {

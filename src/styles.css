@@ -881,6 +881,11 @@ body.notion-home-body .skip-link:focus-visible{
   background:#f3f3f0;
 }
 
+.notion-space-switch.active{
+  background:#ececea;
+  font-weight:600;
+}
+
 .notion-space-switch-main{
   display:flex;
   align-items:center;
@@ -930,6 +935,106 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-account-link:hover{
   background:#f1f1ee;
+}
+
+.notion-inline-panel{
+  margin-top:8px;
+  padding:10px;
+  border:1px solid #e8e8e4;
+  background:#fafaf8;
+  border-radius:10px;
+  display:grid;
+  gap:8px;
+}
+
+.notion-inline-panel h3{
+  margin:0;
+  font-size:13px;
+  color:#585854;
+}
+
+.notion-inline-panel input{
+  width:100%;
+  min-width:0;
+}
+
+.notion-inline-panel-actions{
+  display:flex;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.notion-inline-panel-actions .btn{
+  padding:7px 10px;
+  font-size:13px;
+}
+
+.notion-inline-panel-hint{
+  margin:0;
+  font-size:12px;
+  color:#7a7a76;
+  word-break:break-all;
+}
+
+.notion-inline-list{
+  margin:0;
+  padding:0;
+  list-style:none;
+  display:grid;
+  gap:6px;
+}
+
+.notion-inline-list li{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  font-size:13px;
+}
+
+.notion-inline-list li span{
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.notion-inline-list-actions{
+  display:flex;
+  align-items:center;
+  gap:6px;
+}
+
+.notion-inline-list-switch,
+.notion-inline-list-remove{
+  border:0;
+  border-radius:7px;
+  cursor:pointer;
+  padding:4px 8px;
+  font-size:12px;
+}
+
+.notion-inline-list-switch{
+  background:#edf3ff;
+  color:#2f76e8;
+}
+
+.notion-inline-list-switch:hover{
+  background:#dfebff;
+}
+
+.notion-inline-list-remove{
+  background:#fff1f1;
+  color:#b4232f;
+}
+
+.notion-inline-list-remove:hover{
+  background:#ffe8e8;
+}
+
+.notion-inline-panel-grid{
+  display:grid;
+  gap:8px;
 }
 
 .notion-nav,
