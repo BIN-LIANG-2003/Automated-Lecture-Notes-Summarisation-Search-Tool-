@@ -3,6 +3,7 @@ import sqlite3
 import uuid
 import io
 import sys
+import json
 import mimetypes
 import re
 import requests
@@ -13,6 +14,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.feature_extraction.text import TfidfVectorizer
+from itsdangerous import URLSafeTimedSerializer, BadSignature, BadTimeSignature, SignatureExpired
 
 # --- Google 登录库 ---
 from google.oauth2 import id_token
@@ -63,14 +65,74 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
+AUTH_TOKEN_SECRET = (
+    (os.environ.get("AUTH_TOKEN_SECRET") or "").strip()
+    or (os.environ.get("FLASK_SECRET_KEY") or "").strip()
+    or "studyhub-dev-secret-change-me"
+)
+AUTH_TOKEN_SALT = "studyhub-auth-token-v1"
+try:
+    AUTH_TOKEN_TTL_SECONDS = max(3600, int((os.environ.get("AUTH_TOKEN_TTL_SECONDS") or "604800").strip()))
+except Exception:
+    AUTH_TOKEN_TTL_SECONDS = 604800
+AUTH_BYPASS_ENDPOINTS = {
+    "register",
+    "login",
+    "google_login",
+    "get_document_by_share_token",
+    "get_invitation_by_token",
+    "ocr_health",
+}
 
 # ================= Hugging Face AI 服务配置 =================
 HF_TOKEN = (os.environ.get("HF_API_TOKEN") or "").strip()
 HF_MODEL_BASE_URL = (os.environ.get("HF_MODEL_BASE_URL") or "https://router.huggingface.co/hf-inference/models").rstrip("/")
 OCR_MODEL_ID = os.environ.get("HF_OCR_MODEL") or "microsoft/trocr-base-printed"
 SUMMARIZER_MODEL_ID = os.environ.get("HF_SUMMARIZER_MODEL") or "csebuetnlp/mT5_multilingual_XLSum"
+DEFAULT_DOCUMENT_CATEGORY = "Uncategorized"
+CATEGORY_KEYWORDS = {
+    'Computer Science': (
+        'computer', 'algorithm', 'network', 'database', 'data structure', 'python', 'java', 'c++',
+        'operating system', 'os', 'software', 'machine learning', 'deep learning', 'programming'
+    ),
+    'Mathematics': (
+        'math', 'algebra', 'calculus', 'geometry', 'equation', 'probability', 'statistics', 'linear algebra'
+    ),
+    'Physics': ('physics', 'mechanics', 'thermodynamics', 'quantum', 'electromagnetic', 'optics'),
+    'Chemistry': ('chemistry', 'organic', 'inorganic', 'molecule', 'reaction', 'chemical'),
+    'Biology': ('biology', 'cell', 'genetics', 'ecology', 'anatomy', 'physiology'),
+    'Economics': ('economics', 'microeconomics', 'macroeconomics', 'market', 'inflation', 'gdp'),
+    'Business': ('business', 'management', 'marketing', 'finance', 'accounting', 'strategy'),
+    'Language': ('english', 'language', 'vocabulary', 'grammar', 'literature', 'essay'),
+}
+WORKSPACE_SUMMARY_LENGTH_LEVELS = {'short', 'medium', 'long'}
+WORKSPACE_LINK_SHARING_MODES = {'restricted', 'workspace', 'public'}
+WORKSPACE_HOME_TABS = {'home', 'files', 'ai'}
+DEFAULT_WORKSPACE_SETTINGS = {
+    'workspace_icon': '📚',
+    'description': '',
+    'default_category': DEFAULT_DOCUMENT_CATEGORY,
+    'auto_categorize': True,
+    'default_home_tab': 'home',
+    'recent_items_limit': 10,
+    'allow_uploads': True,
+    'allow_note_editing': True,
+    'allow_ai_tools': True,
+    'allow_ocr': True,
+    'summary_length': 'medium',
+    'keyword_limit': 5,
+    'allow_member_invites': False,
+    'default_invite_expiry_days': 7,
+    'default_share_expiry_days': 7,
+    'link_sharing_mode': 'workspace',
+    'allow_member_share_management': False,
+    'max_active_share_links_per_document': 5,
+    'auto_revoke_previous_share_links': False,
+    'allow_export': True,
+}
 
 _rapid_ocr_engine = None
+_auth_token_serializer = URLSafeTimedSerializer(AUTH_TOKEN_SECRET)
 
 MIME_BY_EXT = {
     'pdf': 'application/pdf',
@@ -216,25 +278,60 @@ def get_db_connection():
         return DBWrapper(conn, 'sqlite')
 
 # ================= 初始化数据库表 =================
-def ensure_documents_columns(conn):
-    column_exists = False
-    if conn.db_type == 'sqlite':
-        cursor = conn.execute('PRAGMA table_info(documents)')
-        rows = cursor.fetchall()
-        column_exists = any((row['name'] if hasattr(row, 'keys') else row[1]) == 'content_html' for row in rows)
-    else:
-        cursor = conn.execute(
-            '''
-            SELECT column_name
-            FROM information_schema.columns
-            WHERE table_name = ? AND column_name = ?
-            ''',
-            ('documents', 'content_html')
-        )
-        column_exists = cursor.fetchone() is not None
+def table_column_exists(conn, table_name, column_name):
+    safe_table = str(table_name or '').strip()
+    safe_column = str(column_name or '').strip()
+    if not safe_table or not safe_column:
+        return False
 
-    if not column_exists:
-        conn.execute('ALTER TABLE documents ADD COLUMN content_html TEXT')
+    if conn.db_type == 'sqlite':
+        cursor = conn.execute(f'PRAGMA table_info({safe_table})')
+        rows = cursor.fetchall()
+        return any((row['name'] if hasattr(row, 'keys') else row[1]) == safe_column for row in rows)
+
+    cursor = conn.execute(
+        '''
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_name = ? AND column_name = ?
+        ''',
+        (safe_table, safe_column)
+    )
+    return cursor.fetchone() is not None
+
+
+def documents_column_exists(conn, column_name):
+    return table_column_exists(conn, 'documents', column_name)
+
+
+def ensure_documents_column(conn, column_name, column_type='TEXT'):
+    safe_column = str(column_name or '').strip()
+    safe_type = str(column_type or 'TEXT').strip().upper()
+    if not safe_column:
+        return
+    if documents_column_exists(conn, safe_column):
+        return
+    conn.execute(f'ALTER TABLE documents ADD COLUMN {safe_column} {safe_type}')
+
+
+def ensure_documents_columns(conn):
+    ensure_documents_column(conn, 'content_html', 'TEXT')
+    ensure_documents_column(conn, 'category', 'TEXT')
+    ensure_documents_column(conn, 'workspace_id', 'TEXT')
+
+
+def ensure_workspaces_column(conn, column_name, column_type='TEXT'):
+    safe_column = str(column_name or '').strip()
+    safe_type = str(column_type or 'TEXT').strip().upper()
+    if not safe_column:
+        return
+    if table_column_exists(conn, 'workspaces', safe_column):
+        return
+    conn.execute(f'ALTER TABLE workspaces ADD COLUMN {safe_column} {safe_type}')
+
+
+def ensure_workspaces_columns(conn):
+    ensure_workspaces_column(conn, 'settings_json', 'TEXT')
 
 
 def init_db():
@@ -276,6 +373,8 @@ def init_db():
             content TEXT,
             content_html TEXT,
             tags TEXT,
+            category TEXT,
+            workspace_id TEXT,
             username TEXT,
             last_access_at {timestamp_type}
         );
@@ -285,8 +384,9 @@ def init_db():
         CREATE TABLE IF NOT EXISTS workspaces (
             id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            plan TEXT NOT NULL DEFAULT '免费版',
+            plan TEXT NOT NULL DEFAULT 'Free',
             owner_username TEXT NOT NULL,
+            settings_json TEXT,
             created_at {timestamp_type},
             updated_at {timestamp_type}
         );
@@ -320,6 +420,20 @@ def init_db():
         );
     '''
 
+    document_share_links_sql = f'''
+        CREATE TABLE IF NOT EXISTS document_share_links (
+            id {id_type},
+            document_id INTEGER NOT NULL,
+            workspace_id TEXT,
+            token TEXT UNIQUE NOT NULL,
+            created_by TEXT,
+            status TEXT NOT NULL DEFAULT 'active',
+            expires_at {timestamp_type},
+            created_at {timestamp_type},
+            last_access_at {timestamp_type}
+        );
+    '''
+
     workspace_members_unique_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
         ON workspace_members(workspace_id, username);
@@ -335,25 +449,31 @@ def init_db():
         ON workspace_invitations(workspace_id, status);
     '''
 
+    document_share_links_doc_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_document_share_links_doc_status
+        ON document_share_links(document_id, status);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
         conn.execute(workspaces_sql)
         conn.execute(workspace_members_sql)
         conn.execute(workspace_invitations_sql)
+        conn.execute(document_share_links_sql)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(workspace_invitation_lookup_sql)
+        conn.execute(document_share_links_doc_idx_sql)
         ensure_documents_columns(conn)
+        ensure_workspaces_columns(conn)
+        backfill_documents_workspace_ids(conn)
         conn.commit()
         print("✅ Database tables initialized successfully.")
     except Exception as e:
         print(f"❌ Error initializing tables: {e}")
     finally:
         conn.close()
-
-# 启动时运行初始化
-init_db()
 
 # ================= 辅助函数 =================
 def utcnow_iso():
@@ -395,13 +515,242 @@ def normalize_email(value):
     return str(value or '').strip().lower()
 
 
+def create_auth_token(username):
+    safe_username = str(username or '').strip()
+    if not safe_username:
+        return ''
+    payload = {
+        'username': safe_username,
+        'issued_at': utcnow_iso(),
+    }
+    return _auth_token_serializer.dumps(payload, salt=AUTH_TOKEN_SALT)
+
+
+def decode_auth_token(token):
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return False, '', 'Missing auth token'
+    try:
+        payload = _auth_token_serializer.loads(
+            safe_token,
+            salt=AUTH_TOKEN_SALT,
+            max_age=AUTH_TOKEN_TTL_SECONDS
+        )
+    except SignatureExpired:
+        return False, '', 'Auth token expired, please sign in again'
+    except (BadSignature, BadTimeSignature):
+        return False, '', 'Invalid auth token'
+    except Exception:
+        return False, '', 'Invalid auth token'
+
+    if not isinstance(payload, dict):
+        return False, '', 'Invalid auth token payload'
+    username = str(payload.get('username') or '').strip()
+    if not username:
+        return False, '', 'Invalid auth token payload'
+    return True, username, ''
+
+
+def get_bearer_token():
+    auth_header = str(request.headers.get('Authorization') or '').strip()
+    if not auth_header:
+        return ''
+    if not auth_header.lower().startswith('bearer '):
+        return ''
+    return auth_header[7:].strip()
+
+
+def extract_request_username():
+    query_username = (request.args.get('username') or '').strip()
+    if query_username:
+        return query_username
+
+    form_username = (request.form.get('username') or '').strip()
+    if form_username:
+        return form_username
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        if isinstance(data, dict):
+            json_username = (data.get('username') or '').strip()
+            if json_username:
+                return json_username
+
+    value_username = (request.values.get('username') or '').strip()
+    if value_username:
+        return value_username
+    return ''
+
+
+@app.before_request
+def enforce_auth_token_middleware():
+    path = str(request.path or '')
+    if not path.startswith('/api/'):
+        return None
+    if request.method == 'OPTIONS':
+        return None
+
+    endpoint = str(request.endpoint or '')
+    if endpoint in AUTH_BYPASS_ENDPOINTS:
+        return None
+
+    username = extract_request_username()
+    if not username:
+        return None
+
+    bearer_token = get_bearer_token()
+    if not bearer_token:
+        return jsonify({'error': 'Auth token is required'}), 401
+
+    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+    if not token_ok:
+        return jsonify({'error': token_error or 'Invalid auth token'}), 401
+    if token_username != username:
+        return jsonify({'error': 'Auth token does not match username'}), 403
+    return None
+
+
+def normalize_workspace_name(name, owner_username=''):
+    raw = str(name or '').strip()
+    owner = str(owner_username or '').strip()
+    if not raw:
+        return f"{owner}'s Workspace" if owner else 'Untitled Workspace'
+    if raw.endswith(' 的工作空间'):
+        base = raw[:-len(' 的工作空间')].strip()
+        if base:
+            return f"{base}'s Workspace"
+        return f"{owner}'s Workspace" if owner else 'Workspace'
+    if raw == '未命名空间':
+        return 'Untitled Workspace'
+    return raw
+
+
+def parse_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ('1', 'true', 'yes', 'on'):
+            return True
+        if lowered in ('0', 'false', 'no', 'off'):
+            return False
+    return bool(default)
+
+
+def parse_int(value, default_value, min_value=None, max_value=None):
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = int(default_value)
+    if min_value is not None:
+        parsed = max(min_value, parsed)
+    if max_value is not None:
+        parsed = min(max_value, parsed)
+    return parsed
+
+
+def normalize_workspace_settings(raw_settings):
+    if isinstance(raw_settings, str):
+        try:
+            source = json.loads(raw_settings)
+        except Exception:
+            source = {}
+    elif isinstance(raw_settings, dict):
+        source = raw_settings
+    else:
+        source = {}
+
+    base = dict(DEFAULT_WORKSPACE_SETTINGS)
+    workspace_icon = str(source.get('workspace_icon', base['workspace_icon']) or '').strip()
+    base['workspace_icon'] = workspace_icon[:2] or DEFAULT_WORKSPACE_SETTINGS['workspace_icon']
+
+    description = str(source.get('description', base['description']) or '').strip()
+    base['description'] = re.sub(r'\s+', ' ', description)[:220]
+
+    default_category = normalize_document_category(source.get('default_category', base['default_category']))
+    base['default_category'] = default_category or DEFAULT_DOCUMENT_CATEGORY
+
+    base['auto_categorize'] = parse_bool(source.get('auto_categorize', base['auto_categorize']), True)
+
+    default_home_tab = str(source.get('default_home_tab', base['default_home_tab']) or '').strip().lower()
+    if default_home_tab not in WORKSPACE_HOME_TABS:
+        default_home_tab = DEFAULT_WORKSPACE_SETTINGS['default_home_tab']
+    base['default_home_tab'] = default_home_tab
+
+    base['recent_items_limit'] = parse_int(
+        source.get('recent_items_limit', base['recent_items_limit']),
+        10,
+        5,
+        20
+    )
+    base['allow_uploads'] = parse_bool(source.get('allow_uploads', base['allow_uploads']), True)
+    base['allow_note_editing'] = parse_bool(
+        source.get('allow_note_editing', base['allow_note_editing']),
+        True
+    )
+    base['allow_ai_tools'] = parse_bool(source.get('allow_ai_tools', base['allow_ai_tools']), True)
+    base['allow_ocr'] = parse_bool(source.get('allow_ocr', base['allow_ocr']), True)
+
+    summary_length = str(source.get('summary_length', base['summary_length']) or '').strip().lower()
+    if summary_length not in WORKSPACE_SUMMARY_LENGTH_LEVELS:
+        summary_length = DEFAULT_WORKSPACE_SETTINGS['summary_length']
+    base['summary_length'] = summary_length
+
+    base['keyword_limit'] = parse_int(source.get('keyword_limit', base['keyword_limit']), 5, 3, 12)
+    base['allow_member_invites'] = parse_bool(
+        source.get('allow_member_invites', base['allow_member_invites']),
+        False
+    )
+    base['default_invite_expiry_days'] = parse_int(
+        source.get('default_invite_expiry_days', base['default_invite_expiry_days']),
+        7,
+        1,
+        30
+    )
+    base['default_share_expiry_days'] = parse_int(
+        source.get('default_share_expiry_days', base['default_share_expiry_days']),
+        7,
+        1,
+        30
+    )
+    base['max_active_share_links_per_document'] = parse_int(
+        source.get('max_active_share_links_per_document', base['max_active_share_links_per_document']),
+        5,
+        1,
+        20
+    )
+    base['auto_revoke_previous_share_links'] = parse_bool(
+        source.get('auto_revoke_previous_share_links', base['auto_revoke_previous_share_links']),
+        False
+    )
+
+    link_sharing_mode = str(source.get('link_sharing_mode', base['link_sharing_mode']) or '').strip().lower()
+    if link_sharing_mode not in WORKSPACE_LINK_SHARING_MODES:
+        link_sharing_mode = DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode']
+    base['link_sharing_mode'] = link_sharing_mode
+    base['allow_member_share_management'] = parse_bool(
+        source.get('allow_member_share_management', base['allow_member_share_management']),
+        False
+    )
+
+    base['allow_export'] = parse_bool(source.get('allow_export', base['allow_export']), True)
+    return base
+
+
+def workspace_settings_to_json(value):
+    normalized = normalize_workspace_settings(value)
+    return json.dumps(normalized, ensure_ascii=False)
+
+
 def is_valid_email(value):
     email = normalize_email(value)
     return bool(re.fullmatch(r'[^@\s]+@[^@\s]+\.[^@\s]+', email))
 
 
 def expires_at_for_days(days):
-    safe_days = max(1, int(days or INVITE_EXPIRY_DAYS))
+    safe_days = parse_int(days, INVITE_EXPIRY_DAYS, 1, 30)
     return (datetime.utcnow() + timedelta(days=safe_days)).isoformat()
 
 
@@ -416,6 +765,140 @@ def build_invite_url(token):
     return f'{INVITE_BASE_URL}/#/invite/{safe_token}'
 
 
+def create_document_share_token():
+    return f'{uuid.uuid4().hex}{uuid.uuid4().hex}'
+
+
+def build_document_share_url(token):
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return ''
+    return f'{INVITE_BASE_URL}/#/shared/{safe_token}'
+
+
+def expire_document_share_links(conn, document_id=0):
+    now_iso = utcnow_iso()
+    safe_doc_id = parse_int(document_id, 0, 0)
+    if safe_doc_id > 0:
+        conn.execute(
+            '''
+            UPDATE document_share_links
+            SET status = 'expired'
+            WHERE document_id = ?
+              AND status = 'active'
+              AND expires_at < ?
+            ''',
+            (safe_doc_id, now_iso)
+        )
+    else:
+        conn.execute(
+            '''
+            UPDATE document_share_links
+            SET status = 'expired'
+            WHERE status = 'active'
+              AND expires_at < ?
+            ''',
+            (now_iso,)
+        )
+
+
+def serialize_document_share_link_row(row):
+    data = row_to_dict(row) or {}
+    return {
+        'id': data.get('id'),
+        'document_id': data.get('document_id'),
+        'workspace_id': data.get('workspace_id', ''),
+        'token': data.get('token', ''),
+        'status': data.get('status', ''),
+        'expires_at': data.get('expires_at', ''),
+        'created_at': data.get('created_at', ''),
+        'created_by': data.get('created_by', ''),
+        'last_access_at': data.get('last_access_at', ''),
+        'share_url': build_document_share_url(data.get('token', '')),
+    }
+
+
+def to_document_share_link_payload(row):
+    payload = serialize_document_share_link_row(row)
+    status = str(payload.get('status') or '').strip().lower()
+    expired = status == 'expired' or invitation_is_expired(payload.get('expires_at'))
+    payload['is_expired'] = bool(expired)
+    payload['is_accessible'] = status == 'active' and not expired
+    return payload
+
+
+def list_document_share_link_payloads(conn, document_id, limit=20):
+    safe_doc_id = parse_int(document_id, 0, 0)
+    safe_limit = parse_int(limit, 20, 1, 100)
+    if safe_doc_id <= 0:
+        return []
+
+    expire_document_share_links(conn, safe_doc_id)
+    conn.commit()
+    cursor = conn.execute(
+        '''
+        SELECT *
+        FROM document_share_links
+        WHERE document_id = ?
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?
+        ''',
+        (safe_doc_id, safe_limit)
+    )
+    return [to_document_share_link_payload(item) for item in cursor.fetchall()]
+
+
+def validate_document_share_token(conn, document_id, token, mark_access=False):
+    safe_token = str(token or '').strip()
+    doc_id = parse_int(document_id, 0, 0)
+    if not safe_token or doc_id <= 0:
+        return False, None, 'Invalid share token'
+
+    expire_document_share_links(conn, doc_id)
+    conn.commit()
+
+    cursor = conn.execute(
+        '''
+        SELECT *
+        FROM document_share_links
+        WHERE token = ? AND document_id = ?
+        ORDER BY id DESC
+        LIMIT 1
+        ''',
+        (safe_token, doc_id)
+    )
+    share_row = row_to_dict(cursor.fetchone())
+    if not share_row:
+        return False, None, 'Invalid share link'
+
+    status = str(share_row.get('status') or '').strip().lower()
+    if status == 'expired':
+        return False, share_row, 'Share link has expired'
+    if status and status != 'active':
+        return False, share_row, 'Share link is no longer active'
+
+    expires_at = share_row.get('expires_at')
+    if invitation_is_expired(expires_at):
+        conn.execute(
+            "UPDATE document_share_links SET status = 'expired' WHERE id = ?",
+            (share_row.get('id'),)
+        )
+        conn.commit()
+        share_row['status'] = 'expired'
+        return False, share_row, 'Share link has expired'
+
+    if mark_access:
+        now_iso = utcnow_iso()
+        conn.execute(
+            'UPDATE document_share_links SET last_access_at = ? WHERE id = ?',
+            (now_iso, share_row.get('id'))
+        )
+        conn.commit()
+        share_row['last_access_at'] = now_iso
+
+    return True, share_row, ''
+
+
 def send_workspace_invite_email(to_email, workspace_name, inviter_username, invite_url, expires_at):
     recipient = normalize_email(to_email)
     if not recipient:
@@ -424,18 +907,18 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
         return False, 'RESEND_API_KEY is not configured'
 
     expiry_label = expires_at or ''
-    subject = f'邀请加入工作空间：{workspace_name}'
+    subject = f'Workspace invitation: {workspace_name}'
     html = f'''
         <div style="font-family: Arial, sans-serif; line-height: 1.5; color: #1f2937;">
-          <h2 style="margin-bottom: 12px;">你收到了 StudyHub 工作空间邀请</h2>
-          <p><strong>{inviter_username}</strong> 邀请你加入工作空间：<strong>{workspace_name}</strong>。</p>
-          <p>该邀请需要空间拥有者确认后才会生效。</p>
+          <h2 style="margin-bottom: 12px;">You received a StudyHub workspace invitation</h2>
+          <p><strong>{inviter_username}</strong> invited you to join <strong>{workspace_name}</strong>.</p>
+          <p>This invitation becomes active only after the workspace owner approves your request.</p>
           <p style="margin: 18px 0;">
             <a href="{invite_url}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; text-decoration: none; background: #2563eb; color: #ffffff;">
-              查看邀请并申请加入
+              View invitation and request access
             </a>
           </p>
-          <p>邀请有效期至：{expiry_label}</p>
+          <p>Invitation expires at: {expiry_label}</p>
         </div>
     '''
     payload = {
@@ -538,6 +1021,12 @@ def get_workspace_record(conn, workspace_id):
 def workspace_belongs_to_user(conn, workspace_id, username):
     if not username:
         return False
+    owner_cursor = conn.execute(
+        'SELECT 1 FROM workspaces WHERE id = ? AND owner_username = ?',
+        (workspace_id, username)
+    )
+    if owner_cursor.fetchone() is not None:
+        return True
     cursor = conn.execute(
         '''
         SELECT 1
@@ -549,11 +1038,89 @@ def workspace_belongs_to_user(conn, workspace_id, username):
     return cursor.fetchone() is not None
 
 
+def get_or_create_default_workspace_id(conn, username):
+    owner = str(username or '').strip()
+    if not owner:
+        return ''
+
+    cursor = conn.execute(
+        '''
+        SELECT id
+        FROM workspaces
+        WHERE owner_username = ?
+        ORDER BY created_at ASC, id ASC
+        LIMIT 1
+        ''',
+        (owner,)
+    )
+    row = cursor.fetchone()
+    row_data = row_to_dict(row)
+    workspace_id = row_data.get('id') if row_data else ''
+    if workspace_id:
+        ensure_owner_membership(conn, workspace_id, owner)
+        return workspace_id
+
+    workspace_id = f'ws-{uuid.uuid4().hex[:12]}'
+    now_iso = utcnow_iso()
+    conn.execute(
+        '''
+        INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            workspace_id,
+            f"{owner}'s Workspace",
+            'Free',
+            owner,
+            workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+            now_iso,
+            now_iso
+        )
+    )
+    ensure_owner_membership(conn, workspace_id, owner)
+    return workspace_id
+
+
+def backfill_documents_workspace_ids(conn):
+    if not documents_column_exists(conn, 'workspace_id'):
+        return
+
+    cursor = conn.execute(
+        '''
+        SELECT DISTINCT username
+        FROM documents
+        WHERE username IS NOT NULL
+          AND TRIM(username) <> ''
+          AND (workspace_id IS NULL OR TRIM(workspace_id) = '')
+        '''
+    )
+    usernames = [
+        (row_to_dict(item).get('username') or '').strip()
+        for item in cursor.fetchall()
+    ]
+    usernames = [item for item in usernames if item]
+
+    for owner in usernames:
+        workspace_id = get_or_create_default_workspace_id(conn, owner)
+        if not workspace_id:
+            continue
+        conn.execute(
+            '''
+            UPDATE documents
+            SET workspace_id = ?
+            WHERE username = ?
+              AND (workspace_id IS NULL OR TRIM(workspace_id) = '')
+            ''',
+            (workspace_id, owner)
+        )
+
+
 def get_workspace_details(conn, workspace_row, for_username=''):
     workspace = row_to_dict(workspace_row) or {}
     workspace_id = workspace.get('id', '')
     owner_username = workspace.get('owner_username', '')
     is_owner = bool(for_username and for_username == owner_username)
+    settings = normalize_workspace_settings(workspace.get('settings_json'))
 
     members_cursor = conn.execute(
         '''
@@ -584,9 +1151,10 @@ def get_workspace_details(conn, workspace_row, for_username=''):
 
     return {
         'id': workspace_id,
-        'name': workspace.get('name', ''),
-        'plan': workspace.get('plan', '免费版'),
+        'name': normalize_workspace_name(workspace.get('name', ''), owner_username),
+        'plan': 'Free' if workspace.get('plan', '') in ('', '免费版') else workspace.get('plan', ''),
         'owner_username': owner_username,
+        'settings': settings,
         'created_at': workspace.get('created_at', ''),
         'updated_at': workspace.get('updated_at', ''),
         'is_owner': is_owner,
@@ -595,6 +1163,146 @@ def get_workspace_details(conn, workspace_row, for_username=''):
         'invites': invitations,
         'pending_requests': pending_requests,
     }
+
+
+def check_document_access(conn, doc_row, username='', share_token=''):
+    doc = row_to_dict(doc_row) or {}
+    viewer = str(username or '').strip()
+    safe_share_token = str(share_token or '').strip()
+    doc_id = parse_int(doc.get('id', 0), 0, 0)
+    workspace_id = str(doc.get('workspace_id') or '').strip()
+    owner_username = str(doc.get('username') or '').strip()
+
+    # Backward compatibility for legacy rows without workspace binding.
+    if not workspace_id:
+        if owner_username and viewer == owner_username:
+            return True, ''
+        if safe_share_token:
+            token_ok, _, token_reason = validate_document_share_token(
+                conn,
+                doc_id,
+                safe_share_token,
+                mark_access=True
+            )
+            if token_ok:
+                return True, ''
+            if token_reason:
+                return False, token_reason
+        if owner_username and viewer and viewer != owner_username:
+            return False, 'You do not have access to this document'
+        return True, ''
+
+    workspace_row = get_workspace_record(conn, workspace_id)
+    settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+    link_mode = settings.get('link_sharing_mode', DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode'])
+
+    if viewer and workspace_belongs_to_user(conn, workspace_id, viewer):
+        return True, ''
+
+    if safe_share_token and link_mode != 'restricted':
+        token_ok, _, token_reason = validate_document_share_token(
+            conn,
+            doc_id,
+            safe_share_token,
+            mark_access=True
+        )
+        if token_ok:
+            return True, ''
+        if token_reason and link_mode == 'workspace':
+            return False, token_reason
+
+    if link_mode == 'public':
+        return True, ''
+    if link_mode == 'workspace':
+        return False, 'This link is only available to workspace members'
+    return False, 'Link sharing is restricted by workspace settings'
+
+
+def get_document_link_sharing_mode(conn, doc_row):
+    doc = row_to_dict(doc_row) or {}
+    workspace_id = str(doc.get('workspace_id') or '').strip()
+    if not workspace_id:
+        return DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode']
+    workspace_row = get_workspace_record(conn, workspace_id)
+    settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+    return settings.get('link_sharing_mode', DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode'])
+
+
+def get_workspace_settings(conn, workspace_id):
+    target_id = str(workspace_id or '').strip()
+    if not target_id:
+        return dict(DEFAULT_WORKSPACE_SETTINGS)
+    workspace_row = get_workspace_record(conn, target_id)
+    return normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+
+
+def can_user_manage_workspace_share_links(conn, workspace_id, username=''):
+    safe_workspace_id = str(workspace_id or '').strip()
+    actor = str(username or '').strip()
+    if not safe_workspace_id or not actor:
+        return False
+
+    workspace_row = get_workspace_record(conn, safe_workspace_id)
+    if not workspace_row:
+        return False
+
+    owner_username = str((workspace_row or {}).get('owner_username') or '').strip()
+    if owner_username and owner_username == actor:
+        return True
+    if not workspace_belongs_to_user(conn, safe_workspace_id, actor):
+        return False
+
+    workspace_settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+    return parse_bool(workspace_settings.get('allow_member_share_management'), False)
+
+
+def user_can_manage_document_share_links(conn, doc_row, username=''):
+    doc = row_to_dict(doc_row) or {}
+    actor = str(username or '').strip()
+    if not actor:
+        return False
+
+    workspace_id = str(doc.get('workspace_id') or '').strip()
+    owner_username = str(doc.get('username') or '').strip()
+    if workspace_id:
+        return can_user_manage_workspace_share_links(conn, workspace_id, actor)
+    if owner_username:
+        return owner_username == actor
+    return False
+
+
+def count_active_document_share_links(conn, document_id):
+    safe_doc_id = parse_int(document_id, 0, 0)
+    if safe_doc_id <= 0:
+        return 0
+
+    expire_document_share_links(conn, safe_doc_id)
+    conn.commit()
+    cursor = conn.execute(
+        '''
+        SELECT COUNT(1) AS total
+        FROM document_share_links
+        WHERE document_id = ? AND status = 'active'
+        ''',
+        (safe_doc_id,)
+    )
+    row = row_to_dict(cursor.fetchone()) or {}
+    return parse_int(row.get('total', 0), 0, 0)
+
+
+def user_can_edit_document(conn, doc_row, username=''):
+    doc = row_to_dict(doc_row) or {}
+    editor = str(username or '').strip()
+    if not editor:
+        return False
+
+    workspace_id = str(doc.get('workspace_id') or '').strip()
+    owner_username = str(doc.get('username') or '').strip()
+    if workspace_id:
+        return workspace_belongs_to_user(conn, workspace_id, editor)
+    if owner_username:
+        return owner_username == editor
+    return False
 
 
 def allowed_file(filename):
@@ -613,6 +1321,27 @@ def detect_mimetype(filename, file_ext=''):
 def normalize_newlines(value):
     text = value if isinstance(value, str) else str(value or '')
     return text.replace('\r\n', '\n').replace('\r', '\n')
+
+
+def normalize_document_category(value):
+    category = str(value or '').strip()
+    if not category:
+        return ''
+    category = re.sub(r'\s+', ' ', category)
+    return category[:80]
+
+
+def infer_document_category(title, text_content=''):
+    title_text = str(title or '')
+    body_text = str(text_content or '')[:5000]
+    source = f"{title_text}\n{body_text}".lower()
+    if not source.strip():
+        return DEFAULT_DOCUMENT_CATEGORY
+
+    for category, keywords in CATEGORY_KEYWORDS.items():
+        if any(keyword in source for keyword in keywords):
+            return category
+    return DEFAULT_DOCUMENT_CATEGORY
 
 
 def sanitize_style_declarations(style_text):
@@ -1486,6 +2215,10 @@ def write_file_bytes_to_storage(filename, file_bytes, mimetype='application/octe
     with open(local_path, 'wb') as f:
         f.write(file_bytes)
 
+
+# 启动时运行初始化（放在辅助函数定义之后，避免前置调用未定义函数）
+init_db()
+
 # ================= API 路由接口 =================
 
 @app.route('/api/auth/register', methods=['POST'])
@@ -1505,10 +2238,12 @@ def register():
         conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
                      (username, email, hashed_pw))
         conn.commit()
+        auth_token = create_auth_token(username)
         return jsonify({
             'message': 'User created successfully',
             'username': username,
-            'email': email
+            'email': email,
+            'auth_token': auth_token,
         }), 201
     except Exception as e:
         return jsonify({'error': f'Registration failed (User may exist): {str(e)}'}), 409
@@ -1529,10 +2264,12 @@ def login():
 
     if user and check_password_hash(user['password_hash'], password):
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
+        auth_token = create_auth_token(user['username'])
         return jsonify({
             'message': 'Login successful',
             'username': user['username'],
-            'email': user_email
+            'email': user_email,
+            'auth_token': auth_token,
         }), 200
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
@@ -1566,10 +2303,12 @@ def google_login():
                 return jsonify({'error': f'Register failed: {str(e)}'}), 500
         conn.close()
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
+        auth_token = create_auth_token(user['username'])
         return jsonify({
             'message': 'Login successful',
             'username': user['username'],
-            'email': user_email
+            'email': user_email,
+            'auth_token': auth_token,
         }), 200
     except ValueError:
         return jsonify({'error': 'Invalid Google token'}), 401
@@ -1622,23 +2361,32 @@ def get_workspaces():
 
         workspace_rows = [*owned_rows, *extra_rows]
         if not workspace_rows:
-            # 首次登录自动创建默认空间，确保基础功能可用。
+            # Automatically create a default workspace on first login.
             now_iso = utcnow_iso()
             workspace_id = f'ws-{uuid.uuid4().hex[:12]}'
             conn.execute(
                 '''
-                INSERT INTO workspaces (id, name, plan, owner_username, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
-                (workspace_id, f'{username} 的工作空间', '免费版', username, now_iso, now_iso)
+                (
+                    workspace_id,
+                    f"{username}'s Workspace",
+                    'Free',
+                    username,
+                    workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                    now_iso,
+                    now_iso
+                )
             )
             ensure_owner_membership(conn, workspace_id, username)
             conn.commit()
             workspace_rows = [{
                 'id': workspace_id,
-                'name': f'{username} 的工作空间',
-                'plan': '免费版',
+                'name': f"{username}'s Workspace",
+                'plan': 'Free',
                 'owner_username': username,
+                'settings_json': workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
                 'created_at': now_iso,
                 'updated_at': now_iso,
             }]
@@ -1655,8 +2403,9 @@ def get_workspaces():
 def create_workspace():
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
-    name = (data.get('name') or '').strip() or f'{username} 的工作空间'
-    plan = (data.get('plan') or '').strip() or '免费版'
+    name = (data.get('name') or '').strip() or f"{username}'s Workspace"
+    plan = (data.get('plan') or '').strip() or 'Free'
+    settings_json = workspace_settings_to_json(data.get('settings') or DEFAULT_WORKSPACE_SETTINGS)
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -1669,10 +2418,18 @@ def create_workspace():
     try:
         conn.execute(
             '''
-            INSERT INTO workspaces (id, name, plan, owner_username, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ''',
-            (workspace_id, name, plan, username, now_iso, now_iso)
+            (
+                workspace_id,
+                name,
+                plan,
+                username,
+                settings_json,
+                now_iso,
+                now_iso
+            )
         )
         ensure_owner_membership(conn, workspace_id, username)
         conn.commit()
@@ -1687,10 +2444,9 @@ def update_workspace(workspace_id):
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or '').strip()
     name = (data.get('name') or '').strip()
+    incoming_settings = data.get('settings')
     if not username:
         return jsonify({'error': 'username is required'}), 400
-    if not name:
-        return jsonify({'error': 'name is required'}), 400
 
     conn = get_db_connection()
     if not conn:
@@ -1701,10 +2457,21 @@ def update_workspace(workspace_id):
             return jsonify({'error': 'Workspace not found'}), 404
         if workspace_row.get('owner_username') != username:
             return jsonify({'error': 'Only workspace owner can update settings'}), 403
+        if not name and incoming_settings is None:
+            return jsonify({'error': 'name or settings is required'}), 400
+
+        next_name = name or normalize_workspace_name(workspace_row.get('name', ''), username)
+
+        existing_settings = normalize_workspace_settings(workspace_row.get('settings_json'))
+        if isinstance(incoming_settings, dict):
+            merged_settings = {**existing_settings, **incoming_settings}
+        else:
+            merged_settings = existing_settings
+        settings_json = workspace_settings_to_json(merged_settings)
 
         conn.execute(
-            'UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?',
-            (name, utcnow_iso(), workspace_id)
+            'UPDATE workspaces SET name = ?, settings_json = ?, updated_at = ? WHERE id = ?',
+            (next_name, settings_json, utcnow_iso(), workspace_id)
         )
         conn.commit()
         updated = get_workspace_record(conn, workspace_id)
@@ -1784,8 +2551,19 @@ def create_workspace_invitations(workspace_id):
         workspace_row = get_workspace_record(conn, workspace_id)
         if not workspace_row:
             return jsonify({'error': 'Workspace not found'}), 404
-        if workspace_row.get('owner_username') != username:
+        workspace_settings = normalize_workspace_settings(workspace_row.get('settings_json'))
+        is_owner = workspace_row.get('owner_username') == username
+        can_invite_as_member = workspace_settings.get('allow_member_invites') and workspace_belongs_to_user(
+            conn, workspace_id, username
+        )
+        if not is_owner and not can_invite_as_member:
             return jsonify({'error': 'Only workspace owner can invite members'}), 403
+
+        requested_expiry = data.get('expiry_days', None)
+        if requested_expiry is None or str(requested_expiry).strip() == '':
+            expiry_days = workspace_settings.get('default_invite_expiry_days', INVITE_EXPIRY_DAYS)
+        else:
+            expiry_days = requested_expiry
 
         expire_workspace_invitations(conn, workspace_id)
         now_iso = utcnow_iso()
@@ -2039,9 +2817,9 @@ def get_invitation_by_token(token):
             user_email = normalize_email(user_row.get('email', ''))
             invite_email = normalize_email(invitation.get('email', ''))
             if not user_email:
-                mismatch_reason = '当前账号未绑定邮箱，无法验证邀请归属'
+                mismatch_reason = 'The current account has no bound email, so invitation ownership cannot be verified'
             elif user_email != invite_email:
-                mismatch_reason = '当前账号邮箱与邀请邮箱不匹配'
+                mismatch_reason = 'The current account email does not match the invited email'
             elif invitation.get('status') == 'pending':
                 can_request = True
             elif invitation.get('status') == 'requested':
@@ -2049,7 +2827,7 @@ def get_invitation_by_token(token):
 
         payload = serialize_invitation_row(invitation)
         payload.update({
-            'workspace_name': invitation.get('workspace_name', ''),
+            'workspace_name': normalize_workspace_name(invitation.get('workspace_name', ''), invitation.get('owner_username', '')),
             'owner_username': invitation.get('owner_username', ''),
             'requires_owner_confirmation': True,
             'can_request': can_request,
@@ -2146,22 +2924,210 @@ def request_join_by_invitation(token):
 
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
-    username = request.args.get('username')
+    username = (request.args.get('username') or '').strip()
+    workspace_id = (request.args.get('workspace_id') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    query = (request.args.get('q') or '').strip().lower()
+    tag_filter = (request.args.get('tag') or '').strip().lower()
+    category_filter = (request.args.get('category') or '').strip().lower()
+    start_date = (request.args.get('start_date') or '').strip()
+    end_date = (request.args.get('end_date') or '').strip()
+    file_type_filter = (request.args.get('file_type') or '').strip().lower().lstrip('.')
+    include_meta = parse_bool(request.args.get('include_meta') or request.args.get('meta'), False)
+    include_facets = parse_bool(request.args.get('include_facets'), False)
+    limit = parse_int(request.args.get('limit'), 20, 1, 100)
+    offset = parse_int(request.args.get('offset'), 0, 0)
+    sort_key = (request.args.get('sort') or 'newest').strip().lower()
+    order_by_map = {
+        'newest': "uploaded_at DESC, id DESC",
+        'oldest': "uploaded_at ASC, id ASC",
+        'title_asc': "LOWER(COALESCE(title, '')) ASC, id ASC",
+        'title_desc': "LOWER(COALESCE(title, '')) DESC, id DESC",
+        'category_asc': "LOWER(COALESCE(category, '')) ASC, LOWER(COALESCE(title, '')) ASC, id ASC",
+    }
+    order_by_sql = order_by_map.get(sort_key, order_by_map['newest'])
+
     conn = get_db_connection()
     try:
-        if username:
-            cursor = conn.execute(
-                'SELECT * FROM documents WHERE username = ? ORDER BY uploaded_at DESC, id DESC',
-                (username,)
+        if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+            return jsonify({'error': 'No access to this workspace'}), 403
+
+        where_parts = ['username = ?']
+        params = [username]
+        if workspace_id:
+            where_parts.append('workspace_id = ?')
+            params.append(workspace_id)
+        if category_filter:
+            where_parts.append("LOWER(COALESCE(category, '')) = ?")
+            params.append(category_filter)
+        if tag_filter:
+            where_parts.append("(',' || LOWER(COALESCE(tags, '')) || ',') LIKE ?")
+            params.append(f'%,{tag_filter},%')
+        if query:
+            where_parts.append(
+                "("
+                "LOWER(COALESCE(title, '')) LIKE ? OR "
+                "LOWER(COALESCE(category, '')) LIKE ? OR "
+                "LOWER(COALESCE(content, '')) LIKE ? OR "
+                "LOWER(COALESCE(tags, '')) LIKE ?"
+                ")"
             )
-            docs = cursor.fetchall()
-        else:
-            cursor = conn.execute('SELECT * FROM documents ORDER BY uploaded_at DESC, id DESC')
-            docs = cursor.fetchall()
-        
-        return jsonify([dict(doc) for doc in docs])
+            like_query = f'%{query}%'
+            params.extend([like_query, like_query, like_query, like_query])
+        if start_date:
+            where_parts.append("COALESCE(uploaded_at, '') >= ?")
+            params.append(f'{start_date}T00:00:00')
+        if end_date:
+            where_parts.append("COALESCE(uploaded_at, '') <= ?")
+            params.append(f'{end_date}T23:59:59')
+        if file_type_filter:
+            if file_type_filter in ('image', 'images'):
+                image_exts = ('png', 'jpg', 'jpeg', 'webp', 'gif')
+                placeholders = ','.join('?' for _ in image_exts)
+                where_parts.append(f"LOWER(COALESCE(file_type, '')) IN ({placeholders})")
+                params.extend(image_exts)
+            elif file_type_filter in ('editable', 'editables'):
+                editable_exts = ('txt', 'docx')
+                placeholders = ','.join('?' for _ in editable_exts)
+                where_parts.append(f"LOWER(COALESCE(file_type, '')) IN ({placeholders})")
+                params.extend(editable_exts)
+            elif re.fullmatch(r'[a-z0-9]{1,12}', file_type_filter):
+                where_parts.append("LOWER(COALESCE(file_type, '')) = ?")
+                params.append(file_type_filter)
+
+        where_sql = ' AND '.join(where_parts) if where_parts else '1=1'
+
+        total_cursor = conn.execute(
+            f'''
+            SELECT COUNT(1) AS total
+            FROM documents
+            WHERE {where_sql}
+            ''',
+            params
+        )
+        total_row = row_to_dict(total_cursor.fetchone()) or {}
+        total = parse_int(total_row.get('total', 0), 0, 0)
+
+        list_params = [*params, limit, offset]
+        cursor = conn.execute(
+            f'''
+            SELECT *
+            FROM documents
+            WHERE {where_sql}
+            ORDER BY {order_by_sql}
+            LIMIT ? OFFSET ?
+            ''',
+            list_params
+        )
+        docs = [dict(doc) for doc in cursor.fetchall()]
+        if include_meta:
+            payload = {
+                'items': docs,
+                'total': total,
+                'limit': limit,
+                'offset': offset,
+                'has_more': (offset + len(docs)) < total,
+            }
+            if include_facets:
+                facet_cursor = conn.execute(
+                    f'''
+                    SELECT category, tags, file_type
+                    FROM documents
+                    WHERE {where_sql}
+                    ''',
+                    params
+                )
+                tag_set = set()
+                category_set = set()
+                file_type_counts = {}
+                for row in facet_cursor.fetchall():
+                    item = row_to_dict(row)
+                    category = normalize_document_category((item or {}).get('category', ''))
+                    category_set.add(category or DEFAULT_DOCUMENT_CATEGORY)
+                    raw_tags = str((item or {}).get('tags') or '')
+                    for raw_tag in raw_tags.split(','):
+                        safe_tag = raw_tag.strip()
+                        if safe_tag:
+                            tag_set.add(safe_tag)
+                    ext = str((item or {}).get('file_type') or '').strip().lower().strip('.')
+                    if ext:
+                        file_type_counts[ext] = file_type_counts.get(ext, 0) + 1
+                        if ext in ('png', 'jpg', 'jpeg', 'webp', 'gif'):
+                            file_type_counts['image'] = file_type_counts.get('image', 0) + 1
+                        if ext in ('txt', 'docx'):
+                            file_type_counts['editable'] = file_type_counts.get('editable', 0) + 1
+                payload['facets'] = {
+                    'tags': sorted(tag_set, key=lambda value: value.lower()),
+                    'categories': sorted(category_set, key=lambda value: value.lower()),
+                    'file_types': file_type_counts,
+                }
+            return jsonify(payload), 200
+        return jsonify(docs), 200
     finally:
         conn.close()
+
+
+@app.route('/api/workspaces/<workspace_id>/documents', methods=['DELETE'])
+def clear_workspace_documents(workspace_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can clear workspace documents'}), 403
+
+        docs_cursor = conn.execute(
+            'SELECT id, filename FROM documents WHERE workspace_id = ?',
+            (workspace_id,)
+        )
+        docs = [row_to_dict(item) for item in docs_cursor.fetchall()]
+        if not docs:
+            return jsonify({'deleted_count': 0, 'warnings': []}), 200
+
+        doc_ids = [parse_int(item.get('id'), 0, 0) for item in docs]
+        doc_ids = [item for item in doc_ids if item > 0]
+        if doc_ids:
+            placeholders = ','.join(['?'] * len(doc_ids))
+            conn.execute(
+                f'DELETE FROM document_share_links WHERE document_id IN ({placeholders})',
+                tuple(doc_ids)
+            )
+
+        conn.execute('DELETE FROM documents WHERE workspace_id = ?', (workspace_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    warnings = []
+    for doc in docs:
+        filename = str(doc.get('filename') or '').strip()
+        if not filename:
+            continue
+        try:
+            if S3_BUCKET and s3_client:
+                s3_client.delete_object(Bucket=S3_BUCKET, Key=filename)
+            else:
+                local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
+                if os.path.exists(local_path):
+                    os.remove(local_path)
+        except Exception as e:
+            warnings.append(f'{filename}: {e}')
+
+    return jsonify({
+        'workspace_id': workspace_id,
+        'deleted_count': len(docs),
+        'warnings': warnings,
+    }), 200
 
 # ================= 修改后的上传接口 (支持 S3) =================
 @app.route('/api/documents/upload', methods=['POST'])
@@ -2170,7 +3136,19 @@ def upload_file():
         return jsonify({'error': 'No file part'}), 400
     
     file = request.files['file']
-    username = request.form.get('username', 'Anonymous')
+    username = (request.form.get('username') or 'Anonymous').strip()
+    requested_workspace_id = (request.form.get('workspace_id') or '').strip()
+    requested_category = normalize_document_category(request.form.get('category', ''))
+
+    if requested_workspace_id and username:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        try:
+            if not workspace_belongs_to_user(conn, requested_workspace_id, username):
+                return jsonify({'error': 'No access to this workspace'}), 403
+        finally:
+            conn.close()
     
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
@@ -2215,12 +3193,40 @@ def upload_file():
 
         # 5. 存入数据库
         conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
         try:
+            workspace_id = ''
+            workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+            if username:
+                if requested_workspace_id:
+                    if not workspace_belongs_to_user(conn, requested_workspace_id, username):
+                        return jsonify({'error': 'No access to this workspace'}), 403
+                    workspace_id = requested_workspace_id
+                else:
+                    workspace_id = get_or_create_default_workspace_id(conn, username)
+
+                workspace_row = get_workspace_record(conn, workspace_id)
+                workspace_settings = normalize_workspace_settings(
+                    (workspace_row or {}).get('settings_json')
+                )
+                if not workspace_settings.get('allow_uploads', True):
+                    return jsonify({'error': 'Uploads are disabled in this workspace settings'}), 403
+
+            if requested_category:
+                final_category = requested_category
+            elif workspace_settings.get('auto_categorize', True):
+                final_category = infer_document_category(original_filename, extracted_text)
+            else:
+                final_category = normalize_document_category(workspace_settings.get('default_category'))
+                if not final_category:
+                    final_category = DEFAULT_DOCUMENT_CATEGORY
+
             conn.execute(
                 '''
                 INSERT INTO documents (
-                    filename, title, uploaded_at, file_type, content, content_html, username, tags
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     unique_filename,
@@ -2230,7 +3236,9 @@ def upload_file():
                     extracted_text,
                     extracted_html if ext in ('docx', 'txt') else '',
                     username,
-                    ''
+                    '',
+                    final_category,
+                    workspace_id
                 )
             )
             conn.commit()
@@ -2245,16 +3253,50 @@ def upload_file():
 
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
+    username = (request.args.get('username') or '').strip()
+    share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
     try:
         cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
         doc = cursor.fetchone()
         
         if doc:
+            allowed, reason = check_document_access(conn, doc, username, share_token)
+            if not allowed:
+                return jsonify({'error': reason}), 403
+
             conn.execute('UPDATE documents SET last_access_at = ? WHERE id = ?', 
                          (datetime.utcnow().isoformat(), doc_id))
             conn.commit()
             doc_data = dict(doc)
+            workspace_id = str(doc_data.get('workspace_id') or '').strip()
+            workspace_settings = get_workspace_settings(conn, workspace_id)
+            doc_data['link_sharing_mode'] = get_document_link_sharing_mode(conn, doc)
+            doc_data['can_manage_share_links'] = user_can_manage_document_share_links(conn, doc, username)
+            doc_data['allow_ai_tools'] = parse_bool(workspace_settings.get('allow_ai_tools', True), True)
+            doc_data['allow_ocr'] = parse_bool(workspace_settings.get('allow_ocr', True), True)
+            doc_data['allow_export'] = parse_bool(workspace_settings.get('allow_export', True), True)
+            doc_data['summary_length'] = str(
+                workspace_settings.get('summary_length', DEFAULT_WORKSPACE_SETTINGS.get('summary_length', 'medium'))
+                or 'medium'
+            ).strip().lower()
+            doc_data['keyword_limit'] = parse_int(
+                workspace_settings.get('keyword_limit', DEFAULT_WORKSPACE_SETTINGS.get('keyword_limit', 5)),
+                5,
+                3,
+                12
+            )
+            doc_data['default_share_expiry_days'] = parse_int(
+                workspace_settings.get(
+                    'default_share_expiry_days',
+                    DEFAULT_WORKSPACE_SETTINGS.get('default_share_expiry_days', 7)
+                ),
+                7,
+                1,
+                30
+            )
             ext = str(doc_data.get('file_type') or '').lower().strip('.')
             if ext in ('docx', 'txt') and not (doc_data.get('content_html') or '').strip():
                 doc_data['content_html'] = plaintext_to_html(doc_data.get('content') or '')
@@ -2281,6 +3323,7 @@ def delete_document(doc_id):
         if username and owner and username != owner:
             return jsonify({'error': 'You can only delete your own documents'}), 403
 
+        conn.execute('DELETE FROM document_share_links WHERE document_id = ?', (doc_id,))
         conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
         conn.commit()
     finally:
@@ -2305,9 +3348,355 @@ def delete_document(doc_id):
     return jsonify(response), 200
 
 
+@app.route('/api/documents/<int:doc_id>/share-links', methods=['POST'])
+def create_document_share_link(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        doc_data = row_to_dict(doc) or {}
+        workspace_id = str(doc_data.get('workspace_id') or '').strip()
+
+        if workspace_id:
+            workspace_settings = get_workspace_settings(conn, workspace_id)
+        else:
+            workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can create share links'}), 403
+
+        link_mode = workspace_settings.get('link_sharing_mode', DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode'])
+        if link_mode == 'restricted':
+            return jsonify({'error': 'Link sharing is restricted in this workspace settings'}), 403
+
+        requested_expiry = data.get('expiry_days', None)
+        if requested_expiry is None or str(requested_expiry).strip() == '':
+            expiry_days = workspace_settings.get('default_share_expiry_days', 7)
+        else:
+            expiry_days = requested_expiry
+        expiry_days = parse_int(expiry_days, 7, 1, 30)
+        expires_at = expires_at_for_days(expiry_days)
+
+        max_active_share_links = parse_int(
+            workspace_settings.get('max_active_share_links_per_document', 5),
+            5,
+            1,
+            20
+        )
+        auto_revoke_previous = parse_bool(
+            workspace_settings.get('auto_revoke_previous_share_links', False),
+            False
+        )
+
+        active_count = count_active_document_share_links(conn, doc_id)
+        revoked_before_create = 0
+        if auto_revoke_previous and active_count > 0:
+            revoked_before_create = active_count
+            conn.execute(
+                '''
+                UPDATE document_share_links
+                SET status = 'revoked'
+                WHERE document_id = ? AND status = 'active'
+                ''',
+                (doc_id,)
+            )
+            conn.commit()
+            active_count = 0
+
+        if active_count >= max_active_share_links:
+            return jsonify({
+                'error': (
+                    f'Active share links reached limit ({max_active_share_links}). '
+                    'Revoke existing links or enable auto-revoke in workspace settings.'
+                ),
+                'active_count': active_count,
+                'max_active_share_links_per_document': max_active_share_links,
+            }), 409
+
+        token = create_document_share_token()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO document_share_links (
+                    document_id, workspace_id, token, created_by, status, expires_at, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    doc_id,
+                    workspace_id,
+                    token,
+                    username,
+                    'active',
+                    expires_at,
+                    utcnow_iso(),
+                )
+            )
+        except Exception:
+            return jsonify({'error': 'Failed to generate share token'}), 500
+
+        conn.commit()
+        share_cursor = conn.execute(
+            'SELECT * FROM document_share_links WHERE token = ? LIMIT 1',
+            (token,)
+        )
+        share_row = row_to_dict(share_cursor.fetchone())
+        payload = serialize_document_share_link_row(share_row)
+        payload['expiry_days'] = expiry_days
+        payload['link_sharing_mode'] = link_mode
+        payload['max_active_share_links_per_document'] = max_active_share_links
+        payload['auto_revoke_previous_share_links'] = auto_revoke_previous
+        payload['revoked_before_create'] = revoked_before_create
+        return jsonify(payload), 201
+    finally:
+        conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>/share-links', methods=['GET'])
+def list_document_share_links(doc_id):
+    username = (request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+
+        doc_data = row_to_dict(doc) or {}
+        workspace_id = str(doc_data.get('workspace_id') or '').strip()
+        link_mode = get_document_link_sharing_mode(conn, doc)
+        items = list_document_share_link_payloads(conn, doc_id, limit=30)
+        return jsonify({
+            'document_id': doc_id,
+            'workspace_id': workspace_id,
+            'link_sharing_mode': link_mode,
+            'items': items,
+        }), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>/share-links', methods=['DELETE'])
+def revoke_all_document_share_links(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+
+        count_cursor = conn.execute(
+            '''
+            SELECT COUNT(1) AS total
+            FROM document_share_links
+            WHERE document_id = ? AND status != 'revoked'
+            ''',
+            (doc_id,)
+        )
+        count_row = row_to_dict(count_cursor.fetchone()) or {}
+        revoke_count = parse_int(count_row.get('total', 0), 0, 0)
+
+        conn.execute(
+            '''
+            UPDATE document_share_links
+            SET status = 'revoked'
+            WHERE document_id = ? AND status != 'revoked'
+            ''',
+            (doc_id,)
+        )
+        conn.commit()
+
+        items = list_document_share_link_payloads(conn, doc_id, limit=30)
+        return jsonify({
+            'message': 'All share links revoked',
+            'document_id': doc_id,
+            'revoked_count': revoke_count,
+            'items': items,
+        }), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/documents/<int:doc_id>/share-links/<int:share_link_id>', methods=['DELETE'])
+def revoke_document_share_link(doc_id, share_link_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+
+        link_cursor = conn.execute(
+            'SELECT * FROM document_share_links WHERE id = ? AND document_id = ?',
+            (share_link_id, doc_id)
+        )
+        link_row = row_to_dict(link_cursor.fetchone())
+        if not link_row:
+            return jsonify({'error': 'Share link not found'}), 404
+
+        current_status = str(link_row.get('status') or '').strip().lower()
+        if current_status == 'revoked':
+            payload = to_document_share_link_payload(link_row)
+            payload['message'] = 'Share link already revoked'
+            return jsonify(payload), 200
+
+        conn.execute(
+            "UPDATE document_share_links SET status = 'revoked' WHERE id = ?",
+            (share_link_id,)
+        )
+        conn.commit()
+        refreshed_cursor = conn.execute(
+            'SELECT * FROM document_share_links WHERE id = ? LIMIT 1',
+            (share_link_id,)
+        )
+        refreshed = row_to_dict(refreshed_cursor.fetchone()) or link_row
+        payload = to_document_share_link_payload(refreshed)
+        payload['message'] = 'Share link revoked'
+        return jsonify(payload), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/share-links/<token>', methods=['GET'])
+def get_document_by_share_token(token):
+    safe_token = str(token or '').strip()
+    username = (request.args.get('username') or '').strip()
+    if not safe_token:
+        return jsonify({'error': 'Missing share token'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        share_cursor = conn.execute(
+            '''
+            SELECT *
+            FROM document_share_links
+            WHERE token = ?
+            ORDER BY id DESC
+            LIMIT 1
+            ''',
+            (safe_token,)
+        )
+        share_row = row_to_dict(share_cursor.fetchone())
+        if not share_row:
+            return jsonify({'error': 'Share link not found'}), 404
+
+        doc_id = parse_int(share_row.get('document_id'), 0, 0)
+        if doc_id <= 0:
+            return jsonify({'error': 'Share link is invalid'}), 404
+
+        token_ok, validated_share_row, token_reason = validate_document_share_token(
+            conn,
+            doc_id,
+            safe_token,
+            mark_access=False
+        )
+        if not token_ok:
+            return jsonify({'error': token_reason or 'Share link is invalid'}), 403
+        if validated_share_row:
+            share_row = validated_share_row
+
+        doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = doc_cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username, safe_token)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        refreshed_share_cursor = conn.execute(
+            'SELECT * FROM document_share_links WHERE token = ? ORDER BY id DESC LIMIT 1',
+            (safe_token,)
+        )
+        refreshed_share_row = row_to_dict(refreshed_share_cursor.fetchone()) or share_row
+
+        conn.execute(
+            'UPDATE documents SET last_access_at = ? WHERE id = ?',
+            (utcnow_iso(), doc_id)
+        )
+        conn.commit()
+
+        doc_data = dict(doc)
+        workspace_id = str(doc_data.get('workspace_id') or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        doc_data['link_sharing_mode'] = get_document_link_sharing_mode(conn, doc)
+        doc_data['can_manage_share_links'] = user_can_manage_document_share_links(conn, doc, username)
+        doc_data['share'] = serialize_document_share_link_row(refreshed_share_row)
+        doc_data['allow_ai_tools'] = parse_bool(workspace_settings.get('allow_ai_tools', True), True)
+        doc_data['allow_ocr'] = parse_bool(workspace_settings.get('allow_ocr', True), True)
+        doc_data['allow_export'] = parse_bool(workspace_settings.get('allow_export', True), True)
+        doc_data['summary_length'] = str(
+            workspace_settings.get('summary_length', DEFAULT_WORKSPACE_SETTINGS.get('summary_length', 'medium'))
+            or 'medium'
+        ).strip().lower()
+        doc_data['keyword_limit'] = parse_int(
+            workspace_settings.get('keyword_limit', DEFAULT_WORKSPACE_SETTINGS.get('keyword_limit', 5)),
+            5,
+            3,
+            12
+        )
+        doc_data['default_share_expiry_days'] = parse_int(
+            workspace_settings.get(
+                'default_share_expiry_days',
+                DEFAULT_WORKSPACE_SETTINGS.get('default_share_expiry_days', 7)
+            ),
+            7,
+            1,
+            30
+        )
+        ext = str(doc_data.get('file_type') or '').lower().strip('.')
+        if ext in ('docx', 'txt') and not (doc_data.get('content_html') or '').strip():
+            doc_data['content_html'] = plaintext_to_html(doc_data.get('content') or '')
+        return jsonify(doc_data), 200
+    finally:
+        conn.close()
+
+
 @app.route('/api/documents/<int:doc_id>/tags', methods=['PUT'])
 def update_document_tags(doc_id):
     data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
     raw_tags = data.get('tags', [])
 
     if isinstance(raw_tags, list):
@@ -2321,6 +3710,23 @@ def update_document_tags(doc_id):
 
     conn = get_db_connection()
     try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
         conn.execute('UPDATE documents SET tags = ? WHERE id = ?', (tags_value, doc_id))
         conn.commit()
 
@@ -2334,9 +3740,86 @@ def update_document_tags(doc_id):
         conn.close()
 
 
+@app.route('/api/documents/<int:doc_id>/category', methods=['PUT'])
+def update_document_category(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    next_category = normalize_document_category(data.get('category', ''))
+    if not next_category:
+        next_category = DEFAULT_DOCUMENT_CATEGORY
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        conn.execute('UPDATE documents SET category = ? WHERE id = ?', (next_category, doc_id))
+        conn.commit()
+
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        return jsonify(dict(doc)), 200
+    finally:
+        conn.close()
+
+
+def extract_key_sentences(text_content, keywords=None, limit=3):
+    normalized = normalize_newlines(text_content or '')
+    fragments = [part.strip() for part in re.split(r'(?<=[.!?。！？])\s+', normalized) if part.strip()]
+    if not fragments:
+        return []
+
+    keyword_list = [
+        str(item).strip().lower()
+        for item in (keywords or [])
+        if str(item).strip()
+    ]
+    keyword_list = [item for item in keyword_list if item != 'not enough text']
+
+    scored = []
+    for idx, sentence in enumerate(fragments[:150]):
+        lower_sentence = sentence.lower()
+        score = 0
+        for keyword in keyword_list:
+            score += lower_sentence.count(keyword) * 2
+        score += min(len(sentence.split()) / 8.0, 1.5)
+        scored.append((score, -idx, sentence))
+
+    scored.sort(reverse=True)
+    top = []
+    for _, _, sentence in scored:
+        if sentence in top:
+            continue
+        top.append(sentence)
+        if len(top) >= max(1, int(limit or 3)):
+            break
+
+    if not top:
+        top = fragments[:max(1, int(limit or 3))]
+    return top
+
+
 @app.route('/api/documents/<int:doc_id>/content', methods=['PUT'])
 def update_document_content(doc_id):
     data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
     content = data.get('content', '')
     content_html = data.get('content_html')
 
@@ -2353,6 +3836,18 @@ def update_document_content(doc_id):
         doc = cursor.fetchone()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
 
         file_type = (doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']) or ''
         file_type = str(file_type).lower().strip('.')
@@ -2395,6 +3890,9 @@ def update_document_content(doc_id):
 
 @app.route('/api/documents/<int:doc_id>/pdf', methods=['PUT'])
 def update_document_pdf_file(doc_id):
+    username = (
+        (request.args.get('username') or request.form.get('username') or '').strip()
+    )
     if request.files and 'file' in request.files:
         file_bytes = request.files['file'].read()
     else:
@@ -2412,6 +3910,18 @@ def update_document_pdf_file(doc_id):
         doc = cursor.fetchone()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
 
         file_type = (doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']) or ''
         if str(file_type).lower() != 'pdf':
@@ -2442,20 +3952,28 @@ def update_document_pdf_file(doc_id):
 
 @app.route('/api/documents/<int:doc_id>/file', methods=['GET'])
 def get_document_file(doc_id):
+    username = (request.args.get('username') or '').strip()
+    share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
     try:
-        cursor = conn.execute('SELECT filename, title, file_type FROM documents WHERE id = ?', (doc_id,))
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
         doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username, share_token)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+
+        doc_data = row_to_dict(doc) or {}
+        filename = doc_data.get('filename', '')
+        title = doc_data.get('title', '')
+        file_ext = doc_data.get('file_type', '')
+        mimetype = detect_mimetype(filename, file_ext)
     finally:
         conn.close()
-
-    if not doc:
-        return jsonify({'error': 'Document not found'}), 404
-
-    filename = doc['filename']
-    title = doc.get('title') if hasattr(doc, 'get') else doc['title']
-    file_ext = doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']
-    mimetype = detect_mimetype(filename, file_ext)
 
     if S3_BUCKET and s3_client:
         try:
@@ -2628,19 +4146,39 @@ def ocr_health():
 @app.route('/api/extract-text', methods=['POST'])
 @app.route('/api/extract-text/<int:doc_id>', methods=['POST'])
 def extract_text_from_image(doc_id=None):
+    username = (request.values.get('username') or '').strip()
+    share_token = (request.values.get('share_token') or '').strip()
+    requested_workspace_id = (request.values.get('workspace_id') or '').strip()
     img_bytes = b''
     mimetype = 'application/octet-stream'
 
     if doc_id is not None:
         conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        doc = None
+        workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
         try:
-            cursor = conn.execute('SELECT filename, file_type FROM documents WHERE id = ?', (doc_id,))
+            cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
             doc = cursor.fetchone()
+            if doc:
+                allowed, reason = check_document_access(conn, doc, username, share_token)
+                if not allowed:
+                    return jsonify({"error": reason}), 403
+
+                workspace_id = str(
+                    (doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or ''
+                ).strip()
+                workspace_settings = get_workspace_settings(conn, workspace_id)
         finally:
             conn.close()
 
         if not doc:
             return jsonify({"error": "Document not found"}), 404
+        if not workspace_settings.get('allow_ai_tools', True):
+            return jsonify({"error": "AI tools are disabled in this workspace settings"}), 403
+        if not workspace_settings.get('allow_ocr', True):
+            return jsonify({"error": "OCR is disabled in this workspace settings"}), 403
 
         filename = doc.get('filename') if hasattr(doc, 'get') else doc['filename']
         file_type = doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']
@@ -2661,6 +4199,36 @@ def extract_text_from_image(doc_id=None):
         except Exception as e:
             return jsonify({"error": f"Failed to read source image: {e}"}), 500
     else:
+        if username:
+            conn = get_db_connection()
+            if not conn:
+                return jsonify({'error': 'Database connection failed'}), 500
+            try:
+                workspace_id = requested_workspace_id
+                if not workspace_id:
+                    default_cursor = conn.execute(
+                        '''
+                        SELECT id
+                        FROM workspaces
+                        WHERE owner_username = ?
+                        ORDER BY created_at ASC, id ASC
+                        LIMIT 1
+                        ''',
+                        (username,)
+                    )
+                    default_row = row_to_dict(default_cursor.fetchone())
+                    workspace_id = str(default_row.get('id') or '').strip()
+                if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+                    return jsonify({'error': 'No access to this workspace'}), 403
+                workspace_settings = get_workspace_settings(conn, workspace_id)
+            finally:
+                conn.close()
+
+            if not workspace_settings.get('allow_ai_tools', True):
+                return jsonify({"error": "AI tools are disabled in this workspace settings"}), 403
+            if not workspace_settings.get('allow_ocr', True):
+                return jsonify({"error": "OCR is disabled in this workspace settings"}), 403
+
         if 'image' not in request.files:
             return jsonify({"error": "No image provided"}), 400
         file = request.files['image']
@@ -2728,10 +4296,62 @@ def extract_text_from_image(doc_id=None):
 @app.route('/api/analyze-text', methods=['POST'])
 def analyze_text():
     data = request.get_json(silent=True) or {}
+    username = str(data.get('username') or '').strip()
+    requested_workspace_id = str(data.get('workspace_id') or '').strip()
+    workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+
+    if username:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        try:
+            workspace_id = requested_workspace_id
+            if not workspace_id:
+                default_cursor = conn.execute(
+                    '''
+                    SELECT id
+                    FROM workspaces
+                    WHERE owner_username = ?
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 1
+                    ''',
+                    (username,)
+                )
+                default_row = row_to_dict(default_cursor.fetchone())
+                workspace_id = str(default_row.get('id') or '').strip()
+            if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+                return jsonify({'error': 'No access to this workspace'}), 403
+            workspace_settings = get_workspace_settings(conn, workspace_id)
+        finally:
+            conn.close()
+
+        if not workspace_settings.get('allow_ai_tools', True):
+            return jsonify({"error": "AI tools are disabled in this workspace settings"}), 403
+
     text_content = (data.get('text') or '').strip()
+    summary_length = str(
+        data.get('summary_length')
+        or workspace_settings.get('summary_length')
+        or DEFAULT_WORKSPACE_SETTINGS['summary_length']
+    ).strip().lower()
+    if summary_length not in WORKSPACE_SUMMARY_LENGTH_LEVELS:
+        summary_length = DEFAULT_WORKSPACE_SETTINGS['summary_length']
+    keyword_limit = parse_int(
+        data.get('keyword_limit', workspace_settings.get('keyword_limit', DEFAULT_WORKSPACE_SETTINGS['keyword_limit'])),
+        5,
+        3,
+        12
+    )
 
     if not text_content:
         return jsonify({"error": "No text provided"}), 400
+
+    token_map = {
+        'short': {'max_new_tokens': 80, 'min_new_tokens': 18, 'sentence_limit': 2},
+        'medium': {'max_new_tokens': 120, 'min_new_tokens': 24, 'sentence_limit': 3},
+        'long': {'max_new_tokens': 200, 'min_new_tokens': 48, 'sentence_limit': 5},
+    }
+    length_options = token_map.get(summary_length, token_map['medium'])
 
     summary = ""
     summary_source = "fallback"
@@ -2741,7 +4361,11 @@ def analyze_text():
         try:
             payload = {
                 "inputs": text_content[:4000],
-                "parameters": {"max_new_tokens": 120, "min_new_tokens": 24, "do_sample": False},
+                "parameters": {
+                    "max_new_tokens": length_options['max_new_tokens'],
+                    "min_new_tokens": length_options['min_new_tokens'],
+                    "do_sample": False
+                },
                 "options": {"wait_for_model": True}
             }
             response = requests.post(hf_model_url(SUMMARIZER_MODEL_ID), headers=hf_headers, json=payload, timeout=90)
@@ -2767,22 +4391,47 @@ def analyze_text():
     keywords = []
     try:
         if len(text_content.split()) > 5:
-            vectorizer = TfidfVectorizer(stop_words='english', max_features=5)
+            vectorizer = TfidfVectorizer(stop_words='english', max_features=keyword_limit)
             vectorizer.fit_transform([text_content])
             keywords = vectorizer.get_feature_names_out().tolist()
     except Exception:
         keywords = ["Not enough text"]
 
+    key_sentences = extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
+
     return jsonify({
         "summary": summary,
         "keywords": keywords,
+        "key_sentences": key_sentences,
         "summary_source": summary_source,
-        "summary_note": summary_note
+        "summary_note": summary_note,
+        "options_used": {
+            "summary_length": summary_length,
+            "keyword_limit": keyword_limit,
+            "sentence_limit": length_options['sentence_limit'],
+        }
     })
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 @app.route('/uploads/<filename>')
 def uploaded_file(filename):
+    username = (request.args.get('username') or '').strip()
+    share_token = (request.args.get('share_token') or '').strip()
+    conn = get_db_connection()
+    if conn:
+        try:
+            cursor = conn.execute(
+                'SELECT * FROM documents WHERE filename = ? ORDER BY id DESC LIMIT 1',
+                (filename,)
+            )
+            doc = cursor.fetchone()
+            if doc:
+                allowed, reason = check_document_access(conn, doc, username, share_token)
+                if not allowed:
+                    return jsonify({'error': reason}), 403
+        finally:
+            conn.close()
+
     # 如果配置了 S3，直接生成一个 S3 的链接跳转过去
     if S3_BUCKET and s3_client:
         try:

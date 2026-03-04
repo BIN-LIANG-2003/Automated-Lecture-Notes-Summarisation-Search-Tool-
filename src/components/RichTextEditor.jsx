@@ -19,18 +19,18 @@ import TableHeader from '@tiptap/extension-table-header';
 import TableCell from '@tiptap/extension-table-cell';
 
 const BLOCK_OPTIONS = [
-  { label: '正文', value: 'paragraph' },
-  { label: '标题 1', value: 'h1' },
-  { label: '标题 2', value: 'h2' },
-  { label: '标题 3', value: 'h3' },
-  { label: '引用', value: 'blockquote' },
-  { label: '代码块', value: 'codeBlock' },
+  { label: 'Paragraph', value: 'paragraph' },
+  { label: 'Heading 1', value: 'h1' },
+  { label: 'Heading 2', value: 'h2' },
+  { label: 'Heading 3', value: 'h3' },
+  { label: 'Quote', value: 'blockquote' },
+  { label: 'Code Block', value: 'codeBlock' },
 ];
 
 const FONT_FAMILY_OPTIONS = [
-  { label: '默认字体', value: '' },
-  { label: '微软雅黑', value: 'Microsoft YaHei' },
-  { label: '宋体', value: 'SimSun' },
+  { label: 'Default Font', value: '' },
+  { label: 'Microsoft YaHei', value: 'Microsoft YaHei' },
+  { label: 'SimSun', value: 'SimSun' },
   { label: 'Arial', value: 'Arial' },
   { label: 'Times', value: 'Times New Roman' },
   { label: 'Courier', value: 'Courier New' },
@@ -198,7 +198,8 @@ export default function RichTextEditor({
   value = '',
   onChange,
   disabled = false,
-  placeholder = '开始编辑...',
+  placeholder = 'Start editing...',
+  requestTextInput,
 }) {
   const [refreshKey, setRefreshKey] = useState(0);
   const [imageError, setImageError] = useState('');
@@ -323,10 +324,19 @@ export default function RichTextEditor({
     }
   };
 
-  const handleSetLink = () => {
+  const handleSetLink = async () => {
     if (!editor || disabled) return;
     const previousUrl = editor.getAttributes('link').href || 'https://';
-    const url = window.prompt('输入链接地址', previousUrl);
+    if (typeof requestTextInput !== 'function') return;
+    const url = await requestTextInput({
+      title: 'Insert Link',
+      description: 'Enter a URL. Leave empty to remove the link.',
+      placeholder: 'https://example.com',
+      initialValue: previousUrl,
+      confirmLabel: 'Apply',
+      cancelLabel: 'Cancel',
+      trimResult: true,
+    });
     if (url === null) return;
     if (!url.trim()) {
       editor.chain().focus().unsetLink().run();
@@ -348,13 +358,13 @@ export default function RichTextEditor({
     if (!file) return;
 
     if (!file.type.startsWith('image/')) {
-      setImageError('请选择图片文件。');
+      setImageError('Please choose an image file.');
       return;
     }
 
     const maxBytes = 8 * 1024 * 1024;
     if (file.size > maxBytes) {
-      setImageError('图片过大，请选择 8MB 以内的图片。');
+      setImageError('Image is too large. Please choose one under 8MB.');
       return;
     }
 
@@ -362,7 +372,7 @@ export default function RichTextEditor({
     reader.onload = () => {
       const src = typeof reader.result === 'string' ? reader.result : '';
       if (!src.startsWith('data:image/')) {
-        setImageError('读取图片失败，请重试。');
+        setImageError('Failed to read image. Please try again.');
         return;
       }
       const alt = file.name.replace(/\.[^/.]+$/, '');
@@ -370,7 +380,7 @@ export default function RichTextEditor({
       setImageError('');
     };
     reader.onerror = () => {
-      setImageError('读取图片失败，请重试。');
+      setImageError('Failed to read image. Please try again.');
     };
     reader.readAsDataURL(file);
   };
@@ -398,24 +408,24 @@ export default function RichTextEditor({
 
   return (
     <div className={`notion-rich-editor${disabled ? ' is-disabled' : ''}`}>
-      <div className="notion-rich-toolbar" role="toolbar" aria-label="文档样式工具栏">
+      <div className="notion-rich-toolbar" role="toolbar" aria-label="Document style toolbar">
         <div className="notion-rich-toolbar-row">
           <div className="notion-rich-group">
             <ToolButton
               label="↶"
-              title="撤销 (Ctrl/Cmd+Z)"
+              title="Undo (Ctrl/Cmd+Z)"
               onClick={() => run((chain) => chain.undo())}
               disabled={toolbarDisabled || !editor?.can().chain().focus().undo().run()}
             />
             <ToolButton
               label="↷"
-              title="重做 (Ctrl/Cmd+Shift+Z)"
+              title="Redo (Ctrl/Cmd+Shift+Z)"
               onClick={() => run((chain) => chain.redo())}
               disabled={toolbarDisabled || !editor?.can().chain().focus().redo().run()}
             />
             <ToolButton
-              label="清除格式"
-              title="清除样式"
+              label="Clear Format"
+              title="Clear styles"
               onClick={() => run((chain) => chain.clearNodes().unsetAllMarks())}
               disabled={toolbarDisabled}
             />
@@ -426,7 +436,7 @@ export default function RichTextEditor({
           <div className="notion-rich-group">
             <select
               className="notion-rich-select notion-rich-select-block"
-              aria-label="段落样式"
+              aria-label="Block style"
               value={state.blockType}
               onChange={(event) => setBlockType(event.target.value)}
               disabled={toolbarDisabled}
@@ -440,7 +450,7 @@ export default function RichTextEditor({
 
             <select
               className="notion-rich-select notion-rich-select-font"
-              aria-label="字体"
+              aria-label="Font family"
               value={state.fontFamily}
               onChange={(event) => {
                 const family = event.target.value;
@@ -461,7 +471,7 @@ export default function RichTextEditor({
 
             <select
               className="notion-rich-select notion-rich-select-size"
-              aria-label="字号"
+              aria-label="Font size"
               value={state.fontSize}
               onChange={(event) => run((chain) => chain.setFontSize(event.target.value))}
               disabled={toolbarDisabled}
@@ -479,42 +489,42 @@ export default function RichTextEditor({
           <div className="notion-rich-group">
             <ToolButton
               label="B"
-              title="加粗 (Ctrl/Cmd+B)"
+              title="Bold (Ctrl/Cmd+B)"
               onClick={() => run((chain) => chain.toggleBold())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('bold')}
             />
             <ToolButton
               label="I"
-              title="斜体 (Ctrl/Cmd+I)"
+              title="Italic (Ctrl/Cmd+I)"
               onClick={() => run((chain) => chain.toggleItalic())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('italic')}
             />
             <ToolButton
               label="U"
-              title="下划线 (Ctrl/Cmd+U)"
+              title="Underline (Ctrl/Cmd+U)"
               onClick={() => run((chain) => chain.toggleUnderline())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('underline')}
             />
             <ToolButton
               label="S"
-              title="删除线"
+              title="Strikethrough"
               onClick={() => run((chain) => chain.toggleStrike())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('strike')}
             />
             <ToolButton
               label="Sub"
-              title="下标"
+              title="Subscript"
               onClick={() => run((chain) => chain.toggleSubscript())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('subscript')}
             />
             <ToolButton
               label="Sup"
-              title="上标"
+              title="Superscript"
               onClick={() => run((chain) => chain.toggleSuperscript())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('superscript')}
@@ -524,8 +534,8 @@ export default function RichTextEditor({
 
         <div className="notion-rich-toolbar-row">
           <div className="notion-rich-group">
-            <label className="notion-rich-color" title="文字颜色">
-              字色
+            <label className="notion-rich-color" title="Text color">
+              Text
               <input
                 type="color"
                 value={state.textColor}
@@ -533,8 +543,8 @@ export default function RichTextEditor({
                 disabled={toolbarDisabled}
               />
             </label>
-            <label className="notion-rich-color" title="高亮颜色">
-              高亮
+            <label className="notion-rich-color" title="Highlight color">
+              Highlight
               <input
                 type="color"
                 value={state.highlightColor}
@@ -550,29 +560,29 @@ export default function RichTextEditor({
 
           <div className="notion-rich-group">
             <ToolButton
-              label="左"
-              title="左对齐"
+              label="Left"
+              title="Align left"
               onClick={() => run((chain) => chain.setTextAlign('left'))}
               disabled={toolbarDisabled}
               active={!!editor?.isActive({ textAlign: 'left' })}
             />
             <ToolButton
-              label="中"
-              title="居中"
+              label="Center"
+              title="Align center"
               onClick={() => run((chain) => chain.setTextAlign('center'))}
               disabled={toolbarDisabled}
               active={!!editor?.isActive({ textAlign: 'center' })}
             />
             <ToolButton
-              label="右"
-              title="右对齐"
+              label="Right"
+              title="Align right"
               onClick={() => run((chain) => chain.setTextAlign('right'))}
               disabled={toolbarDisabled}
               active={!!editor?.isActive({ textAlign: 'right' })}
             />
             <ToolButton
-              label="两端"
-              title="两端对齐"
+              label="Justify"
+              title="Justify text"
               onClick={() => run((chain) => chain.setTextAlign('justify'))}
               disabled={toolbarDisabled}
               active={!!editor?.isActive({ textAlign: 'justify' })}
@@ -583,37 +593,44 @@ export default function RichTextEditor({
 
           <div className="notion-rich-group">
             <ToolButton
-              label="• 列表"
-              title="无序列表"
+              label="• List"
+              title="Bullet list"
               onClick={() => run((chain) => chain.toggleBulletList())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('bulletList')}
             />
             <ToolButton
-              label="1. 列表"
-              title="有序列表"
+              label="1. List"
+              title="Numbered list"
               onClick={() => run((chain) => chain.toggleOrderedList())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('orderedList')}
             />
-            <ToolButton label="← 缩进" title="减少缩进" onClick={handleOutdent} disabled={toolbarDisabled} />
-            <ToolButton label="→ 缩进" title="增加缩进" onClick={handleIndent} disabled={toolbarDisabled} />
+            <ToolButton label="← Outdent" title="Decrease indent" onClick={handleOutdent} disabled={toolbarDisabled} />
+            <ToolButton label="→ Indent" title="Increase indent" onClick={handleIndent} disabled={toolbarDisabled} />
           </div>
 
           <ToolbarDivider />
 
           <div className="notion-rich-group">
-            <ToolButton label="链接" title="插入链接" onClick={handleSetLink} disabled={toolbarDisabled} />
             <ToolButton
-              label="取消链接"
-              title="移除链接"
+              label="Link"
+              title="Insert link"
+              onClick={() => {
+                void handleSetLink();
+              }}
+              disabled={toolbarDisabled}
+            />
+            <ToolButton
+              label="Unlink"
+              title="Remove link"
               onClick={() => run((chain) => chain.unsetLink())}
               disabled={toolbarDisabled}
             />
-            <ToolButton label="图片" title="插入本地图片" onClick={handleInsertImage} disabled={toolbarDisabled} />
+            <ToolButton label="Image" title="Insert local image" onClick={handleInsertImage} disabled={toolbarDisabled} />
             <ToolButton
-              label="分隔线"
-              title="插入分隔线"
+              label="Divider"
+              title="Insert horizontal rule"
               onClick={() => run((chain) => chain.setHorizontalRule())}
               disabled={toolbarDisabled}
             />
@@ -623,19 +640,19 @@ export default function RichTextEditor({
 
           <div className="notion-rich-group">
             <ToolButton
-              label="表格"
-              title="插入 3x3 表格"
+              label="Table"
+              title="Insert 3x3 table"
               onClick={() => run((chain) => chain.insertTable({ rows: 3, cols: 3, withHeaderRow: true }))}
               disabled={toolbarDisabled}
               active={inTable}
             />
-            <ToolButton label="+行" title="在下方新增行" onClick={() => run((chain) => chain.addRowAfter())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="-行" title="删除当前行" onClick={() => run((chain) => chain.deleteRow())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="+列" title="在右侧新增列" onClick={() => run((chain) => chain.addColumnAfter())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="-列" title="删除当前列" onClick={() => run((chain) => chain.deleteColumn())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="合并" title="合并单元格" onClick={() => run((chain) => chain.mergeCells())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="拆分" title="拆分单元格" onClick={() => run((chain) => chain.splitCell())} disabled={toolbarDisabled || !inTable} />
-            <ToolButton label="删表" title="删除表格" onClick={() => run((chain) => chain.deleteTable())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="+Row" title="Add row below" onClick={() => run((chain) => chain.addRowAfter())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="-Row" title="Delete current row" onClick={() => run((chain) => chain.deleteRow())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="+Col" title="Add column to the right" onClick={() => run((chain) => chain.addColumnAfter())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="-Col" title="Delete current column" onClick={() => run((chain) => chain.deleteColumn())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="Merge" title="Merge cells" onClick={() => run((chain) => chain.mergeCells())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="Split" title="Split cell" onClick={() => run((chain) => chain.splitCell())} disabled={toolbarDisabled || !inTable} />
+            <ToolButton label="DelTbl" title="Delete table" onClick={() => run((chain) => chain.deleteTable())} disabled={toolbarDisabled || !inTable} />
           </div>
         </div>
       </div>

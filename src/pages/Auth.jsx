@@ -2,10 +2,19 @@ import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { GoogleLogin } from '@react-oauth/google'; // 1. 引入组件
 import { jwtDecode } from "jwt-decode"; // 1. 引入解码工具
+import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
+import { useUiFeedback } from '../hooks/useUiFeedback.js';
 
 export default function AuthPage() {
   const navigate = useNavigate();
   const [mode, setMode] = useState('login');
+  const {
+    toastState,
+    confirmDialogState,
+    showToast,
+    dismissToast,
+    closeConfirmDialog,
+  } = useUiFeedback();
   
   const loginFormRef = useRef(null);
   const signupFormRef = useRef(null);
@@ -20,11 +29,12 @@ export default function AuthPage() {
   });
 
   const existingUser = sessionStorage.getItem('username');
+  const existingToken = sessionStorage.getItem('auth_token');
 
   const subtitle =
     mode === 'signup'
       ? 'Create a new account to manage your notes.'
-        : existingUser
+        : existingUser && existingToken
         ? 'You are already signed in.'
         : 'Welcome back! Please sign in to continue.';
 
@@ -73,14 +83,16 @@ export default function AuthPage() {
       if (res.ok) {
         sessionStorage.setItem('username', data.username);
         sessionStorage.setItem('email', data.email || decoded.email || '');
+        if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
+        else sessionStorage.removeItem('auth_token');
         sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {
-        alert(data.error || 'Google login failed');
+        showToast(data.error || 'Google login failed', 'error');
       }
     } catch (error) {
       console.error('Google login error:', error);
-      alert('Failed to process Google login.');
+      showToast('Failed to process Google login.', 'error');
     }
   };
   // ------------------------------------
@@ -88,7 +100,7 @@ export default function AuthPage() {
   const handleLogin = async (event) => {
     event.preventDefault();
     if (!loginUsername.trim() || !loginPassword.trim()) {
-      alert('Please enter username/email and password.');
+      showToast('Please enter username/email and password.', 'warning');
       return;
     }
 
@@ -107,14 +119,16 @@ export default function AuthPage() {
       if (response.ok) {
         sessionStorage.setItem('username', data.username);
         sessionStorage.setItem('email', data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''));
+        if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
+        else sessionStorage.removeItem('auth_token');
         sessionStorage.setItem('loginAt', new Date().toISOString());
         navigate('/');
       } else {
-        alert(data.error || 'Login failed');
+        showToast(data.error || 'Login failed', 'error');
       }
     } catch (error) {
       console.error('Login error:', error);
-      alert('Network error. Is the backend running?');
+      showToast('Network error. Is the backend running?', 'error');
     }
   };
 
@@ -123,15 +137,15 @@ export default function AuthPage() {
     const { username, email, password, confirm } = signupData;
     
     if (!username.trim() || !email.trim() || !password || !confirm) {
-      alert('Please complete all fields.');
+      showToast('Please complete all fields.', 'warning');
       return;
     }
     if (password.length < 6) {
-      alert('Password must be at least 6 characters.');
+      showToast('Password must be at least 6 characters.', 'warning');
       return;
     }
     if (password !== confirm) {
-      alert('Passwords do not match.');
+      showToast('Passwords do not match.', 'warning');
       return;
     }
 
@@ -149,16 +163,16 @@ export default function AuthPage() {
       const data = await response.json();
 
       if (response.ok) {
-        alert('Account created! Please sign in.');
+        showToast('Account created! Please sign in.', 'success');
         setMode('login');
         setLoginUsername(username.trim());
         setSignupData({ username: '', email: '', password: '', confirm: '' });
       } else {
-        alert(data.error || 'Registration failed');
+        showToast(data.error || 'Registration failed', 'error');
       }
     } catch (error) {
       console.error('Signup error:', error);
-      alert('Network error. Is the backend running?');
+      showToast('Network error. Is the backend running?', 'error');
     }
   };
 
@@ -218,7 +232,7 @@ export default function AuthPage() {
                   onSuccess={handleGoogleSuccess}
                   onError={() => {
                     console.log('Login Failed');
-                    alert('Google Login Failed');
+                    showToast('Google Login Failed', 'error');
                   }}
                   theme="outline"
                   shape="pill"
@@ -296,6 +310,12 @@ export default function AuthPage() {
           </form>
         </div>
       </main>
+      <UiFeedbackLayer
+        toastState={toastState}
+        confirmDialogState={confirmDialogState}
+        onDismissToast={dismissToast}
+        onCloseConfirmDialog={closeConfirmDialog}
+      />
     </div>
   );
 }

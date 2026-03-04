@@ -1,4 +1,26 @@
 export const WORKSPACES_STORE_KEY = 'workspaceStateByAccount';
+const DEFAULT_WORKSPACE_SETTINGS = {
+  workspace_icon: '📚',
+  description: '',
+  default_category: 'Uncategorized',
+  auto_categorize: true,
+  default_home_tab: 'home',
+  recent_items_limit: 10,
+  allow_uploads: true,
+  allow_note_editing: true,
+  allow_ai_tools: true,
+  allow_ocr: true,
+  summary_length: 'medium',
+  keyword_limit: 5,
+  allow_member_invites: false,
+  default_invite_expiry_days: 7,
+  default_share_expiry_days: 7,
+  link_sharing_mode: 'workspace',
+  allow_member_share_management: false,
+  max_active_share_links_per_document: 5,
+  auto_revoke_previous_share_links: false,
+  allow_export: true,
+};
 
 const normalizeName = (value) => String(value || '').trim();
 
@@ -10,18 +32,22 @@ const keyForAccount = (accountName) => {
 const randomSuffix = () => Math.random().toString(36).slice(2, 8);
 
 export const createWorkspace = (accountName, overrides = {}) => {
-  const owner = normalizeName(accountName) || '访客';
+  const owner = normalizeName(accountName) || 'Guest';
   const now = new Date().toISOString();
   return {
     id: overrides.id || `ws-${Date.now()}-${randomSuffix()}`,
-    name: normalizeName(overrides.name) || `${owner} 的工作空间`,
-    plan: normalizeName(overrides.plan) || '免费版',
+    name: normalizeName(overrides.name) || `${owner}'s Workspace`,
+    plan: normalizeName(overrides.plan) || 'Free',
     members: Array.isArray(overrides.members) && overrides.members.length
       ? Array.from(new Set(overrides.members.map((item) => normalizeName(item)).filter(Boolean)))
       : [owner],
     invites: Array.isArray(overrides.invites)
       ? Array.from(new Set(overrides.invites.map((item) => normalizeName(item).toLowerCase()).filter(Boolean)))
       : [],
+    settings: {
+      ...DEFAULT_WORKSPACE_SETTINGS,
+      ...(overrides.settings && typeof overrides.settings === 'object' ? overrides.settings : {}),
+    },
     createdAt: overrides.createdAt || now,
   };
 };
@@ -81,4 +107,3 @@ export const persistWorkspaceState = (accountName, state) => {
   persistStore(store);
   return normalized;
 };
-

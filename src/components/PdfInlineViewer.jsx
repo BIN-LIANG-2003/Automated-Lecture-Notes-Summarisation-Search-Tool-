@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import * as pdfjsLib from 'pdfjs-dist';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import pdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+import UiFeedbackLayer from './UiFeedbackLayer.jsx';
+import { useUiFeedback } from '../hooks/useUiFeedback.js';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
@@ -21,15 +22,17 @@ const makeAnnotationId = () => {
   return `ann-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 };
 
-const toRgbColor = (hex) => {
+const toRgbChannels = (hex) => {
   const raw = String(hex || '')
     .trim()
     .replace(/^#/, '');
-  if (!/^[0-9a-fA-F]{6}$/.test(raw)) return rgb(0.78, 0.16, 0.16);
+  if (!/^[0-9a-fA-F]{6}$/.test(raw)) {
+    return { r: 0.78, g: 0.16, b: 0.16 };
+  }
   const r = parseInt(raw.slice(0, 2), 16) / 255;
   const g = parseInt(raw.slice(2, 4), 16) / 255;
   const b = parseInt(raw.slice(4, 6), 16) / 255;
-  return rgb(r, g, b);
+  return { r, g, b };
 };
 
 export default function PdfInlineViewer({
@@ -43,9 +46,18 @@ export default function PdfInlineViewer({
   saveLoading = false,
   saveError = '',
   onClearSaveError,
+  requestConfirmation,
+  requestTextInput,
 }) {
   const canvasRef = useRef(null);
   const renderTaskRef = useRef(null);
+  const {
+    toastState,
+    confirmDialogState,
+    dismissToast,
+    requestConfirmation: requestInlineConfirmation,
+    closeConfirmDialog,
+  } = useUiFeedback();
 
   const [pdfDoc, setPdfDoc] = useState(null);
   const [pageNum, setPageNum] = useState(1);
@@ -101,12 +113,12 @@ export default function PdfInlineViewer({
         .catch((err) => {
           if (cancelled) return;
           console.error('PDF load failed:', err);
-          setError('无法在页面内加载 PDF，稍后再试。');
+          setError('Unable to load PDF inline. Please try again later.');
           setLoadingDoc(false);
         });
     } catch (err) {
       console.error('PDF open failed:', err);
-      setError('无法在页面内加载 PDF，稍后再试。');
+      setError('Unable to load PDF inline. Please try again later.');
       setLoadingDoc(false);
     }
 
@@ -208,7 +220,7 @@ export default function PdfInlineViewer({
         if (err?.name === 'RenderingCancelledException') return;
         if (!cancelled) {
           console.error('PDF render failed:', err);
-          setError('PDF 渲染失败，请稍后重试。');
+          setError('PDF rendering failed. Please try again.');
         }
       } finally {
         if (!cancelled) setLoadingPage(false);
@@ -233,11 +245,24 @@ export default function PdfInlineViewer({
   const uploadedLabel = uploadedAt ? new Date(uploadedAt).toLocaleString() : '';
   const tagsLabel = Array.isArray(tags) && tags.length ? tags.join(', ') : 'None';
 
-  const handleLayerClick = (event) => {
+  const handleLayerClick = async (event) => {
     if (!editable || !editMode || loadingDoc || loadingPage || saveLoading) return;
     if (!canvasSize.width || !canvasSize.height) return;
 
-    const textInput = window.prompt('输入要写入 PDF 的文本：');
+    if (typeof requestTextInput !== 'function') {
+      setEditorError('Text input dialog is unavailable.');
+      return;
+    }
+    const textInput = await requestTextInput({
+      title: 'Add PDF Annotation',
+      description: 'Enter text to insert at the clicked position.',
+      placeholder: 'Type annotation text',
+      initialValue: '',
+      confirmLabel: 'Insert',
+      cancelLabel: 'Cancel',
+      trimResult: false,
+      required: true,
+    });
     if (textInput === null) return;
 
     const text = textInput.trimEnd();
@@ -268,6 +293,21 @@ export default function PdfInlineViewer({
     setAnnotations((prev) => prev.filter((item) => item.id !== annotationId));
   };
 
+  const confirmRemoveAnnotation = async (annotationId) => {
+    const requestDialog = typeof requestConfirmation === 'function'
+      ? requestConfirmation
+      : requestInlineConfirmation;
+    const confirmed = await requestDialog({
+      title: 'Delete this annotation?',
+      description: 'This annotation will be removed from pending edits.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
+    removeAnnotation(annotationId);
+  };
+
   const removeLastAnnotationOnPage = () => {
     setAnnotations((prev) => {
       let removeIndex = -1;
@@ -285,7 +325,7 @@ export default function PdfInlineViewer({
   const saveEditedPdf = async () => {
     if (!editable || !onSaveEditedPdf) return;
     if (!annotations.length) {
-      setEditorError('请先在页面上添加至少一个文本标注。');
+      setEditorError('Add at least one text annotation first.');
       return;
     }
 
@@ -294,9 +334,10 @@ export default function PdfInlineViewer({
 
     try {
       const response = await fetch(src);
-      if (!response.ok) throw new Error('无法读取当前 PDF 文件。');
+      if (!response.ok) throw new Error('Unable to read the current PDF file.');
       const sourceBytes = await response.arrayBuffer();
 
+      const { PDFDocument, StandardFonts, rgb } = await import('pdf-lib');
       const pdfDocForEdit = await PDFDocument.load(sourceBytes, { ignoreEncryption: true });
       const font = await pdfDocForEdit.embedFont(StandardFonts.Helvetica);
       const pages = pdfDocForEdit.getPages();
@@ -308,7 +349,8 @@ export default function PdfInlineViewer({
         const { width, height } = page.getSize();
         const baseX = clamp(annotation.x, 0, 1) * width;
         const baseY = height - clamp(annotation.y, 0, 1) * height;
-        const drawColor = toRgbColor(annotation.color);
+        const colorChannels = toRgbChannels(annotation.color);
+        const drawColor = rgb(colorChannels.r, colorChannels.g, colorChannels.b);
         const drawSize = clamp(Number(annotation.size) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE);
         const lineHeight = drawSize + 2;
 
@@ -333,7 +375,7 @@ export default function PdfInlineViewer({
       setEditMode(false);
     } catch (err) {
       console.error('Save edited PDF failed:', err);
-      setEditorError(err?.message || '保存 PDF 失败。');
+      setEditorError(err?.message || 'Failed to save PDF.');
     }
   };
 
@@ -355,7 +397,7 @@ export default function PdfInlineViewer({
               rel="noreferrer"
               className="notion-pdf-btn notion-pdf-btn-link"
             >
-              下载文件
+              Download File
             </a>
           )}
           <button
@@ -364,7 +406,7 @@ export default function PdfInlineViewer({
             onClick={() => setPageNum((prev) => Math.max(1, prev - 1))}
             disabled={!canPrev || loadingDoc}
           >
-            上一页
+            Previous
           </button>
           <span className="notion-pdf-page-indicator">
             {totalPages ? `${pageNum} / ${totalPages}` : '-- / --'}
@@ -375,7 +417,7 @@ export default function PdfInlineViewer({
             onClick={() => setPageNum((prev) => Math.min(totalPages, prev + 1))}
             disabled={!canNext || loadingDoc}
           >
-            下一页
+            Next
           </button>
           <button
             type="button"
@@ -383,7 +425,7 @@ export default function PdfInlineViewer({
             onClick={() => setScale((prev) => Math.max(MIN_SCALE, prev - SCALE_STEP))}
             disabled={scale <= MIN_SCALE || loadingDoc}
           >
-            缩小
+            Zoom Out
           </button>
           <span className="notion-pdf-zoom-indicator">{Math.round(scale * 100)}%</span>
           <button
@@ -392,7 +434,7 @@ export default function PdfInlineViewer({
             onClick={() => setScale((prev) => Math.min(MAX_SCALE, prev + SCALE_STEP))}
             disabled={scale >= MAX_SCALE || loadingDoc}
           >
-            放大
+            Zoom In
           </button>
           <button
             type="button"
@@ -400,7 +442,7 @@ export default function PdfInlineViewer({
             onClick={() => setOverviewOpen((prev) => !prev)}
             disabled={loadingDoc || !totalPages}
           >
-            {overviewOpen ? '收起总览' : '总览'}
+            {overviewOpen ? 'Hide Overview' : 'Overview'}
           </button>
         </div>
       </div>
@@ -417,7 +459,7 @@ export default function PdfInlineViewer({
             }}
             disabled={loadingDoc || saveLoading}
           >
-            {editMode ? '退出标注' : '添加标注'}
+            {editMode ? 'Exit Annotation Mode' : 'Add Annotation'}
           </button>
           <button
             type="button"
@@ -425,7 +467,7 @@ export default function PdfInlineViewer({
             onClick={removeLastAnnotationOnPage}
             disabled={!pageAnnotations.length || saveLoading}
           >
-            撤销本页
+            Undo on This Page
           </button>
           <button
             type="button"
@@ -433,10 +475,10 @@ export default function PdfInlineViewer({
             onClick={() => setAnnotations([])}
             disabled={!hasPendingAnnotations || saveLoading}
           >
-            清空标注
+            Clear Annotations
           </button>
           <label className="notion-pdf-config">
-            字号
+            Font size
             <input
               type="number"
               min={MIN_FONT_SIZE}
@@ -449,7 +491,7 @@ export default function PdfInlineViewer({
             />
           </label>
           <label className="notion-pdf-config">
-            颜色
+            Color
             <input
               type="color"
               value={annotationColor}
@@ -458,7 +500,7 @@ export default function PdfInlineViewer({
             />
           </label>
           <span className="notion-pdf-edit-meta">
-            {hasPendingAnnotations ? `待保存 ${annotations.length} 条标注` : '暂无待保存标注'}
+            {hasPendingAnnotations ? `${annotations.length} annotations pending save` : 'No pending annotations'}
           </span>
           <button
             type="button"
@@ -466,7 +508,7 @@ export default function PdfInlineViewer({
             onClick={saveEditedPdf}
             disabled={!hasPendingAnnotations || saveLoading}
           >
-            {saveLoading ? '保存中...' : '保存到原PDF'}
+            {saveLoading ? 'Saving...' : 'Save to Original PDF'}
           </button>
         </div>
       )}
@@ -474,9 +516,9 @@ export default function PdfInlineViewer({
       {overviewOpen && (
         <div className="notion-pdf-overview">
           <div className="notion-pdf-overview-head">
-            <strong>页面总览</strong>
+            <strong>Page Overview</strong>
             <span className="muted tiny">
-              {thumbsLoading ? `生成缩略图 ${thumbReadyCount}/${totalPages}` : `共 ${totalPages} 页`}
+              {thumbsLoading ? `Generating thumbnails ${thumbReadyCount}/${totalPages}` : `${totalPages} pages`}
             </span>
           </div>
 
@@ -492,9 +534,9 @@ export default function PdfInlineViewer({
               >
                 <div className="notion-pdf-thumb-canvas-wrap">
                   {thumbnails[num] ? (
-                    <img src={thumbnails[num]} alt={`第 ${num} 页缩略图`} />
+                    <img src={thumbnails[num]} alt={`Page ${num} thumbnail`} />
                   ) : (
-                    <span className="notion-pdf-thumb-placeholder">第 {num} 页</span>
+                    <span className="notion-pdf-thumb-placeholder">Page {num}</span>
                   )}
                 </div>
                 <span className="notion-pdf-thumb-index">{num}</span>
@@ -507,7 +549,7 @@ export default function PdfInlineViewer({
       <div className="notion-pdf-canvas-wrap">
         {(loadingDoc || loadingPage) && (
           <p className="notion-pdf-status" aria-live="polite">
-            正在渲染 PDF...
+            Rendering PDF...
           </p>
         )}
         {error && !loadingDoc && (
@@ -528,7 +570,7 @@ export default function PdfInlineViewer({
           <div
             className={`notion-pdf-annotation-layer ${editMode ? 'editable' : ''}`}
             onClick={handleLayerClick}
-            aria-label={editMode ? '点击 PDF 页面添加标注文本' : undefined}
+            aria-label={editMode ? 'Click on the PDF page to add annotation text' : undefined}
           >
             {pageAnnotations.map((item) => (
               <button
@@ -544,9 +586,9 @@ export default function PdfInlineViewer({
                 onClick={(event) => {
                   event.stopPropagation();
                   if (!editMode) return;
-                  if (window.confirm('删除这条标注？')) removeAnnotation(item.id);
+                  void confirmRemoveAnnotation(item.id);
                 }}
-                title={editMode ? '点击删除此标注' : item.text}
+                title={editMode ? 'Click to delete this annotation' : item.text}
               >
                 {item.text}
               </button>
@@ -557,13 +599,21 @@ export default function PdfInlineViewer({
 
       {editable && editMode && (
         <p className="muted tiny notion-pdf-edit-hint">
-          点击页面空白处可添加文字标注；点击已有标注可删除。免费版为追加标注，不做原对象精修。
+          Click a blank area to add text annotations; click existing annotations to remove them. Free plan editing appends annotations only.
         </p>
       )}
       {(saveError || editorError) && (
         <p className="notion-pdf-edit-error" role="alert">
-          保存失败: {saveError || editorError}
+          Save failed: {saveError || editorError}
         </p>
+      )}
+      {typeof requestConfirmation !== 'function' && (
+        <UiFeedbackLayer
+          toastState={toastState}
+          confirmDialogState={confirmDialogState}
+          onDismissToast={dismissToast}
+          onCloseConfirmDialog={closeConfirmDialog}
+        />
       )}
     </div>
   );
