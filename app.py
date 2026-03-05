@@ -4083,6 +4083,8 @@ def run_local_ocr(img_bytes):
 
 def get_ocr_runtime_status():
     status = {
+        'external_ocr_configured': bool(EXTERNAL_OCR_SERVICE_URL),
+        'external_ocr_url': EXTERNAL_OCR_SERVICE_URL or '',
         'hf_token_configured': bool(HF_TOKEN),
         'hf_ocr_model': OCR_MODEL_ID,
         'hf_model_base_url': HF_MODEL_BASE_URL,
@@ -4114,7 +4116,9 @@ def get_ocr_runtime_status():
             status['local_engine_error'] = f"Missing local OCR dependencies: {', '.join(missing)}"
 
     if not status['hf_token_configured']:
-        status['hints'].append('Set HF_API_TOKEN in Render environment variables to enable remote OCR fallback.')
+        status['hints'].append('Set HF_API_TOKEN in environment variables to enable Hugging Face OCR fallback.')
+    if not status['external_ocr_configured']:
+        status['hints'].append('Set EXTERNAL_OCR_SERVICE_URL to enable external OCR service routing.')
 
     local_error_lower = str(status['local_engine_error'] or '').lower()
     import_error_lower = str(status['rapidocr_import_error'] or '').lower()
@@ -4134,11 +4138,17 @@ def get_ocr_runtime_status():
 @app.route('/api/ocr/health', methods=['GET'])
 def ocr_health():
     status = get_ocr_runtime_status()
-    ok = bool(status.get('local_engine_ready') or status.get('hf_token_configured'))
+    ok = bool(
+        status.get('local_engine_ready')
+        or status.get('hf_token_configured')
+        or status.get('external_ocr_configured')
+    )
     status['ok'] = ok
     status['checked_at'] = utcnow_iso()
     if not ok:
-        status['hints'].append('Neither remote OCR nor local OCR is ready, image recognition will fail.')
+        status['hints'].append(
+            'No OCR provider is ready. Configure EXTERNAL_OCR_SERVICE_URL or HF_API_TOKEN, or enable local RapidOCR.'
+        )
     return jsonify(status), (200 if ok else 503)
 
 # ==========================================
@@ -4243,6 +4253,7 @@ def extract_text_from_image(doc_id=None):
     if not img_bytes:
         return jsonify({"error": "Empty image file"}), 400
 
+    external_error = ''
     # --- 优先尝试外部算力中心（仅在配置环境变量后启用） ---
     if EXTERNAL_OCR_SERVICE_URL:
         print(f"正在尝试调用算力中心: {EXTERNAL_OCR_SERVICE_URL}")
@@ -4254,9 +4265,13 @@ def extract_text_from_image(doc_id=None):
                 if isinstance(result, dict) and str(result.get("text") or '').strip():
                     print("算力中心识别成功。")
                     return jsonify({"text": result["text"], "source": "external_ocr_service"})
+                external_error = "External OCR returned empty text"
+                print(external_error)
             else:
+                external_error = f"External OCR failed ({response.status_code}): {response.text[:220]}"
                 print(f"外部算力中心返回错误码: {response.status_code}")
         except Exception as e:
+            external_error = f"External OCR error: {e}"
             print(f"外部算力中心未响应，切换备用方案。错误: {e}")
     # --- 外部算力中心不可用时，继续使用现有 HF + RapidOCR 兜底 ---
 
@@ -4298,15 +4313,16 @@ def extract_text_from_image(doc_id=None):
             + ". Hugging Face hf-inference currently has no OCR image endpoint for this model/account."
         )
 
-    error_parts = [hf_error, local_error]
+    error_parts = [external_error, hf_error, local_error]
     error_text = ' | '.join([part for part in error_parts if part])
     return jsonify({
         "error": f"OCR failed: {error_text}" if error_text else "OCR failed",
         "details": {
+            "external": external_error,
             "huggingface": hf_error,
             "local": local_error,
             "runtime": runtime_status,
-            "hint": "Install/enable RapidOCR fallback or configure another OCR provider."
+            "hint": "Configure EXTERNAL_OCR_SERVICE_URL, HF_API_TOKEN, or enable local RapidOCR fallback."
         }
     }), 502
 
