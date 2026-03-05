@@ -87,11 +87,8 @@ AUTH_BYPASS_ENDPOINTS = {
 # ================= Hugging Face AI 服务配置 =================
 HF_TOKEN = (os.environ.get("HF_API_TOKEN") or "").strip()
 HF_MODEL_BASE_URL = (os.environ.get("HF_MODEL_BASE_URL") or "https://router.huggingface.co/hf-inference/models").rstrip("/")
-# 优先读取环境变量，若未配置则回退到本地 M4 算力中心
-EXTERNAL_OCR_SERVICE_URL = (
-    (os.getenv("EXTERNAL_OCR_SERVICE_URL") or "").strip()
-    or "http://127.0.0.1:8000/ocr"
-)
+# 外部 OCR 服务地址（可选）。仅在配置后才会调用云端/公网算力中心。
+EXTERNAL_OCR_SERVICE_URL = (os.getenv("EXTERNAL_OCR_SERVICE_URL") or "").strip()
 OCR_MODEL_ID = os.environ.get("HF_OCR_MODEL") or "microsoft/trocr-base-printed"
 SUMMARIZER_MODEL_ID = os.environ.get("HF_SUMMARIZER_MODEL") or "csebuetnlp/mT5_multilingual_XLSum"
 DEFAULT_DOCUMENT_CATEGORY = "Uncategorized"
@@ -4246,19 +4243,22 @@ def extract_text_from_image(doc_id=None):
     if not img_bytes:
         return jsonify({"error": "Empty image file"}), 400
 
-    # --- 优先尝试外部/本地算力中心 ---
-    print(f"正在尝试调用算力中心: {EXTERNAL_OCR_SERVICE_URL}")
-    try:
-        files = {'file': (source_filename if doc_id else 'image.jpg', img_bytes, mimetype)}
-        response = requests.post(EXTERNAL_OCR_SERVICE_URL, files=files, timeout=5)
-        if response.status_code == 200:
-            result = response.json()
-            if isinstance(result, dict) and str(result.get("text") or '').strip():
-                print("算力中心识别成功。")
-                return jsonify({"text": result["text"], "source": "external_ocr_service"})
-    except Exception as e:
-        print(f"外部算力中心未响应，切换备用方案。错误: {e}")
-    # --- 算力中心失败后，继续使用现有 HF + RapidOCR 兜底 ---
+    # --- 优先尝试外部算力中心（仅在配置环境变量后启用） ---
+    if EXTERNAL_OCR_SERVICE_URL:
+        print(f"正在尝试调用算力中心: {EXTERNAL_OCR_SERVICE_URL}")
+        try:
+            files = {'file': (source_filename if doc_id else 'image.jpg', img_bytes, mimetype)}
+            response = requests.post(EXTERNAL_OCR_SERVICE_URL, files=files, timeout=30)
+            if response.status_code == 200:
+                result = response.json()
+                if isinstance(result, dict) and str(result.get("text") or '').strip():
+                    print("算力中心识别成功。")
+                    return jsonify({"text": result["text"], "source": "external_ocr_service"})
+            else:
+                print(f"外部算力中心返回错误码: {response.status_code}")
+        except Exception as e:
+            print(f"外部算力中心未响应，切换备用方案。错误: {e}")
+    # --- 外部算力中心不可用时，继续使用现有 HF + RapidOCR 兜底 ---
 
     hf_error = ''
     hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
