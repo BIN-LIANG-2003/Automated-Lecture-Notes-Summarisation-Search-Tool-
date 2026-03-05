@@ -16,22 +16,6 @@ const proxyConfig = {
 
 export default defineConfig({
   plugins: [react()],
-  build: {
-    rollupOptions: {
-      output: {
-        manualChunks(id) {
-          if (!id.includes('node_modules')) return;
-          if (id.includes('pdfjs-dist')) return 'vendor-pdfjs';
-          if (id.includes('pdf-lib')) return 'vendor-pdflib';
-          if (id.includes('@tiptap')) return 'vendor-editor';
-          if (id.includes('react-router-dom')) return 'vendor-router';
-          if (id.includes('@react-oauth')) return 'vendor-auth';
-          if (id.includes('react') || id.includes('scheduler')) return 'vendor-react';
-          return 'vendor-misc';
-        },
-      },
-    },
-  },
   server: {
     host: '0.0.0.0',
     port: 5173,
