@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
+import { coerceOcrText } from '../lib/ocr.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
@@ -192,15 +193,28 @@ export default function DocumentDetail() {
         const runtimeHints = Array.isArray(data?.details?.runtime?.hints)
           ? data.details.runtime.hints.join(' | ')
           : '';
-        const detail = [data?.error, data?.details?.huggingface, data?.details?.local, runtimeHints]
+        const detail = [
+          data?.error,
+          data?.details?.external,
+          data?.details?.huggingface,
+          data?.details?.local,
+          runtimeHints,
+        ]
           .filter(Boolean)
           .join(' | ');
         throw new Error(detail || 'Service error');
       }
 
-      const text = typeof data.text === 'string' ? data.text : '';
+      const text = coerceOcrText(data?.text ?? data);
       setExtractedText(text);
       setAnalysisResult(null);
+      if (!text) {
+        const source = String(data?.source || '').trim();
+        showToast(
+          `OCR finished${source ? ` (${source})` : ''}, but no readable text was returned.`,
+          'warning'
+        );
+      }
     } catch (err) {
       showToast(`Text extraction failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {

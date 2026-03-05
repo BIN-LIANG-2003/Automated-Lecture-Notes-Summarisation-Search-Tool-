@@ -8,6 +8,7 @@ import {
   loadWorkspaceState,
   persistWorkspaceState,
 } from '../lib/workspaces.js';
+import { coerceOcrText } from '../lib/ocr.js';
 
 const DEFAULT_SIDEBAR_RECENT_LIMIT = 10;
 const MIN_SIDEBAR_RECENT_LIMIT = 5;
@@ -2479,16 +2480,29 @@ export default function HomePage() {
         const runtimeHints = Array.isArray(data?.details?.runtime?.hints)
           ? data.details.runtime.hints.join(' | ')
           : '';
-        const detail = [data?.error, data?.details?.huggingface, data?.details?.local, runtimeHints]
+        const detail = [
+          data?.error,
+          data?.details?.external,
+          data?.details?.huggingface,
+          data?.details?.local,
+          runtimeHints,
+        ]
           .filter(Boolean)
           .join(' | ');
         showToast(`Text extraction failed: ${detail || 'Service error'}`, 'error');
         return;
       }
 
-      const nextText = typeof data.text === 'string' ? data.text : '';
+      const nextText = coerceOcrText(data?.text ?? data);
       setExtractedText(nextText);
       setAnalysisResult(null);
+      if (!nextText) {
+        const source = String(data?.source || '').trim();
+        showToast(
+          `OCR finished${source ? ` (${source})` : ''}, but no readable text was returned.`,
+          'warning'
+        );
+      }
     } catch (error) {
       console.error('Extract text failed:', error);
       showToast('Text extraction request failed. Please try again later.', 'error');

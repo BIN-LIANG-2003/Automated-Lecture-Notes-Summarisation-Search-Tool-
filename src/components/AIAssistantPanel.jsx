@@ -59,67 +59,63 @@ export default function AIAssistantPanel({
           </button>
         </div>
 
-        {(extractedText || analysisResult) && (
-          <section className="notion-ai-results">
-            {extractedText && (
-              <article className="notion-ai-output">
-                <h3>Input Text</h3>
-                <textarea
-                  className="notion-ai-textarea"
-                  value={extractedText}
-                  onChange={(event) => onChangeExtractedText?.(event.target.value)}
-                  rows={10}
-                  placeholder="OCR output or note text will appear here."
-                />
-              </article>
-            )}
+        <section className="notion-ai-results">
+          <article className="notion-ai-output">
+            <h3>Input Text</h3>
+            <textarea
+              className="notion-ai-textarea"
+              value={extractedText}
+              onChange={(event) => onChangeExtractedText?.(event.target.value)}
+              rows={10}
+              placeholder="OCR output or note text will appear here."
+            />
+          </article>
 
-            {analysisResult && (
-              <article className="notion-ai-output">
-                <h3>Summary Result</h3>
-                <p>{analysisResult.summary || 'No summary available.'}</p>
-                <h4>Keywords</h4>
-                <ul>
-                  {(analysisResult.keywords || []).map((keyword, index) => (
-                    <li key={`${keyword}-${index}`}>{keyword}</li>
-                  ))}
-                </ul>
-                <h4>Key Sentences</h4>
-                <ul>
-                  {(analysisResult.key_sentences || []).map((sentence, index) => (
-                    <li key={`sentence-${index}`}>{sentence}</li>
-                  ))}
-                </ul>
-                <div className="notion-ai-export-actions">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={onCopySummary}
-                    disabled={!allowExport}
-                  >
-                    Copy Summary
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={onExportSummary}
-                    disabled={!allowExport}
-                  >
-                    Export TXT
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={onEmailSummary}
-                    disabled={!allowExport}
-                  >
-                    Share by Email
-                  </button>
-                </div>
-              </article>
-            )}
-          </section>
-        )}
+          {analysisResult && (
+            <article className="notion-ai-output">
+              <h3>Summary Result</h3>
+              <p>{analysisResult.summary || 'No summary available.'}</p>
+              <h4>Keywords</h4>
+              <ul>
+                {(analysisResult.keywords || []).map((keyword, index) => (
+                  <li key={`${keyword}-${index}`}>{keyword}</li>
+                ))}
+              </ul>
+              <h4>Key Sentences</h4>
+              <ul>
+                {(analysisResult.key_sentences || []).map((sentence, index) => (
+                  <li key={`sentence-${index}`}>{sentence}</li>
+                ))}
+              </ul>
+              <div className="notion-ai-export-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onCopySummary}
+                  disabled={!allowExport}
+                >
+                  Copy Summary
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onExportSummary}
+                  disabled={!allowExport}
+                >
+                  Export TXT
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onEmailSummary}
+                  disabled={!allowExport}
+                >
+                  Share by Email
+                </button>
+              </div>
+            </article>
+          )}
+        </section>
       </article>
     </section>
   );

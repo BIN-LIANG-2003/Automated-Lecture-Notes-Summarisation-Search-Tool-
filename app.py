@@ -4028,6 +4028,69 @@ def hf_error_message(response):
     return (response.text or '').strip()[:240] or 'Unknown error'
 
 
+def normalize_ocr_text(payload, depth=0):
+    if depth > 5 or payload is None:
+        return ''
+    if isinstance(payload, str):
+        return payload.strip()
+    if isinstance(payload, (int, float, bool)):
+        return str(payload).strip()
+    if isinstance(payload, bytes):
+        try:
+            return payload.decode('utf-8', errors='ignore').strip()
+        except Exception:
+            return ''
+
+    if isinstance(payload, list):
+        parts = []
+        for item in payload:
+            text = normalize_ocr_text(item, depth + 1)
+            if text:
+                parts.append(text)
+        return '\n'.join(parts).strip() if parts else ''
+
+    if isinstance(payload, dict):
+        preferred_keys = (
+            'text',
+            'ocr_text',
+            'extracted_text',
+            'result',
+            'content',
+            'generated_text',
+            'output_text',
+            'prediction',
+            'predictions',
+            'value',
+            'data',
+            'lines',
+            'texts',
+        )
+        for key in preferred_keys:
+            if key not in payload:
+                continue
+            text = normalize_ocr_text(payload.get(key), depth + 1)
+            if text:
+                return text
+
+        choices = payload.get('choices')
+        if isinstance(choices, list):
+            parts = []
+            for choice in choices:
+                if not isinstance(choice, dict):
+                    continue
+                message = choice.get('message')
+                if isinstance(message, dict):
+                    text = normalize_ocr_text(message.get('content'), depth + 1)
+                else:
+                    text = normalize_ocr_text(choice.get('text'), depth + 1)
+                if text:
+                    parts.append(text)
+            if parts:
+                return '\n'.join(parts).strip()
+
+    return ''
+
+
 def get_local_ocr_engine():
     global _rapid_ocr_engine
     if RapidOCR is None or cv2 is None or np is None:
@@ -4261,11 +4324,25 @@ def extract_text_from_image(doc_id=None):
             files = {'file': (source_filename if doc_id else 'image.jpg', img_bytes, mimetype)}
             response = requests.post(EXTERNAL_OCR_SERVICE_URL, files=files, timeout=30)
             if response.status_code == 200:
-                result = response.json()
-                if isinstance(result, dict) and str(result.get("text") or '').strip():
+                result = None
+                extracted_external_text = ''
+                try:
+                    result = response.json()
+                    extracted_external_text = normalize_ocr_text(result)
+                except Exception:
+                    extracted_external_text = normalize_ocr_text(response.text or '')
+
+                if extracted_external_text:
                     print("算力中心识别成功。")
-                    return jsonify({"text": result["text"], "source": "external_ocr_service"})
-                external_error = "External OCR returned empty text"
+                    return jsonify({"text": extracted_external_text, "source": "external_ocr_service"})
+
+                if isinstance(result, dict):
+                    keys_preview = ', '.join([str(k) for k in list(result.keys())[:8]])
+                    external_error = f"External OCR returned empty text (response keys: {keys_preview or 'none'})"
+                elif isinstance(result, list):
+                    external_error = f"External OCR returned empty text (response type: list[{len(result)}])"
+                else:
+                    external_error = "External OCR returned empty text"
                 print(external_error)
             else:
                 external_error = f"External OCR failed ({response.status_code}): {response.text[:220]}"
