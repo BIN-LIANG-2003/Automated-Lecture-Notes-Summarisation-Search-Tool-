@@ -6,8 +6,10 @@ import { coerceOcrText } from '../lib/ocr.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
+const IMAGE_FILE_TYPE_SET = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
+const isImageFileType = (value) => IMAGE_FILE_TYPE_SET.has(String(value || '').toLowerCase());
 
 const normalizeDocument = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
@@ -95,7 +97,7 @@ export default function DocumentDetail() {
         if (!res.ok) throw new Error(payload.error || 'Document not found');
         const data = normalizeDocument(payload);
         setDocument(data);
-        setExtractedText(data?.content || '');
+        setExtractedText(isImageFileType(data?.fileType) ? (data?.content || '') : '');
         setAnalysisResult(null);
       } catch (err) {
         setError(err.message);
@@ -124,7 +126,7 @@ export default function DocumentDetail() {
   if (username) fileParams.set('username', username);
   if (shareToken) fileParams.set('share_token', shareToken);
   const fileUrl = `/api/documents/${document.id}/file${fileParams.toString() ? `?${fileParams.toString()}` : ''}`;
-  const isImage = ['jpg', 'jpeg', 'png', 'webp'].includes(document.fileType);
+  const isImage = isImageFileType(document.fileType);
   
   const headerStyle = {
     display: 'flex',
@@ -222,34 +224,49 @@ export default function DocumentDetail() {
     }
   };
 
-  const handleAnalyzeText = async () => {
+  const handleAnalyzeText = async (options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
     if (!canUseAiTools) {
       showToast('AI tools are disabled in this workspace settings.', 'warning');
       return;
     }
-    if (!extractedText.trim()) {
+    const safeText = extractedText.trim();
+    const safeDocId = Number(document?.id) || 0;
+    if (!safeText && safeDocId <= 0) {
       showToast('The text box is empty. Cannot analyze.', 'warning');
       return;
     }
 
     setIsAnalyzing(true);
     try {
+      const payload = {
+        username: username || '',
+        workspace_id: document.workspaceId || '',
+        summary_length: document.summaryLength || 'medium',
+        keyword_limit: document.keywordLimit || 5,
+      };
+      if (shareToken) payload.share_token = shareToken;
+      if (safeText) payload.text = safeText;
+      if (safeDocId > 0) payload.doc_id = safeDocId;
+      if (forceRefresh) payload.force_refresh = true;
+
       const response = await fetch('/api/analyze-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username || '',
-          workspace_id: document.workspaceId || '',
-          text: extractedText,
-          summary_length: document.summaryLength || 'medium',
-          keyword_limit: document.keywordLimit || 5,
-        }),
+        body: JSON.stringify(payload),
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || 'Service error');
       }
       setAnalysisResult(data);
+      if (data?.cache_hit) {
+        showToast('Loaded summary from cache.', 'success');
+      } else if (forceRefresh) {
+        showToast('Summary regenerated.', 'success');
+      } else {
+        showToast('Summary is ready.', 'success');
+      }
     } catch (err) {
       showToast(`Analysis failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {
@@ -553,22 +570,38 @@ export default function DocumentDetail() {
                   type="button"
                   className="btn btn-primary notion-ai-action-chip"
                   onClick={handleAnalyzeText}
-                  disabled={isAnalyzing || !extractedText.trim() || !canUseAiTools}
+                  disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
                 >
                   {isAnalyzing ? 'Summarizing text...' : 'Summarize Text'}
                 </button>
+                <button
+                  type="button"
+                  className="btn notion-ai-action-chip"
+                  onClick={() => handleAnalyzeText({ forceRefresh: true })}
+                  disabled={isAnalyzing || !canUseAiTools}
+                  title="Bypass cache and regenerate summary"
+                >
+                  Rebuild Summary
+                </button>
               </div>
 
-              <article className="notion-ai-output">
-                <h3>Text Content</h3>
-                <textarea
-                  value={extractedText}
-                  onChange={(event) => setExtractedText(event.target.value)}
-                  rows={8}
-                  style={{ width: '100%' }}
-                  placeholder="OCR output will appear here. You can also edit it manually."
-                />
-              </article>
+              {isImage ? (
+                <article className="notion-ai-output">
+                  <h3>Text Content</h3>
+                  <textarea
+                    value={extractedText}
+                    onChange={(event) => setExtractedText(event.target.value)}
+                    rows={8}
+                    style={{ width: '100%' }}
+                    placeholder="OCR output will appear here. You can also edit it manually."
+                  />
+                </article>
+              ) : (
+                <article className="notion-ai-output">
+                  <h3>Text Content</h3>
+                  <p className="muted tiny">Summary reads document content on server and only returns the summary result.</p>
+                </article>
+              )}
 
               {analysisResult && (
                 <article className="notion-ai-output">

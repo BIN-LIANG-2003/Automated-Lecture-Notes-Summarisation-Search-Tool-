@@ -4,6 +4,7 @@ import uuid
 import io
 import sys
 import json
+import hashlib
 import mimetypes
 import re
 import requests
@@ -436,6 +437,23 @@ def init_db():
         );
     '''
 
+    document_summary_cache_sql = f'''
+        CREATE TABLE IF NOT EXISTS document_summary_cache (
+            id {id_type},
+            document_id INTEGER NOT NULL,
+            workspace_id TEXT,
+            username TEXT,
+            content_hash TEXT NOT NULL,
+            summary_length TEXT NOT NULL,
+            keyword_limit INTEGER NOT NULL DEFAULT 5,
+            summary_json TEXT NOT NULL,
+            summary_source TEXT,
+            summary_note TEXT,
+            created_at {timestamp_type},
+            updated_at {timestamp_type}
+        );
+    '''
+
     workspace_members_unique_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
         ON workspace_members(workspace_id, username);
@@ -456,6 +474,16 @@ def init_db():
         ON document_share_links(document_id, status);
     '''
 
+    document_summary_cache_lookup_idx_sql = '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_document_summary_cache_lookup
+        ON document_summary_cache(document_id, content_hash, summary_length, keyword_limit);
+    '''
+
+    document_summary_cache_recent_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_document_summary_cache_updated
+        ON document_summary_cache(updated_at);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
@@ -463,10 +491,13 @@ def init_db():
         conn.execute(workspace_members_sql)
         conn.execute(workspace_invitations_sql)
         conn.execute(document_share_links_sql)
+        conn.execute(document_summary_cache_sql)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(workspace_invitation_lookup_sql)
         conn.execute(document_share_links_doc_idx_sql)
+        conn.execute(document_summary_cache_lookup_idx_sql)
+        conn.execute(document_summary_cache_recent_idx_sql)
         ensure_documents_columns(conn)
         ensure_workspaces_columns(conn)
         backfill_documents_workspace_ids(conn)
@@ -651,6 +682,133 @@ def parse_int(value, default_value, min_value=None, max_value=None):
     if max_value is not None:
         parsed = min(max_value, parsed)
     return parsed
+
+
+def build_summary_cache_text_hash(text):
+    normalized = re.sub(r'\s+', ' ', str(text or '').strip())
+    if not normalized:
+        return ''
+    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+
+
+def load_document_summary_cache(conn, document_id, content_hash, summary_length, keyword_limit):
+    safe_doc_id = parse_int(document_id, 0, 0)
+    safe_hash = str(content_hash or '').strip()
+    safe_summary_length = str(summary_length or '').strip().lower()
+    safe_keyword_limit = parse_int(keyword_limit, 5, 1)
+    if safe_doc_id <= 0 or not safe_hash or not safe_summary_length:
+        return None
+    try:
+        cursor = conn.execute(
+            '''
+            SELECT summary_json, summary_source, summary_note, created_at, updated_at
+            FROM document_summary_cache
+            WHERE document_id = ?
+              AND content_hash = ?
+              AND summary_length = ?
+              AND keyword_limit = ?
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            ''',
+            (safe_doc_id, safe_hash, safe_summary_length, safe_keyword_limit)
+        )
+        row = row_to_dict(cursor.fetchone())
+        if not row:
+            return None
+        raw_json = row.get('summary_json')
+        try:
+            payload = json.loads(raw_json) if isinstance(raw_json, str) else {}
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        payload['summary_source'] = str(
+            payload.get('summary_source') or row.get('summary_source') or 'cache'
+        ).strip().lower() or 'cache'
+        payload['summary_note'] = str(payload.get('summary_note') or row.get('summary_note') or '').strip()
+        payload['cached_at'] = row.get('updated_at') or row.get('created_at') or utcnow_iso()
+        return payload
+    except Exception as e:
+        print(f"⚠️ Summary cache read failed: {e}")
+        return None
+
+
+def save_document_summary_cache(
+    conn,
+    document_id,
+    workspace_id,
+    username,
+    content_hash,
+    summary_length,
+    keyword_limit,
+    payload
+):
+    safe_doc_id = parse_int(document_id, 0, 0)
+    safe_hash = str(content_hash or '').strip()
+    safe_summary_length = str(summary_length or '').strip().lower()
+    safe_keyword_limit = parse_int(keyword_limit, 5, 1)
+    if safe_doc_id <= 0 or not safe_hash or not safe_summary_length:
+        return False
+    if not isinstance(payload, dict) or not str(payload.get('summary') or '').strip():
+        return False
+
+    safe_payload = {
+        'summary': str(payload.get('summary') or '').strip(),
+        'keywords': payload.get('keywords') if isinstance(payload.get('keywords'), list) else [],
+        'key_sentences': payload.get('key_sentences') if isinstance(payload.get('key_sentences'), list) else [],
+        'summary_source': str(payload.get('summary_source') or '').strip().lower() or 'fallback',
+        'summary_note': str(payload.get('summary_note') or '').strip(),
+    }
+    summary_json = json.dumps(safe_payload, ensure_ascii=False)
+    now_iso = utcnow_iso()
+    safe_workspace_id = str(workspace_id or '').strip()
+    safe_username = str(username or '').strip()
+    try:
+        conn.execute(
+            '''
+            DELETE FROM document_summary_cache
+            WHERE document_id = ?
+              AND content_hash = ?
+              AND summary_length = ?
+              AND keyword_limit = ?
+            ''',
+            (safe_doc_id, safe_hash, safe_summary_length, safe_keyword_limit)
+        )
+        conn.execute(
+            '''
+            INSERT INTO document_summary_cache (
+                document_id,
+                workspace_id,
+                username,
+                content_hash,
+                summary_length,
+                keyword_limit,
+                summary_json,
+                summary_source,
+                summary_note,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                safe_doc_id,
+                safe_workspace_id,
+                safe_username,
+                safe_hash,
+                safe_summary_length,
+                safe_keyword_limit,
+                summary_json,
+                safe_payload.get('summary_source') or '',
+                safe_payload.get('summary_note') or '',
+                now_iso,
+                now_iso,
+            )
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"⚠️ Summary cache write failed: {e}")
+        return False
 
 
 def normalize_workspace_settings(raw_settings):
@@ -3104,6 +3262,10 @@ def clear_workspace_documents(workspace_id):
                 f'DELETE FROM document_share_links WHERE document_id IN ({placeholders})',
                 tuple(doc_ids)
             )
+            conn.execute(
+                f'DELETE FROM document_summary_cache WHERE document_id IN ({placeholders})',
+                tuple(doc_ids)
+            )
 
         conn.execute('DELETE FROM documents WHERE workspace_id = ?', (workspace_id,))
         conn.commit()
@@ -3326,6 +3488,7 @@ def delete_document(doc_id):
             return jsonify({'error': 'You can only delete your own documents'}), 403
 
         conn.execute('DELETE FROM document_share_links WHERE document_id = ?', (doc_id,))
+        conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (doc_id,))
         conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
         conn.commit()
     finally:
@@ -4412,10 +4575,46 @@ def extract_text_from_image(doc_id=None):
 def analyze_text():
     data = request.get_json(silent=True) or {}
     username = str(data.get('username') or '').strip()
+    share_token = str(data.get('share_token') or '').strip()
     requested_workspace_id = str(data.get('workspace_id') or '').strip()
+    requested_doc_id = parse_int(data.get('doc_id', 0), 0, 0)
+    force_refresh = parse_bool(data.get('force_refresh'), False)
     workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+    workspace_id = requested_workspace_id
+    doc_text_content = ''
+    document_owner_username = ''
+    text_source = 'request_text'
 
-    if username:
+    if requested_doc_id > 0:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        try:
+            cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (requested_doc_id,))
+            doc = cursor.fetchone()
+            if not doc:
+                return jsonify({'error': 'Document not found'}), 404
+
+            allowed, reason = check_document_access(conn, doc, username, share_token)
+            if not allowed:
+                return jsonify({'error': reason}), 403
+
+            workspace_id = str(
+                (doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or ''
+            ).strip()
+            workspace_settings = get_workspace_settings(conn, workspace_id)
+            doc_text_content = str(
+                (doc.get('content') if hasattr(doc, 'get') else doc['content']) or ''
+            ).strip()
+            document_owner_username = str(
+                (doc.get('username') if hasattr(doc, 'get') else doc['username']) or ''
+            ).strip()
+        finally:
+            conn.close()
+
+        if not workspace_settings.get('allow_ai_tools', True):
+            return jsonify({"error": "AI tools are disabled in this workspace settings"}), 403
+    elif username:
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
@@ -4444,6 +4643,11 @@ def analyze_text():
             return jsonify({"error": "AI tools are disabled in this workspace settings"}), 403
 
     text_content = (data.get('text') or '').strip()
+    if not text_content and doc_text_content:
+        text_content = doc_text_content
+        text_source = 'document_content'
+    elif not text_content:
+        text_source = 'empty'
     summary_length = str(
         data.get('summary_length')
         or workspace_settings.get('summary_length')
@@ -4459,7 +4663,50 @@ def analyze_text():
     )
 
     if not text_content:
+        if requested_doc_id > 0:
+            return jsonify({
+                "error": "No text available in this document. Open the note and add/edit content first.",
+                "details": {"doc_id": requested_doc_id}
+            }), 400
         return jsonify({"error": "No text provided"}), 400
+
+    use_document_cache = requested_doc_id > 0 and text_source == 'document_content'
+    text_hash = build_summary_cache_text_hash(text_content)
+    if use_document_cache and text_hash and not force_refresh:
+        conn = get_db_connection()
+        if conn:
+            try:
+                cached_payload = load_document_summary_cache(
+                    conn,
+                    requested_doc_id,
+                    text_hash,
+                    summary_length,
+                    keyword_limit
+                )
+            finally:
+                conn.close()
+            if cached_payload:
+                return jsonify({
+                    "summary": str(cached_payload.get("summary") or '').strip(),
+                    "keywords": cached_payload.get("keywords") if isinstance(cached_payload.get("keywords"), list) else [],
+                    "key_sentences": (
+                        cached_payload.get("key_sentences")
+                        if isinstance(cached_payload.get("key_sentences"), list)
+                        else []
+                    ),
+                    "summary_source": str(
+                        cached_payload.get("summary_source") or "cache"
+                    ).strip().lower() or "cache",
+                    "summary_note": str(cached_payload.get("summary_note") or '').strip(),
+                    "text_source": text_source,
+                    "document_id": requested_doc_id,
+                    "cache_hit": True,
+                    "cached_at": cached_payload.get("cached_at"),
+                    "options_used": {
+                        "summary_length": summary_length,
+                        "keyword_limit": keyword_limit,
+                    }
+                })
 
     token_map = {
         'short': {'max_new_tokens': 80, 'min_new_tokens': 18, 'sentence_limit': 2},
@@ -4514,18 +4761,46 @@ def analyze_text():
 
     key_sentences = extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
 
-    return jsonify({
+    response_payload = {
         "summary": summary,
         "keywords": keywords,
         "key_sentences": key_sentences,
         "summary_source": summary_source,
         "summary_note": summary_note,
+        "text_source": text_source,
+        "document_id": requested_doc_id if requested_doc_id > 0 else None,
+        "cache_hit": False,
         "options_used": {
             "summary_length": summary_length,
             "keyword_limit": keyword_limit,
             "sentence_limit": length_options['sentence_limit'],
         }
-    })
+    }
+
+    if use_document_cache and text_hash:
+        cache_conn = get_db_connection()
+        if cache_conn:
+            try:
+                save_document_summary_cache(
+                    cache_conn,
+                    requested_doc_id,
+                    workspace_id,
+                    username or document_owner_username,
+                    text_hash,
+                    summary_length,
+                    keyword_limit,
+                    {
+                        "summary": summary,
+                        "keywords": keywords,
+                        "key_sentences": key_sentences,
+                        "summary_source": summary_source,
+                        "summary_note": summary_note,
+                    }
+                )
+            finally:
+                cache_conn.close()
+
+    return jsonify(response_payload)
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 @app.route('/uploads/<filename>')

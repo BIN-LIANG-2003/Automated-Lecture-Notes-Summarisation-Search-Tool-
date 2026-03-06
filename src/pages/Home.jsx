@@ -44,6 +44,17 @@ const SUGGESTED_CATEGORIES = [
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
 const HOME_TAB_OPTIONS = ['home', 'files', 'ai'];
+const SUMMARY_CENTER_SORT_OPTIONS = [
+  { value: 'newest', label: 'Newest' },
+  { value: 'oldest', label: 'Oldest' },
+  { value: 'title_asc', label: 'Title A-Z' },
+];
+const SUMMARY_CENTER_SOURCE_OPTIONS = [
+  { value: 'all', label: 'All sources' },
+  { value: 'cache', label: 'Cache hit' },
+  { value: 'huggingface', label: 'HuggingFace' },
+  { value: 'fallback', label: 'Fallback' },
+];
 const WORKSPACE_SETTINGS_TABS = [
   { id: 'general', label: 'General' },
   { id: 'defaults', label: 'Defaults' },
@@ -149,7 +160,13 @@ const BULK_SELECT_MAX_ITEMS = 600;
 
 const FILES_VIEW_PREFS_KEY = 'studyhub-files-view-prefs-v1';
 const SAVED_VIEWS_STORE_KEY = 'studyhub-saved-views-v1';
+const STARRED_NOTES_STORE_KEY = 'studyhub-starred-notes-v1';
+const RECENT_NOTES_STORE_KEY = 'studyhub-recent-notes-v1';
+const SUMMARY_HISTORY_STORE_KEY = 'studyhub-summary-history-v1';
 const MAX_SAVED_VIEWS_PER_WORKSPACE = 10;
+const MAX_STARRED_NOTES_PER_WORKSPACE = 60;
+const MAX_RECENT_NOTES_PER_WORKSPACE = 80;
+const MAX_SUMMARY_HISTORY_PER_WORKSPACE = 60;
 const MAX_UPLOAD_QUEUE_ITEMS = 30;
 const DEFAULT_FILTERS = { query: '', start: '', end: '', tag: '', category: '', fileType: '' };
 const FILTER_DATE_RANGE_OPTIONS = [
@@ -157,6 +174,12 @@ const FILTER_DATE_RANGE_OPTIONS = [
   { id: '7d', label: 'Last 7 Days', daysBack: 6 },
   { id: '30d', label: 'Last 30 Days', daysBack: 29 },
   { id: 'all', label: 'All Time', daysBack: null },
+];
+const QUICK_FILTER_PRESET_OPTIONS = [
+  { id: 'recent7', label: 'Recent 7 Days' },
+  { id: 'images', label: 'Images' },
+  { id: 'editable', label: 'Editable' },
+  { id: 'uncategorized', label: 'Uncategorized' },
 ];
 const FILE_TYPE_FILTER_OPTIONS = [
   { value: '', label: 'All' },
@@ -177,6 +200,26 @@ const EDITABLE_FILE_TYPE_VALUES = new Set(['txt', 'docx']);
 const createClientId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const createSavedViewId = () => createClientId('view');
 const createUploadQueueId = () => createClientId('upload');
+const toPositiveDocId = (value) => {
+  const next = Number(value);
+  if (!Number.isFinite(next) || next <= 0) return 0;
+  return Math.floor(next);
+};
+
+const normalizeSummarySource = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return next || 'fallback';
+};
+
+const normalizeSummaryCenterSort = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return SUMMARY_CENTER_SORT_OPTIONS.some((item) => item.value === next) ? next : 'newest';
+};
+
+const normalizeSummaryCenterSource = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return SUMMARY_CENTER_SOURCE_OPTIONS.some((item) => item.value === next) ? next : 'all';
+};
 
 const normalizeFileTypeFilter = (value) => {
   const next = String(value || '').trim().toLowerCase();
@@ -367,6 +410,160 @@ const persistSavedViews = (accountName, workspaceId, views) => {
     const nextStore = parsed && typeof parsed === 'object' ? { ...parsed } : {};
     nextStore[scopeKey] = normalized;
     localStorage.setItem(SAVED_VIEWS_STORE_KEY, JSON.stringify(nextStore));
+  } catch {
+    // Ignore localStorage write failures (private mode / quota).
+  }
+};
+
+const normalizeStarredNoteEntry = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = toPositiveDocId(raw.id);
+  if (!id) return null;
+  const title = String(raw.title || '').trim().slice(0, 200) || `Note ${id}`;
+  return {
+    id,
+    title,
+    fileType: String(raw.fileType || '').trim().toLowerCase(),
+    updatedAt: String(raw.updatedAt || ''),
+  };
+};
+
+const loadStarredNotes = (accountName, workspaceId) => {
+  if (typeof window === 'undefined') return [];
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STARRED_NOTES_STORE_KEY) || '{}');
+    const bucket = Array.isArray(parsed?.[scopeKey]) ? parsed[scopeKey] : [];
+    return bucket
+      .map((item) => normalizeStarredNoteEntry(item))
+      .filter(Boolean)
+      .slice(0, MAX_STARRED_NOTES_PER_WORKSPACE);
+  } catch {
+    return [];
+  }
+};
+
+const persistStarredNotes = (accountName, workspaceId, starredNotes) => {
+  if (typeof window === 'undefined') return;
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  const normalized = Array.isArray(starredNotes)
+    ? starredNotes
+        .map((item) => normalizeStarredNoteEntry(item))
+        .filter(Boolean)
+        .slice(0, MAX_STARRED_NOTES_PER_WORKSPACE)
+    : [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(STARRED_NOTES_STORE_KEY) || '{}');
+    const nextStore = parsed && typeof parsed === 'object' ? { ...parsed } : {};
+    nextStore[scopeKey] = normalized;
+    localStorage.setItem(STARRED_NOTES_STORE_KEY, JSON.stringify(nextStore));
+  } catch {
+    // Ignore localStorage write failures (private mode / quota).
+  }
+};
+
+const normalizeRecentNoteEntry = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = toPositiveDocId(raw.id);
+  if (!id) return null;
+  const title = String(raw.title || '').trim().slice(0, 200) || `Note ${id}`;
+  return {
+    id,
+    title,
+    fileType: String(raw.fileType || '').trim().toLowerCase(),
+    updatedAt: String(raw.updatedAt || ''),
+  };
+};
+
+const loadRecentNotes = (accountName, workspaceId) => {
+  if (typeof window === 'undefined') return [];
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_NOTES_STORE_KEY) || '{}');
+    const bucket = Array.isArray(parsed?.[scopeKey]) ? parsed[scopeKey] : [];
+    return bucket
+      .map((item) => normalizeRecentNoteEntry(item))
+      .filter(Boolean)
+      .slice(0, MAX_RECENT_NOTES_PER_WORKSPACE);
+  } catch {
+    return [];
+  }
+};
+
+const persistRecentNotes = (accountName, workspaceId, recentNotes) => {
+  if (typeof window === 'undefined') return;
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  const normalized = Array.isArray(recentNotes)
+    ? recentNotes
+        .map((item) => normalizeRecentNoteEntry(item))
+        .filter(Boolean)
+        .slice(0, MAX_RECENT_NOTES_PER_WORKSPACE)
+    : [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(RECENT_NOTES_STORE_KEY) || '{}');
+    const nextStore = parsed && typeof parsed === 'object' ? { ...parsed } : {};
+    nextStore[scopeKey] = normalized;
+    localStorage.setItem(RECENT_NOTES_STORE_KEY, JSON.stringify(nextStore));
+  } catch {
+    // Ignore localStorage write failures (private mode / quota).
+  }
+};
+
+const normalizeSummaryHistoryEntry = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const id = String(raw.id || '').trim() || createClientId('summary');
+  const docId = toPositiveDocId(raw.docId || raw.doc_id || raw.document_id);
+  const title = String(raw.title || '').trim().slice(0, 200);
+  const summary = String(raw.summary || '').trim();
+  if (!summary) return null;
+  return {
+    id,
+    docId,
+    title: title || (docId ? `Note ${docId}` : 'Untitled note'),
+    fileType: String(raw.fileType || '').trim().toLowerCase(),
+    summary,
+    keywords: Array.isArray(raw.keywords) ? raw.keywords.map((item) => String(item || '').trim()).filter(Boolean) : [],
+    keySentences: Array.isArray(raw.keySentences || raw.key_sentences)
+      ? (raw.keySentences || raw.key_sentences)
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      : [],
+    summarySource: normalizeSummarySource(raw.summarySource || raw.summary_source || 'fallback'),
+    summaryNote: String(raw.summaryNote || raw.summary_note || '').trim(),
+    summaryLength: String(raw.summaryLength || raw.summary_length || 'medium').trim().toLowerCase() || 'medium',
+    generatedAt: String(raw.generatedAt || raw.generated_at || raw.updatedAt || new Date().toISOString()),
+  };
+};
+
+const loadSummaryHistory = (accountName, workspaceId) => {
+  if (typeof window === 'undefined') return [];
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SUMMARY_HISTORY_STORE_KEY) || '{}');
+    const bucket = Array.isArray(parsed?.[scopeKey]) ? parsed[scopeKey] : [];
+    return bucket
+      .map((item) => normalizeSummaryHistoryEntry(item))
+      .filter(Boolean)
+      .slice(0, MAX_SUMMARY_HISTORY_PER_WORKSPACE);
+  } catch {
+    return [];
+  }
+};
+
+const persistSummaryHistory = (accountName, workspaceId, entries) => {
+  if (typeof window === 'undefined') return;
+  const scopeKey = createSavedViewsScopeKey(accountName, workspaceId);
+  const normalized = Array.isArray(entries)
+    ? entries
+        .map((item) => normalizeSummaryHistoryEntry(item))
+        .filter(Boolean)
+        .slice(0, MAX_SUMMARY_HISTORY_PER_WORKSPACE)
+    : [];
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SUMMARY_HISTORY_STORE_KEY) || '{}');
+    const nextStore = parsed && typeof parsed === 'object' ? { ...parsed } : {};
+    nextStore[scopeKey] = normalized;
+    localStorage.setItem(SUMMARY_HISTORY_STORE_KEY, JSON.stringify(nextStore));
   } catch {
     // Ignore localStorage write failures (private mode / quota).
   }
@@ -574,12 +771,6 @@ const workspaceIconLabel = (workspace, fallback = 'W') => {
   return String(fallback || 'W').slice(0, 1).toUpperCase();
 };
 
-const sortByNewestUpload = (a, b) => {
-  const timeDiff = toTimeMs(b.uploadedAt) - toTimeMs(a.uploadedAt);
-  if (timeDiff !== 0) return timeDiff;
-  return Number(b.id || 0) - Number(a.id || 0);
-};
-
 const getDocExt = (doc) => {
   if (!doc) return '';
   const rawType = String(doc.fileType || doc.file_type || '').toLowerCase();
@@ -728,6 +919,16 @@ export default function HomePage() {
   );
   const [sidebarMenuDocId, setSidebarMenuDocId] = useState(null);
   const [sidebarRecentIds, setSidebarRecentIds] = useState([]);
+  const [sidebarRecentMeta, setSidebarRecentMeta] = useState({});
+  const [starredNotes, setStarredNotes] = useState([]);
+  const [summaryHistory, setSummaryHistory] = useState([]);
+  const [summaryCenterOpen, setSummaryCenterOpen] = useState(false);
+  const [summaryCenterQuery, setSummaryCenterQuery] = useState('');
+  const [summaryCenterSort, setSummaryCenterSort] = useState('newest');
+  const [summaryCenterSource, setSummaryCenterSource] = useState('all');
+  const [summaryCenterExpandedIds, setSummaryCenterExpandedIds] = useState([]);
+  const [summaryCenterActionId, setSummaryCenterActionId] = useState('');
+  const [starredDragId, setStarredDragId] = useState(0);
   const [activeDoc, setActiveDoc] = useState(null);
   const [activeDocLoading, setActiveDocLoading] = useState(false);
   const [activeDocError, setActiveDocError] = useState('');
@@ -741,6 +942,7 @@ export default function HomePage() {
   const [activeDocShareLinksError, setActiveDocShareLinksError] = useState('');
   const [activeDocShareActionLoadingId, setActiveDocShareActionLoadingId] = useState(0);
   const [extractedText, setExtractedText] = useState('');
+  const [aiHideInputText, setAiHideInputText] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -765,6 +967,10 @@ export default function HomePage() {
     );
   }, [workspaceState]);
   const activeWorkspaceId = String(activeWorkspace?.id || workspaceState?.activeWorkspaceId || '');
+  const starredDocIdSet = useMemo(
+    () => new Set(starredNotes.map((item) => toPositiveDocId(item.id)).filter(Boolean)),
+    [starredNotes]
+  );
   const activeWorkspaceSettings = useMemo(
     () => normalizeWorkspaceSettings(activeWorkspace?.settings),
     [activeWorkspace?.settings]
@@ -798,6 +1004,51 @@ export default function HomePage() {
       ),
     [activeWorkspaceSettings.recent_items_limit]
   );
+  const summaryHistoryStats = useMemo(() => {
+    const base = {
+      total: summaryHistory.length,
+      cache: 0,
+      huggingface: 0,
+      fallback: 0,
+    };
+    summaryHistory.forEach((item) => {
+      const source = normalizeSummarySource(item.summarySource);
+      if (source === 'cache') base.cache += 1;
+      else if (source === 'huggingface') base.huggingface += 1;
+      else base.fallback += 1;
+    });
+    return base;
+  }, [summaryHistory]);
+  const summaryHistoryItems = useMemo(() => {
+    const query = String(summaryCenterQuery || '').trim().toLowerCase();
+    const sourceFilter = normalizeSummaryCenterSource(summaryCenterSource);
+    const sortKey = normalizeSummaryCenterSort(summaryCenterSort);
+    const filtered = summaryHistory.filter((item) => {
+      if (sourceFilter !== 'all' && normalizeSummarySource(item.summarySource) !== sourceFilter) {
+        return false;
+      }
+      if (!query) return true;
+      const source = [
+        item.title,
+        item.summary,
+        item.fileType,
+        normalizeSummarySource(item.summarySource),
+        Array.isArray(item.keywords) ? item.keywords.join(' ') : '',
+      ]
+        .join(' ')
+        .toLowerCase();
+      return source.includes(query);
+    });
+    const sorted = filtered.slice();
+    if (sortKey === 'oldest') {
+      sorted.sort((a, b) => toTimeMs(a.generatedAt) - toTimeMs(b.generatedAt));
+    } else if (sortKey === 'title_asc') {
+      sorted.sort((a, b) => String(a.title || '').localeCompare(String(b.title || '')));
+    } else {
+      sorted.sort((a, b) => toTimeMs(b.generatedAt) - toTimeMs(a.generatedAt));
+    }
+    return sorted;
+  }, [summaryCenterQuery, summaryCenterSource, summaryCenterSort, summaryHistory]);
   const workspaceMemberCount = useMemo(
     () => memberCountOfWorkspace(activeWorkspace, accountName),
     [activeWorkspace, accountName]
@@ -1193,6 +1444,11 @@ export default function HomePage() {
       setAvailableTags([]);
       setAvailableCategories([]);
       setSidebarRecentIds([]);
+      setSidebarRecentMeta({});
+      setStarredNotes([]);
+      setSummaryHistory([]);
+      setSummaryCenterOpen(false);
+      setSummaryCenterQuery('');
       setSidebarMenuDocId(null);
       setActiveDoc(null);
       setActiveDocError('');
@@ -1255,8 +1511,121 @@ export default function HomePage() {
   }, [accountName, activeWorkspaceId]);
 
   useEffect(() => {
+    const nextRecent = loadRecentNotes(accountName, activeWorkspaceId);
+    setSidebarRecentIds(nextRecent.map((item) => toPositiveDocId(item.id)).filter(Boolean));
+    setSidebarRecentMeta(
+      nextRecent.reduce((acc, item) => {
+        const id = toPositiveDocId(item.id);
+        if (!id) return acc;
+        acc[id] = item;
+        return acc;
+      }, {})
+    );
+  }, [accountName, activeWorkspaceId]);
+
+  useEffect(() => {
+    const nextStarred = loadStarredNotes(accountName, activeWorkspaceId);
+    setStarredNotes(nextStarred);
+    setStarredDragId(0);
+  }, [accountName, activeWorkspaceId]);
+
+  useEffect(() => {
+    const nextHistory = loadSummaryHistory(accountName, activeWorkspaceId);
+    setSummaryHistory(nextHistory);
+    setSummaryCenterQuery('');
+    setSummaryCenterSort('newest');
+    setSummaryCenterSource('all');
+    setSummaryCenterExpandedIds([]);
+    setSummaryCenterActionId('');
+    setSummaryCenterOpen(false);
+  }, [accountName, activeWorkspaceId]);
+
+  useEffect(() => {
     persistSavedViews(accountName, activeWorkspaceId, savedViews);
   }, [accountName, activeWorkspaceId, savedViews]);
+
+  useEffect(() => {
+    const entries = sidebarRecentIds
+      .map((id) => {
+        const safeId = toPositiveDocId(id);
+        if (!safeId) return null;
+        const meta = sidebarRecentMeta[safeId] || {};
+        return normalizeRecentNoteEntry({
+          id: safeId,
+          title: meta.title || `Note ${safeId}`,
+          fileType: meta.fileType || '',
+          updatedAt: meta.updatedAt || '',
+        });
+      })
+      .filter(Boolean);
+    persistRecentNotes(accountName, activeWorkspaceId, entries);
+  }, [accountName, activeWorkspaceId, sidebarRecentIds, sidebarRecentMeta]);
+
+  useEffect(() => {
+    persistStarredNotes(accountName, activeWorkspaceId, starredNotes);
+  }, [accountName, activeWorkspaceId, starredNotes]);
+
+  useEffect(() => {
+    persistSummaryHistory(accountName, activeWorkspaceId, summaryHistory);
+  }, [accountName, activeWorkspaceId, summaryHistory]);
+
+  useEffect(() => {
+    const idSet = new Set(summaryHistory.map((item) => String(item.id)));
+    setSummaryCenterExpandedIds((prev) => prev.filter((id) => idSet.has(String(id))));
+    setSummaryCenterActionId((prev) => (idSet.has(String(prev)) ? prev : ''));
+  }, [summaryHistory]);
+
+  useEffect(() => {
+    if (!documents.length) return;
+    setSidebarRecentMeta((prev) => {
+      if (!prev || typeof prev !== 'object') return prev;
+      const next = { ...prev };
+      let changed = false;
+      documents.forEach((doc) => {
+        const id = toPositiveDocId(doc.id);
+        if (!id || !next[id]) return;
+        const nextTitle = String(doc.title || '').trim() || next[id].title || `Note ${id}`;
+        const nextFileType = String(getDocExt(doc) || '').trim().toLowerCase();
+        if (nextTitle !== next[id].title || nextFileType !== next[id].fileType) {
+          next[id] = {
+            ...next[id],
+            title: nextTitle,
+            fileType: nextFileType,
+            updatedAt: new Date().toISOString(),
+          };
+          changed = true;
+        }
+      });
+      return changed ? next : prev;
+    });
+
+    setStarredNotes((prev) => {
+      if (!prev.length) return prev;
+      const docMap = new Map(
+        documents
+          .map((doc) => [toPositiveDocId(doc.id), doc])
+          .filter(([id]) => id > 0)
+      );
+      let changed = false;
+      const next = prev.map((entry) => {
+        const doc = docMap.get(toPositiveDocId(entry.id));
+        if (!doc) return entry;
+        const nextTitle = String(doc.title || '').trim() || entry.title;
+        const nextFileType = String(getDocExt(doc) || '').trim().toLowerCase();
+        if (nextTitle !== entry.title || nextFileType !== entry.fileType) {
+          changed = true;
+          return {
+            ...entry,
+            title: nextTitle,
+            fileType: nextFileType,
+            updatedAt: new Date().toISOString(),
+          };
+        }
+        return entry;
+      });
+      return changed ? next : prev;
+    });
+  }, [documents]);
 
   useEffect(() => {
     if (workspaceSettingsOpen) return;
@@ -1537,6 +1906,58 @@ export default function HomePage() {
     });
     return matched?.id || '';
   }, [filters.start, filters.end]);
+  const activeQuickFilterPresetId = useMemo(() => {
+    const normalized = {
+      query: String(filters.query || '').trim(),
+      start: String(filters.start || '').trim(),
+      end: String(filters.end || '').trim(),
+      tag: String(filters.tag || '').trim(),
+      category: String(filters.category || '').trim(),
+      fileType: normalizeFileTypeFilter(filters.fileType),
+    };
+    const recent7 = getQuickDateRange(6);
+    if (
+      !normalized.query &&
+      !normalized.tag &&
+      !normalized.category &&
+      !normalized.fileType &&
+      normalized.start === recent7.start &&
+      normalized.end === recent7.end
+    ) {
+      return 'recent7';
+    }
+    if (
+      !normalized.query &&
+      !normalized.start &&
+      !normalized.end &&
+      !normalized.tag &&
+      !normalized.category &&
+      normalized.fileType === 'image'
+    ) {
+      return 'images';
+    }
+    if (
+      !normalized.query &&
+      !normalized.start &&
+      !normalized.end &&
+      !normalized.tag &&
+      !normalized.category &&
+      normalized.fileType === 'editable'
+    ) {
+      return 'editable';
+    }
+    if (
+      !normalized.query &&
+      !normalized.start &&
+      !normalized.end &&
+      !normalized.tag &&
+      !normalized.fileType &&
+      normalized.category === DEFAULT_NOTE_CATEGORY
+    ) {
+      return 'uncategorized';
+    }
+    return '';
+  }, [filters.query, filters.start, filters.end, filters.tag, filters.category, filters.fileType]);
   const activeFilterChips = useMemo(() => {
     const chips = [];
     const query = String(filters.query || '').trim();
@@ -1663,36 +2084,55 @@ export default function HomePage() {
     return dt.toLocaleString();
   };
 
-  const sortedUploadIds = useMemo(
-    () =>
-      documents
-        .slice()
-        .sort(sortByNewestUpload)
-        .map((doc) => Number(doc.id))
-        .filter((id) => Number.isFinite(id)),
-    [documents]
-  );
-
-  useEffect(() => {
-    // Keep sidebar recent list in a stable LRU order while syncing with current documents.
-    setSidebarRecentIds((prev) => {
-      const validIdSet = new Set(sortedUploadIds);
-      const cleanedPrev = prev.filter((id) => validIdSet.has(id));
-      const existingIdSet = new Set(cleanedPrev);
-      const newlyAdded = sortedUploadIds.filter((id) => !existingIdSet.has(id));
-      const next = [...newlyAdded, ...cleanedPrev].slice(0, activeRecentLimit);
-      if (next.length === prev.length && next.every((id, idx) => id === prev[idx])) return prev;
-      return next;
-    });
-  }, [sortedUploadIds, activeRecentLimit]);
-
   const sidebarDocs = useMemo(() => {
     const byId = new Map(documents.map((doc) => [Number(doc.id), doc]));
     return sidebarRecentIds
-      .map((id) => byId.get(id))
-      .filter(Boolean)
+      .map((id) => {
+        const safeId = toPositiveDocId(id);
+        const matched = byId.get(safeId);
+        if (matched) return matched;
+        const meta = sidebarRecentMeta[safeId] || {};
+        return {
+          id: safeId,
+          title: String(meta.title || `Note ${safeId}`),
+          uploadedAt: meta.updatedAt || '',
+          tags: [],
+          category: '',
+        };
+      })
+      .filter((item) => toPositiveDocId(item?.id) > 0)
       .slice(0, activeRecentLimit);
-  }, [documents, sidebarRecentIds, activeRecentLimit]);
+  }, [documents, sidebarRecentIds, sidebarRecentMeta, activeRecentLimit]);
+  useEffect(() => {
+    setSidebarRecentIds((prev) => prev.slice(0, activeRecentLimit));
+  }, [activeRecentLimit]);
+  useEffect(() => {
+    setSidebarRecentMeta((prev) => {
+      if (!prev || typeof prev !== 'object') return {};
+      const keep = new Set(sidebarRecentIds.map((id) => toPositiveDocId(id)).filter(Boolean));
+      const keys = Object.keys(prev);
+      if (!keys.length) return prev;
+      let changed = false;
+      const next = {};
+      keys.forEach((key) => {
+        const id = toPositiveDocId(key);
+        if (!id || !keep.has(id)) {
+          changed = true;
+          return;
+        }
+        next[id] = prev[key];
+      });
+      return changed ? next : prev;
+    });
+  }, [sidebarRecentIds]);
+  const sidebarStarredDocs = useMemo(
+    () => starredNotes.slice(0, Math.max(activeRecentLimit, 8)),
+    [starredNotes, activeRecentLimit]
+  );
+  const activeDocIsStarred = useMemo(
+    () => (activeDoc ? starredDocIdSet.has(toPositiveDocId(activeDoc.id)) : false),
+    [activeDoc, starredDocIdSet]
+  );
 
   const nowLabel = useMemo(
     () =>
@@ -1761,6 +2201,11 @@ export default function HomePage() {
     setAvailableTags([]);
     setAvailableCategories([]);
     setSidebarRecentIds([]);
+    setSidebarRecentMeta({});
+    setStarredNotes([]);
+    setSummaryHistory([]);
+    setSummaryCenterOpen(false);
+    setSummaryCenterQuery('');
     setSidebarMenuDocId(null);
     setActiveDoc(null);
     setActiveDocError('');
@@ -1809,6 +2254,11 @@ export default function HomePage() {
     setAvailableTags([]);
     setAvailableCategories([]);
     setSidebarRecentIds([]);
+    setSidebarRecentMeta({});
+    setStarredNotes([]);
+    setSummaryHistory([]);
+    setSummaryCenterOpen(false);
+    setSummaryCenterQuery('');
     setWorkspaceMenuOpen(false);
     closeWorkspaceDialogs();
     setSidebarMenuDocId(null);
@@ -1860,6 +2310,11 @@ export default function HomePage() {
         setAvailableTags([]);
         setAvailableCategories([]);
         setSidebarRecentIds([]);
+        setSidebarRecentMeta({});
+        setStarredNotes([]);
+        setSummaryHistory([]);
+        setSummaryCenterOpen(false);
+        setSummaryCenterQuery('');
         setSidebarMenuDocId(null);
         setActiveDoc(null);
         setActiveDocError('');
@@ -1897,6 +2352,11 @@ export default function HomePage() {
     setAvailableTags([]);
     setAvailableCategories([]);
     setSidebarRecentIds([]);
+    setSidebarRecentMeta({});
+    setStarredNotes([]);
+    setSummaryHistory([]);
+    setSummaryCenterOpen(false);
+    setSummaryCenterQuery('');
     setSidebarMenuDocId(null);
     setActiveDoc(null);
     setActiveDocError('');
@@ -1929,6 +2389,11 @@ export default function HomePage() {
     setAvailableTags([]);
     setAvailableCategories([]);
     setSidebarRecentIds([]);
+    setSidebarRecentMeta({});
+    setStarredNotes([]);
+    setSummaryHistory([]);
+    setSummaryCenterOpen(false);
+    setSummaryCenterQuery('');
     setSidebarMenuDocId(null);
     setActiveDoc(null);
     setActiveDocError('');
@@ -2200,10 +2665,132 @@ export default function HomePage() {
     return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  const bumpSidebarRecent = (docId) => {
-    const id = Number(docId);
-    if (!Number.isFinite(id)) return;
+  const toRecentEntry = (docLike) => {
+    const id = toPositiveDocId(docLike?.id ?? docLike);
+    if (!id) return null;
+    const title = String(docLike?.title || '').trim() || `Note ${id}`;
+    return {
+      id,
+      title: title.slice(0, 200),
+      fileType: String(getDocExt(docLike) || docLike?.fileType || '').trim().toLowerCase(),
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const bumpSidebarRecent = (docLike) => {
+    const entry = toRecentEntry(docLike);
+    if (!entry) return;
+    const id = entry.id;
+    setSidebarRecentMeta((prev) => ({
+      ...(prev || {}),
+      [id]: {
+        ...(prev?.[id] || {}),
+        ...entry,
+      },
+    }));
     setSidebarRecentIds((prev) => [id, ...prev.filter((item) => item !== id)].slice(0, activeRecentLimit));
+  };
+
+  const toStarredEntry = (doc) => {
+    const id = toPositiveDocId(doc?.id);
+    if (!id) return null;
+    const title = String(doc?.title || '').trim() || `Note ${id}`;
+    return {
+      id,
+      title: title.slice(0, 200),
+      fileType: String(getDocExt(doc) || doc?.fileType || '').trim().toLowerCase(),
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const toSummaryHistoryEntry = (docLike, result, options = {}) => {
+    const normalized = normalizeSummaryHistoryEntry({
+      id: options.id || createClientId('summary'),
+      docId: toPositiveDocId(options.docId ?? docLike?.id ?? result?.document_id),
+      title: String(options.title || docLike?.title || '').trim(),
+      fileType: String(options.fileType || getDocExt(docLike) || docLike?.fileType || '').trim().toLowerCase(),
+      summary: String(result?.summary || '').trim(),
+      keywords: Array.isArray(result?.keywords) ? result.keywords : [],
+      keySentences: Array.isArray(result?.key_sentences) ? result.key_sentences : [],
+      summarySource: normalizeSummarySource(result?.summary_source || ''),
+      summaryNote: String(result?.summary_note || '').trim(),
+      summaryLength: String(result?.options_used?.summary_length || activeWorkspaceSettings.summary_length || 'medium')
+        .trim()
+        .toLowerCase(),
+      generatedAt: new Date().toISOString(),
+    });
+    return normalized;
+  };
+
+  const pushSummaryHistoryEntry = (entry) => {
+    const normalized = normalizeSummaryHistoryEntry(entry);
+    if (!normalized) return;
+    setSummaryHistory((prev) => {
+      const next = [
+        normalized,
+        ...prev.filter((item) => String(item.id) !== normalized.id),
+      ];
+      return next.slice(0, MAX_SUMMARY_HISTORY_PER_WORKSPACE);
+    });
+  };
+
+  const removeSummaryHistoryEntry = (entryId) => {
+    const safeId = String(entryId || '').trim();
+    if (!safeId) return;
+    setSummaryHistory((prev) => prev.filter((item) => String(item.id) !== safeId));
+  };
+
+  const handleToggleStarredNote = (doc, options = {}) => {
+    const entry = toStarredEntry(doc);
+    if (!entry) return false;
+    const silent = Boolean(options.silent);
+    let nextActive = false;
+    setStarredNotes((prev) => {
+      const exists = prev.some((item) => toPositiveDocId(item.id) === entry.id);
+      if (exists) {
+        nextActive = false;
+        return prev.filter((item) => toPositiveDocId(item.id) !== entry.id);
+      }
+      nextActive = true;
+      const next = [entry, ...prev.filter((item) => toPositiveDocId(item.id) !== entry.id)];
+      return next.slice(0, MAX_STARRED_NOTES_PER_WORKSPACE);
+    });
+    if (!silent) {
+      showToast(nextActive ? `Starred "${entry.title}".` : `Removed "${entry.title}" from Starred.`, 'success');
+    }
+    return nextActive;
+  };
+
+  const handleOpenStarredNote = (entry) => {
+    const id = toPositiveDocId(entry?.id);
+    if (!id) return;
+    void openDocumentInPane(id, { fromSidebar: true, seedDoc: entry });
+  };
+
+  const handleStarredDragStart = (entryId) => {
+    const id = toPositiveDocId(entryId);
+    if (!id) return;
+    setStarredDragId(id);
+  };
+
+  const handleStarredDrop = (targetId) => {
+    const target = toPositiveDocId(targetId);
+    const dragged = toPositiveDocId(starredDragId);
+    setStarredDragId(0);
+    if (!target || !dragged || target === dragged) return;
+    setStarredNotes((prev) => {
+      const fromIndex = prev.findIndex((item) => toPositiveDocId(item.id) === dragged);
+      const toIndex = prev.findIndex((item) => toPositiveDocId(item.id) === target);
+      if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return prev;
+      const next = prev.slice();
+      const [moved] = next.splice(fromIndex, 1);
+      next.splice(toIndex, 0, moved);
+      return next;
+    });
+  };
+
+  const handleStarredDragEnd = () => {
+    setStarredDragId(0);
   };
 
   const handleFileChange = (event) => {
@@ -2494,6 +3081,7 @@ export default function HomePage() {
       }
 
       const nextText = coerceOcrText(data?.text ?? data);
+      setAiHideInputText(false);
       setExtractedText(nextText);
       setAnalysisResult(null);
       if (!nextText) {
@@ -2525,7 +3113,51 @@ export default function HomePage() {
     aiImageInputRef.current?.click();
   };
 
-  const handleAnalyzeText = async () => {
+  const requestSummary = async ({
+    text = '',
+    docId = 0,
+    trackLoading = true,
+    silentError = false,
+    forceRefresh = false,
+  } = {}) => {
+    const payload = {
+      username: username || '',
+      workspace_id: activeWorkspaceId || '',
+      summary_length: activeWorkspaceSettings.summary_length,
+      keyword_limit: activeWorkspaceSettings.keyword_limit,
+    };
+    const safeText = String(text || '').trim();
+    const safeDocId = Number(docId) || 0;
+    if (safeText) payload.text = safeText;
+    if (safeDocId > 0) payload.doc_id = safeDocId;
+    if (forceRefresh) payload.force_refresh = true;
+
+    if (trackLoading) setIsAnalyzing(true);
+    try {
+      const response = await fetch('/api/analyze-text', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        throw new Error(data?.error || 'Service error');
+      }
+      return data;
+    } catch (error) {
+      console.error('Analyze text failed:', error);
+      if (!silentError) {
+        showToast(`Analysis failed: ${error.message || 'Service error'}`, 'error');
+      }
+      return null;
+    } finally {
+      if (trackLoading) setIsAnalyzing(false);
+    }
+  };
+
+  const handleAnalyzeText = async (options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
     if (!activeWorkspaceSettings.allow_ai_tools) {
       showToast('AI tools are disabled in this workspace settings.', 'warning');
       return;
@@ -2535,32 +3167,24 @@ export default function HomePage() {
       return;
     }
 
-    setIsAnalyzing(true);
-    try {
-      const response = await fetch('/api/analyze-text', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username: username || '',
-          workspace_id: activeWorkspaceId || '',
-          text: extractedText,
-          summary_length: activeWorkspaceSettings.summary_length,
-          keyword_limit: activeWorkspaceSettings.keyword_limit,
-        }),
-      });
-      const data = await response.json().catch(() => ({}));
-
-      if (!response.ok) {
-        showToast(`Analysis failed: ${data.error || 'Service error'}`, 'error');
-        return;
-      }
-
-      setAnalysisResult(data);
-    } catch (error) {
-      console.error('Analyze text failed:', error);
-      showToast('Text analysis request failed. Please try again later.', 'error');
-    } finally {
-      setIsAnalyzing(false);
+    setAiHideInputText(false);
+    const data = await requestSummary({ text: extractedText, forceRefresh });
+    if (!data) return;
+    setAnalysisResult(data);
+    const docId = toPositiveDocId(data?.document_id);
+    const sourceDoc = docId ? documents.find((item) => toPositiveDocId(item.id) === docId) : null;
+    const historyEntry = toSummaryHistoryEntry(sourceDoc || activeDoc || { id: docId }, data, {
+      docId,
+      title: sourceDoc?.title || activeDoc?.title || (docId ? `Note ${docId}` : 'Manual Text'),
+      fileType: sourceDoc ? getDocExt(sourceDoc) : '',
+    });
+    if (historyEntry) {
+      pushSummaryHistoryEntry(historyEntry);
+    }
+    if (data.cache_hit) {
+      showToast('Loaded summary from cache.', 'success');
+    } else if (forceRefresh) {
+      showToast('Summary regenerated.', 'success');
     }
   };
 
@@ -2630,24 +3254,206 @@ export default function HomePage() {
     window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
   };
 
-  const handleUseDocumentForAI = (doc) => {
+  const handleOpenSummaryCenter = () => {
+    setSummaryCenterActionId('');
+    setSummaryCenterOpen(true);
+  };
+
+  const handleApplySummaryHistoryItem = (item) => {
+    const entry = normalizeSummaryHistoryEntry(item);
+    if (!entry) return;
+    setAnalysisResult({
+      summary: entry.summary,
+      keywords: entry.keywords,
+      key_sentences: entry.keySentences,
+      summary_source: entry.summarySource,
+      summary_note: entry.summaryNote,
+      options_used: {
+        summary_length: entry.summaryLength,
+      },
+      document_id: entry.docId || null,
+      text_source: 'summary_history',
+    });
+    setAiHideInputText(true);
+    setExtractedText('');
+    setShowFiles(false);
+    setShowAI(true);
+    setSummaryCenterOpen(false);
+    showToast(`Loaded summary for "${entry.title}".`, 'success');
+  };
+
+  const handleClearSummaryHistory = async () => {
+    if (!summaryHistory.length) return;
+    const shouldClear = await requestConfirmation({
+      title: 'Clear summary history?',
+      description: 'Saved summary outputs in this workspace will be removed.',
+      confirmLabel: 'Clear',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldClear) return;
+    setSummaryHistory([]);
+    showToast('Summary history cleared.', 'success');
+  };
+
+  const getSummarySourceLabel = (value) => {
+    const normalized = normalizeSummarySource(value);
+    if (normalized === 'cache') return 'Cache';
+    if (normalized === 'huggingface') return 'HuggingFace';
+    if (normalized === 'fallback') return 'Fallback';
+    return normalized || 'Unknown';
+  };
+
+  const toggleSummaryHistoryExpanded = (entryId) => {
+    const safeId = String(entryId || '').trim();
+    if (!safeId) return;
+    setSummaryCenterExpandedIds((prev) =>
+      prev.includes(safeId)
+        ? prev.filter((item) => item !== safeId)
+        : [...prev, safeId]
+    );
+  };
+
+  const handleExportSummaryHistoryTxt = () => {
+    if (!summaryHistoryItems.length) {
+      showToast('No summary items to export.', 'warning');
+      return;
+    }
+    const content = summaryHistoryItems
+      .map((entry, index) => {
+        const keywords = Array.isArray(entry.keywords) ? entry.keywords.join(', ') : '';
+        const keySentences = Array.isArray(entry.keySentences) ? entry.keySentences.join('\n') : '';
+        return [
+          `#${index + 1} ${entry.title}`,
+          `Date: ${formatDateTimeLabel(entry.generatedAt)}`,
+          `Source: ${getSummarySourceLabel(entry.summarySource)}`,
+          `Type: ${(entry.fileType || 'text').toUpperCase()}`,
+          '',
+          'Summary:',
+          entry.summary || 'N/A',
+          '',
+          'Keywords:',
+          keywords || 'N/A',
+          '',
+          'Key Sentences:',
+          keySentences || 'N/A',
+        ].join('\n');
+      })
+      .join('\n\n----------------------------------------\n\n');
+    const stamp = new Date().toISOString().slice(0, 10);
+    downloadTextFile(`studyhub-summary-history-${stamp}.txt`, content);
+    showToast('Summary history exported as TXT.', 'success');
+  };
+
+  const handleExportSummaryHistoryJson = () => {
+    if (!summaryHistoryItems.length) {
+      showToast('No summary items to export.', 'warning');
+      return;
+    }
+    const payload = summaryHistoryItems.map((entry) => ({
+      id: entry.id,
+      document_id: toPositiveDocId(entry.docId) || null,
+      title: entry.title,
+      file_type: entry.fileType || '',
+      summary: entry.summary,
+      keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
+      key_sentences: Array.isArray(entry.keySentences) ? entry.keySentences : [],
+      summary_source: normalizeSummarySource(entry.summarySource),
+      summary_note: entry.summaryNote || '',
+      summary_length: entry.summaryLength || '',
+      generated_at: entry.generatedAt || '',
+    }));
+    const blob = new Blob([JSON.stringify(payload, null, 2)], {
+      type: 'application/json;charset=utf-8',
+    });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `studyhub-summary-history-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    showToast('Summary history exported as JSON.', 'success');
+  };
+
+  const handleRebuildSummaryHistoryItem = async (entry) => {
+    const targetDocId = toPositiveDocId(entry?.docId);
+    if (!targetDocId) {
+      showToast('This summary has no linked document ID.', 'warning');
+      return;
+    }
+    const safeEntryId = String(entry?.id || '').trim();
+    setSummaryCenterActionId(safeEntryId || `doc-${targetDocId}`);
+    try {
+      const result = await requestSummary({
+        docId: targetDocId,
+        text: '',
+        trackLoading: false,
+        forceRefresh: true,
+      });
+      if (!result) return;
+      const docLike =
+        documents.find((item) => toPositiveDocId(item.id) === targetDocId) ||
+        activeDoc ||
+        { id: targetDocId, title: entry?.title || `Note ${targetDocId}` };
+      const nextEntry = toSummaryHistoryEntry(docLike, result, {
+        id: safeEntryId || undefined,
+        docId: targetDocId,
+        title: entry?.title || docLike?.title,
+        fileType: entry?.fileType || getDocExt(docLike),
+      });
+      if (nextEntry) {
+        pushSummaryHistoryEntry(nextEntry);
+      }
+      showToast('Summary rebuilt successfully.', 'success');
+    } finally {
+      setSummaryCenterActionId('');
+    }
+  };
+
+  const handleUseDocumentForAI = async (doc, options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
     if (!activeWorkspaceSettings.allow_ai_tools) {
       showToast('AI tools are disabled in this workspace settings.', 'warning');
       return;
     }
     const text = String(doc?.content || '').trim();
-    if (!text) {
+    const docId = Number(doc?.id) || 0;
+    if (!text && docId <= 0) {
       showToast('This note has no extracted text yet.', 'warning');
       return;
     }
     closeDocumentPane();
-    setExtractedText(text);
+    setAiHideInputText(true);
+    setExtractedText('');
     setAnalysisResult(null);
     setShowFiles(false);
     setShowAI(true);
     window.requestAnimationFrame(() => {
       document.getElementById('ai-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
+    const result = await requestSummary({
+      text: docId > 0 ? '' : text,
+      docId,
+      forceRefresh,
+    });
+    if (!result) return;
+    setAnalysisResult(result);
+    const historyEntry = toSummaryHistoryEntry(doc, result, { docId });
+    if (historyEntry) {
+      pushSummaryHistoryEntry(historyEntry);
+    }
+    if (result.cache_hit) {
+      showToast('Loaded document summary from cache.', 'success');
+    } else if (forceRefresh) {
+      showToast('Document summary regenerated.', 'success');
+    } else {
+      showToast('Document summary is ready.', 'success');
+    }
+  };
+
+  const handleRegenerateDocumentSummary = (doc) => {
+    if (!doc) return;
+    return handleUseDocumentForAI(doc, { forceRefresh: true });
   };
 
   const refreshActiveDocShareLinks = async (docId = activeDoc?.id) => {
@@ -2826,6 +3632,11 @@ export default function HomePage() {
       setAvailableTags([]);
       setAvailableCategories([]);
       setSidebarRecentIds([]);
+      setSidebarRecentMeta({});
+      setStarredNotes([]);
+      setSummaryHistory([]);
+      setSummaryCenterOpen(false);
+      setSummaryCenterQuery('');
       setSidebarMenuDocId(null);
       setActiveDoc(null);
       setActiveDocError('');
@@ -2854,8 +3665,8 @@ export default function HomePage() {
   };
 
   const openDocumentInPane = async (docId, options = {}) => {
-    const { fromSidebar = false } = options;
-    bumpSidebarRecent(docId);
+    const { fromSidebar = false, seedDoc = null } = options;
+    bumpSidebarRecent(seedDoc || docId);
     setActiveDocLoading(true);
     setActiveDocError('');
     setActiveDocFileVersion(0);
@@ -2883,7 +3694,9 @@ export default function HomePage() {
       const res = await fetch(endpoint);
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Document not found');
-      setActiveDoc(normalizeDocument(data));
+      const normalizedDoc = normalizeDocument(data);
+      setActiveDoc(normalizedDoc);
+      bumpSidebarRecent(normalizedDoc);
       setActiveDocFileVersion(Date.now());
     } catch (err) {
       setActiveDoc(null);
@@ -2894,7 +3707,7 @@ export default function HomePage() {
   };
 
   const handleView = (doc) => {
-    openDocumentInPane(doc.id);
+    openDocumentInPane(doc.id, { seedDoc: doc });
   };
 
   const toggleDocumentSelection = (docId) => {
@@ -3030,6 +3843,13 @@ export default function HomePage() {
       setDocuments((prev) => prev.filter((item) => Number(item.id) !== removedId));
       setDocumentsTotal(nextTotal);
       setSidebarRecentIds((prev) => prev.filter((id) => id !== removedId));
+      setSidebarRecentMeta((prev) => {
+        const next = { ...(prev || {}) };
+        delete next[removedId];
+        return next;
+      });
+      setStarredNotes((prev) => prev.filter((item) => toPositiveDocId(item.id) !== removedId));
+      setSummaryHistory((prev) => prev.filter((item) => toPositiveDocId(item.docId) !== removedId));
       setSelectedDocumentIds((prev) => prev.filter((id) => Number(id) !== removedId));
       if (activeDoc?.id === doc.id) {
         clearActiveDocShareState();
@@ -3076,6 +3896,23 @@ export default function HomePage() {
 
       if (options.removeRecentOnSuccess) {
         setSidebarRecentIds((prev) => prev.filter((id) => !successIds.includes(Number(id))));
+        setSidebarRecentMeta((prev) => {
+          const next = { ...(prev || {}) };
+          successIds.forEach((id) => {
+            delete next[id];
+          });
+          return next;
+        });
+      }
+      if (options.removeStarredOnSuccess) {
+        setStarredNotes((prev) =>
+          prev.filter((item) => !successIds.includes(toPositiveDocId(item.id)))
+        );
+      }
+      if (options.removeSummariesOnSuccess) {
+        setSummaryHistory((prev) =>
+          prev.filter((item) => !successIds.includes(toPositiveDocId(item.docId)))
+        );
       }
 
       if (typeof options.afterSuccess === 'function' && successItems.length) {
@@ -3139,6 +3976,8 @@ export default function HomePage() {
       {
         clearSelectedOnSuccess: true,
         removeRecentOnSuccess: true,
+        removeStarredOnSuccess: true,
+        removeSummariesOnSuccess: true,
         afterSuccess: (items) => {
           const removedIdSet = new Set(items.map((item) => Number(item.id)));
           if (activeDoc && removedIdSet.has(Number(activeDoc.id))) {
@@ -3240,6 +4079,169 @@ export default function HomePage() {
         },
       }
     );
+  };
+
+  const handleBulkSummarizeSelected = async (options = {}) => {
+    const forceRefresh = Boolean(options?.forceRefresh);
+    if (!activeWorkspaceSettings.allow_ai_tools) {
+      showToast('AI tools are disabled in this workspace settings.', 'warning');
+      return;
+    }
+    const selectedIds = Array.from(new Set(selectedDocumentIds.map((id) => toPositiveDocId(id)))).filter(Boolean);
+    if (!selectedIds.length) {
+      showToast('Please select at least one document.', 'warning');
+      return;
+    }
+    const docMap = new Map(
+      documents
+        .map((item) => [toPositiveDocId(item.id), item])
+        .filter(([id]) => id > 0)
+    );
+    const successItems = await runBulkAction(
+      forceRefresh ? 'Regenerate summaries' : 'Generate summaries',
+      async (docId) => {
+        const data = await requestSummary({
+          docId,
+          text: '',
+          trackLoading: false,
+          silentError: true,
+          forceRefresh,
+        });
+        if (!data) throw new Error('Summary failed');
+        return data;
+      },
+      {
+        afterSuccess: (items) => {
+          if (!items.length) return;
+          const entries = items
+            .map((item) => {
+              const safeId = toPositiveDocId(item.id);
+              return toSummaryHistoryEntry(docMap.get(safeId) || { id: safeId }, item.data, { docId: safeId });
+            })
+            .filter(Boolean);
+          if (!entries.length) return;
+          setSummaryHistory((prev) => {
+            const byId = new Map(prev.map((entry) => [String(entry.id), entry]));
+            entries.forEach((entry) => {
+              byId.set(String(entry.id), entry);
+            });
+            return Array.from(byId.values())
+              .sort((a, b) => toTimeMs(b.generatedAt) - toTimeMs(a.generatedAt))
+              .slice(0, MAX_SUMMARY_HISTORY_PER_WORKSPACE);
+          });
+        },
+      }
+    );
+    if (successItems.length) {
+      setSummaryCenterOpen(true);
+    }
+  };
+
+  const handleBulkAddToStarred = () => {
+    const selectedIds = Array.from(new Set(selectedDocumentIds.map((id) => toPositiveDocId(id)))).filter(Boolean);
+    if (!selectedIds.length) {
+      showToast('Please select at least one document.', 'warning');
+      return;
+    }
+    if (bulkActionLoading || documentsLoading || selectAllMatchedLoading) return;
+    setBulkActionLoading(true);
+    try {
+      const docMap = new Map(
+        documents
+          .map((item) => [toPositiveDocId(item.id), item])
+          .filter(([id]) => id > 0)
+      );
+      const nowIso = new Date().toISOString();
+      const existingSet = new Set(starredNotes.map((item) => toPositiveDocId(item.id)).filter(Boolean));
+      const addedIds = [];
+      const skippedIds = [];
+      let nextList = starredNotes.slice();
+      selectedIds.forEach((id) => {
+        if (existingSet.has(id)) {
+          skippedIds.push(id);
+          return;
+        }
+        const doc = docMap.get(id);
+        const entry = toStarredEntry(doc || { id, title: `Note ${id}` });
+        if (!entry) {
+          skippedIds.push(id);
+          return;
+        }
+        entry.updatedAt = nowIso;
+        existingSet.add(id);
+        addedIds.push(id);
+        nextList.unshift(entry);
+      });
+      let droppedCount = 0;
+      if (nextList.length > MAX_STARRED_NOTES_PER_WORKSPACE) {
+        droppedCount = nextList.length - MAX_STARRED_NOTES_PER_WORKSPACE;
+        nextList = nextList.slice(0, MAX_STARRED_NOTES_PER_WORKSPACE);
+      }
+      setStarredNotes(nextList);
+
+      setBulkResultSummary({
+        action: 'Add to Starred',
+        total: selectedIds.length,
+        succeeded: addedIds.length,
+        failed: 0,
+        failedItems: [],
+        hiddenFailedCount: 0,
+        updatedAt: new Date().toISOString(),
+      });
+
+      if (!addedIds.length) {
+        showToast('All selected notes are already starred.', 'info');
+      } else if (skippedIds.length || droppedCount > 0) {
+        const parts = [`Added ${addedIds.length} note(s) to Starred.`];
+        if (skippedIds.length) parts.push(`${skippedIds.length} already starred.`);
+        if (droppedCount > 0) parts.push(`Trimmed ${droppedCount} old starred note(s).`);
+        showToast(parts.join(' '), 'warning');
+      } else {
+        showToast(`Added ${addedIds.length} note(s) to Starred.`, 'success');
+      }
+    } finally {
+      setBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkRemoveFromStarred = () => {
+    const selectedIds = Array.from(new Set(selectedDocumentIds.map((id) => toPositiveDocId(id)))).filter(Boolean);
+    if (!selectedIds.length) {
+      showToast('Please select at least one document.', 'warning');
+      return;
+    }
+    if (bulkActionLoading || documentsLoading || selectAllMatchedLoading) return;
+    setBulkActionLoading(true);
+    try {
+      const selectedSet = new Set(selectedIds);
+      const removed = starredNotes.filter((item) => selectedSet.has(toPositiveDocId(item.id))).length;
+      if (!removed) {
+        setBulkResultSummary({
+          action: 'Remove from Starred',
+          total: selectedIds.length,
+          succeeded: 0,
+          failed: 0,
+          failedItems: [],
+          hiddenFailedCount: 0,
+          updatedAt: new Date().toISOString(),
+        });
+        showToast('No selected notes were starred.', 'info');
+        return;
+      }
+      setStarredNotes((prev) => prev.filter((item) => !selectedSet.has(toPositiveDocId(item.id))));
+      setBulkResultSummary({
+        action: 'Remove from Starred',
+        total: selectedIds.length,
+        succeeded: removed,
+        failed: 0,
+        failedItems: [],
+        hiddenFailedCount: 0,
+        updatedAt: new Date().toISOString(),
+      });
+      showToast(`Removed ${removed} note(s) from Starred.`, 'success');
+    } finally {
+      setBulkActionLoading(false);
+    }
   };
 
   const handleEdit = async (doc) => {
@@ -3433,6 +4435,53 @@ export default function HomePage() {
     }
     const range = getQuickDateRange(daysBack);
     setFilters((prev) => ({ ...prev, start: range.start, end: range.end }));
+  };
+
+  const buildQuickFilterPreset = (presetId) => {
+    const safeId = String(presetId || '').trim().toLowerCase();
+    if (safeId === 'recent7') {
+      const range = getQuickDateRange(6);
+      return {
+        ...DEFAULT_FILTERS,
+        start: range.start,
+        end: range.end,
+      };
+    }
+    if (safeId === 'images') {
+      return {
+        ...DEFAULT_FILTERS,
+        fileType: 'image',
+      };
+    }
+    if (safeId === 'editable') {
+      return {
+        ...DEFAULT_FILTERS,
+        fileType: 'editable',
+      };
+    }
+    if (safeId === 'uncategorized') {
+      return {
+        ...DEFAULT_FILTERS,
+        category: DEFAULT_NOTE_CATEGORY,
+      };
+    }
+    return { ...DEFAULT_FILTERS };
+  };
+
+  const applyQuickFilterPreset = (presetId) => {
+    const safeId = String(presetId || '').trim().toLowerCase();
+    if (!safeId) return;
+    const target = buildQuickFilterPreset(safeId);
+    const isActive = activeQuickFilterPresetId === safeId;
+    setSelectedDocumentIds([]);
+    setDocumentsPage(1);
+    if (isActive) {
+      setFilters({ ...DEFAULT_FILTERS });
+      setSearchDraft('');
+      return;
+    }
+    setFilters(target);
+    setSearchDraft(target.query || '');
   };
 
   const clearSingleFilter = (filterKey) => {
@@ -4158,6 +5207,7 @@ export default function HomePage() {
               closeDocumentPane();
               setShowFiles(false);
               setShowAI(true);
+              setAiHideInputText(false);
             }}
             disabled={!activeWorkspaceSettings.allow_ai_tools}
             title={activeWorkspaceSettings.allow_ai_tools ? undefined : 'AI is disabled in workspace settings'}
@@ -4166,6 +5216,63 @@ export default function HomePage() {
             <span>AI Assistant</span>
           </button>
         </nav>
+
+        <section
+          className="notion-sidebar-group"
+          aria-labelledby="starred-group-title"
+        >
+          <h2 id="starred-group-title">Starred</h2>
+          <div className="notion-sidebar-list">
+            {sidebarStarredDocs.length ? (
+              sidebarStarredDocs.map((entry) => {
+                const entryId = toPositiveDocId(entry.id);
+                const active = toPositiveDocId(activeDoc?.id) === entryId;
+                return (
+                  <div
+                    key={`starred-${entryId}`}
+                    className={`notion-sidebar-doc-row ${active ? 'active' : ''}${
+                      starredDragId === entryId ? ' dragging' : ''
+                    }`}
+                    draggable
+                    onDragStart={() => handleStarredDragStart(entryId)}
+                    onDragOver={(event) => {
+                      event.preventDefault();
+                    }}
+                    onDrop={(event) => {
+                      event.preventDefault();
+                      handleStarredDrop(entryId);
+                    }}
+                    onDragEnd={handleStarredDragEnd}
+                  >
+                    <button
+                      type="button"
+                      className="notion-sidebar-doc"
+                      onClick={() => handleOpenStarredNote(entry)}
+                    >
+                      <span className="notion-sidebar-doc-prefix notion-sidebar-doc-prefix-star" aria-hidden="true">
+                        ★
+                      </span>
+                      <span className="notion-sidebar-doc-label">{entry.title}</span>
+                    </button>
+                    <div className="notion-sidebar-doc-actions">
+                      <button
+                        type="button"
+                        className="notion-sidebar-doc-more notion-sidebar-doc-unstar"
+                        aria-label={`Remove ${entry.title} from Starred`}
+                        title="Remove from Starred"
+                        onClick={() => handleToggleStarredNote(entry)}
+                      >
+                        ×
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <span className="notion-sidebar-empty">No starred notes yet</span>
+            )}
+          </div>
+        </section>
 
         <section
           className="notion-sidebar-group"
@@ -4183,7 +5290,7 @@ export default function HomePage() {
                   <button
                     type="button"
                     className="notion-sidebar-doc"
-                    onClick={() => openDocumentInPane(doc.id, { fromSidebar: true })}
+                    onClick={() => openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })}
                   >
                     <span className="notion-sidebar-doc-prefix" aria-hidden="true">
                       {activeDoc?.id === doc.id ? '›' : '📄'}
@@ -4238,6 +5345,20 @@ export default function HomePage() {
           <div className="notion-top-actions">
             <span className="notion-top-pill">{Number(documentsTotal) || 0} Notes</span>
             <span className="notion-top-pill">{dashboardStats.tags} Tags</span>
+            <span className="notion-top-pill">{starredNotes.length} Starred</span>
+            <button
+              type="button"
+              className="btn notion-top-summary-btn"
+              onClick={handleOpenSummaryCenter}
+              disabled={!activeWorkspaceSettings.allow_ai_tools}
+              title={
+                activeWorkspaceSettings.allow_ai_tools
+                  ? 'Open document summary history'
+                  : 'AI is disabled in workspace settings'
+              }
+            >
+              Summary Center ({summaryHistory.length})
+            </button>
             <button
               type="button"
               className="notion-more-btn"
@@ -4293,7 +5414,27 @@ export default function HomePage() {
                           onClick={() => handleUseDocumentForAI(activeDoc)}
                           disabled={!activeWorkspaceSettings.allow_ai_tools}
                         >
-                          Summarize
+                          Summarize Document
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => handleRegenerateDocumentSummary(activeDoc)}
+                          disabled={!activeWorkspaceSettings.allow_ai_tools}
+                          title={
+                            activeWorkspaceSettings.allow_ai_tools
+                              ? 'Bypass cache and regenerate summary'
+                              : 'AI is disabled in workspace settings'
+                          }
+                        >
+                          Rebuild Summary
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn notion-inline-star-btn${activeDocIsStarred ? ' active' : ''}`}
+                          onClick={() => handleToggleStarredNote(activeDoc)}
+                        >
+                          {activeDocIsStarred ? '★ Starred' : '☆ Star'}
                         </button>
                         <button
                           type="button"
@@ -4560,11 +5701,14 @@ export default function HomePage() {
                 onCopySummary={handleCopySummary}
                 onExportSummary={handleExportSummary}
                 onEmailSummary={handleEmailSummary}
+                onOpenSummaryCenter={handleOpenSummaryCenter}
                 isExtracting={isExtracting}
                 isAnalyzing={isAnalyzing}
                 extractedText={extractedText}
+                hideInputText={aiHideInputText}
                 onChangeExtractedText={setExtractedText}
                 analysisResult={analysisResult}
+                summaryHistoryCount={summaryHistory.length}
               />
             </Suspense>
           )}
@@ -4682,6 +5826,22 @@ export default function HomePage() {
                           Save your current filters/sort and reuse them in one click.
                         </p>
                       )}
+                    </div>
+
+                    <div className="notion-quick-filter-presets" role="group" aria-label="Quick filter presets">
+                      {QUICK_FILTER_PRESET_OPTIONS.map((preset) => (
+                        <button
+                          key={`quick-preset-${preset.id}`}
+                          type="button"
+                          className={`notion-quick-preset-btn${
+                            activeQuickFilterPresetId === preset.id ? ' active' : ''
+                          }`}
+                          onClick={() => applyQuickFilterPreset(preset.id)}
+                          aria-pressed={activeQuickFilterPresetId === preset.id ? 'true' : 'false'}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
                     </div>
 
                     <div className="filter-row notion-filter-search-row">
@@ -5241,6 +6401,58 @@ export default function HomePage() {
                         </button>
                         <button
                           type="button"
+                          className="btn"
+                          onClick={handleBulkSummarizeSelected}
+                          disabled={
+                            bulkActionLoading ||
+                            documentsLoading ||
+                            selectAllMatchedLoading ||
+                            !activeWorkspaceSettings.allow_ai_tools
+                          }
+                          title={
+                            activeWorkspaceSettings.allow_ai_tools
+                              ? undefined
+                              : 'AI is disabled in workspace settings'
+                          }
+                        >
+                          Summarize Selected
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => handleBulkSummarizeSelected({ forceRefresh: true })}
+                          disabled={
+                            bulkActionLoading ||
+                            documentsLoading ||
+                            selectAllMatchedLoading ||
+                            !activeWorkspaceSettings.allow_ai_tools
+                          }
+                          title={
+                            activeWorkspaceSettings.allow_ai_tools
+                              ? 'Bypass cache and regenerate selected summaries'
+                              : 'AI is disabled in workspace settings'
+                          }
+                        >
+                          Rebuild Selected
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleBulkAddToStarred}
+                          disabled={bulkActionLoading || documentsLoading || selectAllMatchedLoading}
+                        >
+                          Add Starred
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleBulkRemoveFromStarred}
+                          disabled={bulkActionLoading || documentsLoading || selectAllMatchedLoading}
+                        >
+                          Remove Starred
+                        </button>
+                        <button
+                          type="button"
                           className="btn btn-delete"
                           onClick={handleBulkDelete}
                           disabled={bulkActionLoading || documentsLoading || selectAllMatchedLoading}
@@ -5307,11 +6519,14 @@ export default function HomePage() {
                         activeWorkspaceSettings.link_sharing_mode !== 'restricted' &&
                         canCurrentUserManageShareLinks
                       }
+                      starredDocIdSet={starredDocIdSet}
                       onView={handleView}
                       onDelete={handleDelete}
                       onEdit={handleEdit}
                       onEditCategory={handleEditCategory}
                       onSummarize={handleUseDocumentForAI}
+                      onSummarizeRefresh={handleRegenerateDocumentSummary}
+                      onToggleStar={handleToggleStarredNote}
                       onShare={handleShareDocument}
                       hasActiveFilters={hasActiveFilters}
                       onClearFilters={clearFilters}
@@ -5382,6 +6597,203 @@ export default function HomePage() {
             </ul>
             <div className="notion-confirm-actions">
               <button type="button" className="btn btn-primary" onClick={() => setShortcutsOpen(false)}>
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {summaryCenterOpen && (
+        <div
+          className="notion-modal-backdrop"
+          role="presentation"
+          onClick={() => setSummaryCenterOpen(false)}
+        >
+          <section
+            className="notion-modal-card notion-summary-center-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="summary-center-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="notion-summary-center-head">
+              <div>
+                <h3 id="summary-center-title">Document Summary Center</h3>
+                <p className="notion-settings-help">
+                  Summaries generated from uploaded PDF / DOCX / TXT content in this workspace.
+                </p>
+              </div>
+              <span className="notion-top-pill">{summaryHistory.length} saved</span>
+            </div>
+            <div className="notion-summary-center-stats" aria-label="Summary statistics">
+              <span className="notion-summary-center-stat">
+                <strong>{summaryHistoryStats.total}</strong>
+                <small>Total</small>
+              </span>
+              <span className="notion-summary-center-stat is-cache">
+                <strong>{summaryHistoryStats.cache}</strong>
+                <small>Cache Hits</small>
+              </span>
+              <span className="notion-summary-center-stat is-ai">
+                <strong>{summaryHistoryStats.huggingface}</strong>
+                <small>AI Generated</small>
+              </span>
+              <span className="notion-summary-center-stat is-fallback">
+                <strong>{summaryHistoryStats.fallback}</strong>
+                <small>Fallback</small>
+              </span>
+            </div>
+            <div className="notion-summary-center-toolbar">
+              <div className="notion-summary-center-search">
+                <input
+                  type="text"
+                  placeholder="Search summaries by title, keyword, or content"
+                  value={summaryCenterQuery}
+                  onChange={(event) => setSummaryCenterQuery(event.target.value)}
+                  autoFocus
+                />
+              </div>
+              <div className="notion-summary-center-filters">
+                <label htmlFor="summary-center-source-select">
+                  <span>Source</span>
+                  <select
+                    id="summary-center-source-select"
+                    value={summaryCenterSource}
+                    onChange={(event) => setSummaryCenterSource(normalizeSummaryCenterSource(event.target.value))}
+                  >
+                    {SUMMARY_CENTER_SOURCE_OPTIONS.map((item) => (
+                      <option key={`summary-source-${item.value}`} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label htmlFor="summary-center-sort-select">
+                  <span>Sort</span>
+                  <select
+                    id="summary-center-sort-select"
+                    value={summaryCenterSort}
+                    onChange={(event) => setSummaryCenterSort(normalizeSummaryCenterSort(event.target.value))}
+                  >
+                    {SUMMARY_CENTER_SORT_OPTIONS.map((item) => (
+                      <option key={`summary-sort-${item.value}`} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="notion-summary-center-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={handleExportSummaryHistoryTxt}
+                disabled={!summaryHistoryItems.length}
+              >
+                Export TXT
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleExportSummaryHistoryJson}
+                disabled={!summaryHistoryItems.length}
+              >
+                Export JSON
+              </button>
+              <button
+                type="button"
+                className="btn"
+                onClick={handleClearSummaryHistory}
+                disabled={!summaryHistory.length}
+              >
+                Clear All
+              </button>
+            </div>
+            <p className="muted tiny">
+              Showing {summaryHistoryItems.length} of {summaryHistory.length} summaries
+            </p>
+            {summaryHistoryItems.length ? (
+              <ul className="notion-summary-history-list">
+                {summaryHistoryItems.map((entry) => (
+                  <li
+                    key={entry.id}
+                    className={`notion-summary-history-item is-source-${normalizeSummarySource(entry.summarySource)}`}
+                  >
+                    <div className="notion-summary-history-meta">
+                      <strong>{entry.title}</strong>
+                      <span>
+                        {(entry.fileType || 'text').toUpperCase()} · {formatDateTimeLabel(entry.generatedAt)} ·{' '}
+                        {getSummarySourceLabel(entry.summarySource)}
+                      </span>
+                    </div>
+                    <p
+                      className={`notion-summary-history-text ${
+                        summaryCenterExpandedIds.includes(String(entry.id)) ? 'is-expanded' : ''
+                      }`}
+                    >
+                      {entry.summary}
+                    </p>
+                    {entry.keywords.length > 0 && (
+                      <div className="notion-summary-history-tags">
+                        {entry.keywords.slice(0, 10).map((keyword) => (
+                          <span key={`${entry.id}-${keyword}`}>{keyword}</span>
+                        ))}
+                      </div>
+                    )}
+                    <div className="notion-summary-history-actions">
+                      <button
+                        type="button"
+                        className="btn btn-primary"
+                        onClick={() => handleApplySummaryHistoryItem(entry)}
+                      >
+                        Use in AI Panel
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => {
+                          const targetId = toPositiveDocId(entry.docId);
+                          if (!targetId) return;
+                          setSummaryCenterOpen(false);
+                          void openDocumentInPane(targetId, { fromSidebar: true });
+                        }}
+                        disabled={!toPositiveDocId(entry.docId)}
+                      >
+                        Open Note
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => handleRebuildSummaryHistoryItem(entry)}
+                        disabled={summaryCenterActionId === String(entry.id)}
+                      >
+                        {summaryCenterActionId === String(entry.id) ? 'Rebuilding...' : 'Rebuild'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => toggleSummaryHistoryExpanded(entry.id)}
+                      >
+                        {summaryCenterExpandedIds.includes(String(entry.id)) ? 'Collapse' : 'Expand'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => removeSummaryHistoryEntry(entry.id)}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="muted">No summary history yet. Use "Summarize Document" on any note to generate one.</p>
+            )}
+            <div className="notion-modal-actions">
+              <button type="button" className="btn" onClick={() => setSummaryCenterOpen(false)}>
                 Close
               </button>
             </div>

@@ -9,11 +9,14 @@ export default function AIAssistantPanel({
   onCopySummary,
   onExportSummary,
   onEmailSummary,
+  onOpenSummaryCenter,
   isExtracting = false,
   isAnalyzing = false,
   extractedText = '',
+  hideInputText = false,
   onChangeExtractedText,
   analysisResult = null,
+  summaryHistoryCount = 0,
 }) {
   if (!allowAiTools) {
     return (
@@ -57,19 +60,37 @@ export default function AIAssistantPanel({
           >
             {isAnalyzing ? 'Summarizing text...' : 'Summarize Text'}
           </button>
+          <button
+            type="button"
+            className="btn notion-ai-action-chip"
+            onClick={onOpenSummaryCenter}
+            disabled={typeof onOpenSummaryCenter !== 'function'}
+          >
+            Summary Center ({Number(summaryHistoryCount) || 0})
+          </button>
         </div>
+        <p className="muted tiny">
+          For PDF/DOCX/TXT notes, use <strong>Summarize Document</strong> in My Documents. Raw source text stays hidden.
+        </p>
 
         <section className="notion-ai-results">
-          <article className="notion-ai-output">
-            <h3>Input Text</h3>
-            <textarea
-              className="notion-ai-textarea"
-              value={extractedText}
-              onChange={(event) => onChangeExtractedText?.(event.target.value)}
-              rows={10}
-              placeholder="OCR output or note text will appear here."
-            />
-          </article>
+          {!hideInputText ? (
+            <article className="notion-ai-output">
+              <h3>Input Text</h3>
+              <textarea
+                className="notion-ai-textarea"
+                value={extractedText}
+                onChange={(event) => onChangeExtractedText?.(event.target.value)}
+                rows={10}
+                placeholder="OCR output or note text will appear here."
+              />
+            </article>
+          ) : (
+            <article className="notion-ai-output">
+              <h3>Input Text</h3>
+              <p className="muted tiny">This summary is generated from document content on server. Source text is hidden.</p>
+            </article>
+          )}
 
           {analysisResult && (
             <article className="notion-ai-output">

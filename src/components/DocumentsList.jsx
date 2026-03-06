@@ -137,11 +137,14 @@ export default function DocumentsList({
   canEditMetadata = true,
   canSummarize = true,
   canShare = true,
+  starredDocIdSet = new Set(),
   onView,
   onDelete,
   onEdit,
   onEditCategory,
   onSummarize,
+  onSummarizeRefresh,
+  onToggleStar,
   onShare,
   hasActiveFilters = false,
   onClearFilters,
@@ -211,6 +214,7 @@ export default function DocumentsList({
             const visibleDocTags = docTags.slice(0, 4);
             const hiddenTagCount = Math.max(0, docTags.length - visibleDocTags.length);
             const docTypeLabel = getDocumentTypeLabel(doc);
+            const isStarred = starredDocIdSet.has(Number(doc.id));
             return (
               <article key={doc.id} className="document-card" role="listitem">
                 <div className="document-card-main">
@@ -227,6 +231,15 @@ export default function DocumentsList({
                       </label>
                     )}
                     <h3>{renderHighlightedText(doc.title, searchTokens)}</h3>
+                    <button
+                      type="button"
+                      className={`document-star-toggle${isStarred ? ' active' : ''}`}
+                      onClick={() => onToggleStar?.(doc)}
+                      title={isStarred ? 'Remove from Starred' : 'Add to Starred'}
+                      aria-label={isStarred ? `Remove ${doc.title} from Starred` : `Add ${doc.title} to Starred`}
+                    >
+                      {isStarred ? '★' : '☆'}
+                    </button>
                     <span className="document-type-badge" aria-label={`File type ${docTypeLabel}`}>
                       {docTypeLabel}
                     </span>
@@ -348,6 +361,17 @@ export default function DocumentsList({
                             className="document-more-item"
                             onClick={() => {
                               setOpenMenuDocId('');
+                              onToggleStar?.(doc);
+                            }}
+                            type="button"
+                            role="menuitem"
+                          >
+                            {isStarred ? 'Remove from Starred' : 'Add to Starred'}
+                          </button>
+                          <button
+                            className="document-more-item"
+                            onClick={() => {
+                              setOpenMenuDocId('');
                               if (isLoggedIn) onSummarize?.(doc);
                             }}
                             title={
@@ -361,7 +385,26 @@ export default function DocumentsList({
                             type="button"
                             role="menuitem"
                           >
-                            Summarize
+                            Summarize Document
+                          </button>
+                          <button
+                            className="document-more-item"
+                            onClick={() => {
+                              setOpenMenuDocId('');
+                              if (isLoggedIn) onSummarizeRefresh?.(doc);
+                            }}
+                            title={
+                              !isLoggedIn
+                                ? 'Please sign in'
+                                : canSummarize
+                                  ? undefined
+                                  : 'AI is disabled in workspace settings'
+                            }
+                            disabled={!isLoggedIn || !canSummarize}
+                            type="button"
+                            role="menuitem"
+                          >
+                            Rebuild Summary
                           </button>
                           <button
                             className="document-more-item"
