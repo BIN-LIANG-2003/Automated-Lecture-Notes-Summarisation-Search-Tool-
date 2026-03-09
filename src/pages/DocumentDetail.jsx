@@ -1,12 +1,19 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
 import { coerceOcrText } from '../lib/ocr.js';
+import { buildSummaryDiagnostics } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
 const IMAGE_FILE_TYPE_SET = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+const DEFAULT_SUMMARY_PROGRESS = {
+  active: false,
+  phase: 'idle',
+  forceRefresh: false,
+  docId: 0,
+};
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
 const isImageFileType = (value) => IMAGE_FILE_TYPE_SET.has(String(value || '').toLowerCase());
@@ -57,10 +64,12 @@ export default function DocumentDetail() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [shareLinks, setShareLinks] = useState([]);
   const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [shareLinksError, setShareLinksError] = useState('');
   const [shareActionLoadingId, setShareActionLoadingId] = useState(0);
+  const summaryProgressTimerRef = useRef(null);
   const {
     toastState,
     confirmDialogState,
@@ -75,6 +84,7 @@ export default function DocumentDetail() {
   const canUseAiTools = Boolean(document?.allowAiTools);
   const canUseOcr = canUseAiTools && Boolean(document?.allowOcr);
   const canExportSummary = Boolean(document?.allowExport);
+  const summaryDiagnostics = buildSummaryDiagnostics(analysisResult);
 
   useEffect(() => {
     const fetchDoc = async () => {
@@ -118,6 +128,15 @@ export default function DocumentDetail() {
     }
     refreshShareLinks(document.id);
   }, [canManageShareLinks, document?.id, username]);
+
+  useEffect(() => {
+    return () => {
+      if (summaryProgressTimerRef.current) {
+        window.clearTimeout(summaryProgressTimerRef.current);
+        summaryProgressTimerRef.current = null;
+      }
+    };
+  }, []);
 
   if (loading) return <div className="container document-detail"><p>Loading...</p></div>;
   if (error || !document) return <div className="container document-detail"><p>Error: {error}</p></div>;
@@ -224,6 +243,48 @@ export default function DocumentDetail() {
     }
   };
 
+  const startSummaryProgress = ({ forceRefresh = false, docId = 0 } = {}) => {
+    if (summaryProgressTimerRef.current) {
+      window.clearTimeout(summaryProgressTimerRef.current);
+      summaryProgressTimerRef.current = null;
+    }
+    const nextDocId = Number(docId) || 0;
+    const shouldRefresh = Boolean(forceRefresh && nextDocId > 0);
+    setSummaryProgress({
+      active: true,
+      phase: shouldRefresh ? 'refreshing' : 'summarizing',
+      forceRefresh: shouldRefresh,
+      docId: shouldRefresh ? nextDocId : 0,
+    });
+    if (shouldRefresh) {
+      summaryProgressTimerRef.current = window.setTimeout(() => {
+        setSummaryProgress((prev) => {
+          if (!prev.active) return prev;
+          return {
+            ...prev,
+            phase: 'summarizing',
+          };
+        });
+      }, 1800);
+    }
+  };
+
+  const stopSummaryProgress = () => {
+    if (summaryProgressTimerRef.current) {
+      window.clearTimeout(summaryProgressTimerRef.current);
+      summaryProgressTimerRef.current = null;
+    }
+    setSummaryProgress(DEFAULT_SUMMARY_PROGRESS);
+  };
+
+  const summaryProgressLabel = !summaryProgress.active
+    ? ''
+    : summaryProgress.forceRefresh && summaryProgress.phase === 'refreshing'
+      ? 'Refreshing PDF text from source file...'
+      : summaryProgress.forceRefresh
+        ? 'Running full-document chunk summary...'
+        : 'Generating summary...';
+
   const handleAnalyzeText = async (options = {}) => {
     const forceRefresh = Boolean(options?.forceRefresh);
     if (!canUseAiTools) {
@@ -237,6 +298,10 @@ export default function DocumentDetail() {
       return;
     }
 
+    startSummaryProgress({
+      forceRefresh,
+      docId: safeDocId,
+    });
     setIsAnalyzing(true);
     try {
       const payload = {
@@ -270,6 +335,7 @@ export default function DocumentDetail() {
     } catch (err) {
       showToast(`Analysis failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {
+      stopSummaryProgress();
       setIsAnalyzing(false);
     }
   };
@@ -572,18 +638,35 @@ export default function DocumentDetail() {
                   onClick={handleAnalyzeText}
                   disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
                 >
-                  {isAnalyzing ? 'Summarizing text...' : 'Summarize Text'}
+                  {isAnalyzing ? 'Summarizing document...' : (isImage ? 'Summarize Text' : 'Summarize Document')}
                 </button>
                 <button
                   type="button"
                   className="btn notion-ai-action-chip"
                   onClick={() => handleAnalyzeText({ forceRefresh: true })}
                   disabled={isAnalyzing || !canUseAiTools}
-                  title="Bypass cache and regenerate summary"
+                  title="Bypass cache and refresh document text before summarizing"
                 >
-                  Rebuild Summary
+                  Rebuild (Refresh Text)
                 </button>
               </div>
+              {summaryProgress.active && (
+                <div className="notion-summary-progress" aria-live="polite">
+                  <div className="notion-summary-progress-head">
+                    <strong>{summaryProgressLabel}</strong>
+                  </div>
+                  {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
+                    <div className="notion-summary-progress-steps" role="status">
+                      <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
+                        1. Refresh full PDF text
+                      </span>
+                      <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
+                        2. Chunk and summarize
+                      </span>
+                    </div>
+                  )}
+                </div>
+              )}
 
               {isImage ? (
                 <article className="notion-ai-output">
@@ -607,6 +690,16 @@ export default function DocumentDetail() {
                 <article className="notion-ai-output">
                   <h3>Summary</h3>
                   <p>{analysisResult.summary || 'No summary available.'}</p>
+                  {!!summaryDiagnostics.length && (
+                    <div className="notion-ai-diagnostics" aria-label="Summary diagnostics">
+                      {summaryDiagnostics.map((item) => (
+                        <div key={item.key} className="notion-ai-diagnostic-item">
+                          <span>{item.label}</span>
+                          <strong>{item.value}</strong>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                   <h4>Keywords</h4>
                   <ul>
                     {(Array.isArray(analysisResult.keywords) ? analysisResult.keywords : []).map((keyword, index) => (

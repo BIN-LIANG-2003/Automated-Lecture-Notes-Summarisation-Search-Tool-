@@ -1,12 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { GoogleLogin } from '@react-oauth/google'; // 1. 引入组件
 import { jwtDecode } from "jwt-decode"; // 1. 引入解码工具
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
+import AccountSelectorModal from '../components/AccountSelectorModal.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
+import {
+  loadAccountHistory,
+  removeAccountFromHistory,
+  saveAccountToHistory,
+} from '../lib/accountHistory.js';
 
 export default function AuthPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [mode, setMode] = useState('login');
   const {
     toastState,
@@ -21,6 +28,8 @@ export default function AuthPage() {
   const wrapperRef = useRef(null);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [accountHistory, setAccountHistory] = useState(() => loadAccountHistory());
+  const [showAccountSelector, setShowAccountSelector] = useState(true);
   const [signupData, setSignupData] = useState({
     username: '',
     email: '',
@@ -37,6 +46,12 @@ export default function AuthPage() {
         : existingUser && existingToken
         ? 'You are already signed in.'
         : 'Welcome back! Please sign in to continue.';
+  const shouldShowAccountSelector =
+    mode === 'login' &&
+    showAccountSelector &&
+    !existingUser &&
+    !existingToken &&
+    accountHistory.length > 0;
 
   useEffect(() => {
     document.body.classList.add('auth-light-body');
@@ -59,6 +74,69 @@ export default function AuthPage() {
     const active = mode === 'login' ? loginFormRef.current : signupFormRef.current;
     active?.querySelector('input')?.focus();
   }, [mode]);
+
+  useEffect(() => {
+    if (!shouldShowAccountSelector) return;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setShowAccountSelector(false);
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [shouldShowAccountSelector]);
+
+  useEffect(() => {
+    const prefillUsername = String(location.state?.prefillUsername || '').trim();
+    const prefillEmail = String(location.state?.prefillEmail || '').trim();
+    const prefillValue = prefillUsername || prefillEmail;
+    if (!prefillValue) return;
+
+    setMode('login');
+    setLoginUsername(prefillValue);
+    setLoginPassword('');
+    setShowAccountSelector(false);
+
+    window.requestAnimationFrame(() => {
+      const passwordInput = document.getElementById('login-password');
+      if (passwordInput instanceof HTMLElement) {
+        passwordInput.focus();
+      }
+    });
+  }, [location.state]);
+
+  const rememberAccount = ({ username, email = '', avatar = '' }) => {
+    const safeUsername = String(username || '').trim();
+    if (!safeUsername) return;
+    const next = saveAccountToHistory({
+      username: safeUsername,
+      email: String(email || '').trim(),
+      avatar: String(avatar || '').trim(),
+    });
+    setAccountHistory(next);
+  };
+
+  const handleSelectAccountFromHistory = (account) => {
+    const nextUsername = String(account?.username || account?.email || '').trim();
+    if (!nextUsername) return;
+    setMode('login');
+    setLoginUsername(nextUsername);
+    setLoginPassword('');
+    setShowAccountSelector(false);
+    window.requestAnimationFrame(() => {
+      const passwordInput = document.getElementById('login-password');
+      if (passwordInput instanceof HTMLElement) {
+        passwordInput.focus();
+      }
+    });
+  };
+
+  const handleRemoveAccountFromHistory = (account) => {
+    const key = String(account?.username || account?.email || '').trim();
+    if (!key) return;
+    const next = removeAccountFromHistory(key);
+    setAccountHistory(next);
+  };
 
   // --- 新增：处理 Google 登录成功 ---
   const handleGoogleSuccess = async (credentialResponse) => {
@@ -86,6 +164,11 @@ export default function AuthPage() {
         if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
         else sessionStorage.removeItem('auth_token');
         sessionStorage.setItem('loginAt', new Date().toISOString());
+        rememberAccount({
+          username: data.username,
+          email: data.email || decoded.email || '',
+          avatar: decoded.picture || '',
+        });
         navigate('/');
       } else {
         showToast(data.error || 'Google login failed', 'error');
@@ -122,6 +205,10 @@ export default function AuthPage() {
         if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
         else sessionStorage.removeItem('auth_token');
         sessionStorage.setItem('loginAt', new Date().toISOString());
+        rememberAccount({
+          username: data.username,
+          email: data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''),
+        });
         navigate('/');
       } else {
         showToast(data.error || 'Login failed', 'error');
@@ -179,6 +266,13 @@ export default function AuthPage() {
   return (
     <div className="login-body">
       <main className="login-card container" role="main">
+        <AccountSelectorModal
+          open={shouldShowAccountSelector}
+          accounts={accountHistory}
+          onSelectAccount={handleSelectAccountFromHistory}
+          onRemoveAccount={handleRemoveAccountFromHistory}
+          onClose={() => setShowAccountSelector(false)}
+        />
         <Link to="/" className="back-home-btn" aria-label="Back to home">
           ⌂ Home
         </Link>
@@ -206,7 +300,10 @@ export default function AuthPage() {
               required
               autoComplete="username"
               value={loginUsername}
-              onChange={(event) => setLoginUsername(event.target.value)}
+              onChange={(event) => {
+                setLoginUsername(event.target.value);
+                if (showAccountSelector) setShowAccountSelector(false);
+              }}
             />
 
             <PasswordField
@@ -247,6 +344,21 @@ export default function AuthPage() {
               <button type="button" id="goto-signup" className="linklike" onClick={() => setMode('signup')}>
                 Create one
               </button>
+              {accountHistory.length > 0 && (
+                <>
+                  {' '}·{' '}
+                  <button
+                    type="button"
+                    className="linklike"
+                    onClick={() => {
+                      setMode('login');
+                      setShowAccountSelector(true);
+                    }}
+                  >
+                    Choose saved account
+                  </button>
+                </>
+              )}
             </p>
           </form>
 

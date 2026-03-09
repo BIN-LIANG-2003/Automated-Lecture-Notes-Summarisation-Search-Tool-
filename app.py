@@ -7,6 +7,9 @@ import json
 import hashlib
 import mimetypes
 import re
+import shutil
+import subprocess
+import tempfile
 import requests
 from html import escape as html_escape
 from datetime import datetime, timedelta, timezone
@@ -27,6 +30,14 @@ import PyPDF2
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
 from lxml import etree, html as lxml_html
+
+try:
+    import fitz  # PyMuPDF
+    FITZ_IMPORT_ERROR = ''
+except Exception as e:
+    fitz = None
+    FITZ_IMPORT_ERROR = str(e)
+    print(f"⚠️ PyMuPDF unavailable: {FITZ_IMPORT_ERROR}")
 
 try:
     import cv2
@@ -54,6 +65,13 @@ from psycopg2.extras import RealDictCursor
 import boto3
 from botocore.exceptions import NoCredentialsError
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except Exception:
+    # Keep running even when python-dotenv is not installed.
+    pass
+
 # ================= 配置部分 =================
 app = Flask(__name__, static_folder='dist', static_url_path='')
 CORS(app)
@@ -65,6 +83,11 @@ if not os.path.exists(UPLOAD_FOLDER):
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = 20 * 1024 * 1024  # 20MB
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
+CANVAS_DEFAULT_DOMAIN = (os.environ.get('CANVAS_DEFAULT_DOMAIN') or 'canvas.instructure.com').strip().lower()
+try:
+    CANVAS_MAX_LIST_PAGES = max(1, min(20, int((os.environ.get('CANVAS_MAX_LIST_PAGES') or '5').strip())))
+except Exception:
+    CANVAS_MAX_LIST_PAGES = 5
 GOOGLE_CLIENT_ID = "1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com"
 AUTH_TOKEN_SECRET = (
     (os.environ.get("AUTH_TOKEN_SECRET") or "").strip()
@@ -90,8 +113,20 @@ HF_TOKEN = (os.environ.get("HF_API_TOKEN") or "").strip()
 HF_MODEL_BASE_URL = (os.environ.get("HF_MODEL_BASE_URL") or "https://router.huggingface.co/hf-inference/models").rstrip("/")
 # 外部 OCR 服务地址（可选）。仅在配置后才会调用云端/公网算力中心。
 EXTERNAL_OCR_SERVICE_URL = (os.getenv("EXTERNAL_OCR_SERVICE_URL") or "").strip()
-OCR_MODEL_ID = os.environ.get("HF_OCR_MODEL") or "microsoft/trocr-base-printed"
-SUMMARIZER_MODEL_ID = os.environ.get("HF_SUMMARIZER_MODEL") or "csebuetnlp/mT5_multilingual_XLSum"
+OCR_MODEL_ID = os.environ.get("HF_OCR_MODEL") or "lbin2021/my-lecture-ocr"
+SUMMARIZER_MODEL_ID = os.environ.get("HF_SUMMARIZER_MODEL") or "facebook/bart-large-cnn"
+OCRMYPDF_BINARY = (os.getenv("OCRMYPDF_BINARY") or "ocrmypdf").strip() or "ocrmypdf"
+OCRMYPDF_LANGUAGE = (os.getenv("OCRMYPDF_LANGUAGE") or "eng").strip() or "eng"
+_pdf_ocr_enabled_raw = str(os.getenv("ENABLE_PDF_OCR_FALLBACK") or "1").strip().lower()
+ENABLE_PDF_OCR_FALLBACK = _pdf_ocr_enabled_raw not in ("0", "false", "no", "off")
+try:
+    OCRMYPDF_TIMEOUT_SECONDS = max(15, int((os.getenv("OCRMYPDF_TIMEOUT_SECONDS") or "180").strip()))
+except Exception:
+    OCRMYPDF_TIMEOUT_SECONDS = 180
+try:
+    TRASH_RETENTION_DAYS = max(1, min(365, int((os.getenv("TRASH_RETENTION_DAYS") or "30").strip())))
+except Exception:
+    TRASH_RETENTION_DAYS = 30
 DEFAULT_DOCUMENT_CATEGORY = "Uncategorized"
 CATEGORY_KEYWORDS = {
     'Computer Science': (
@@ -133,6 +168,7 @@ DEFAULT_WORKSPACE_SETTINGS = {
     'auto_revoke_previous_share_links': False,
     'allow_export': True,
 }
+SUMMARY_CACHE_VERSION = 'v2'
 
 _rapid_ocr_engine = None
 _auth_token_serializer = URLSafeTimedSerializer(AUTH_TOKEN_SECRET)
@@ -321,6 +357,7 @@ def ensure_documents_columns(conn):
     ensure_documents_column(conn, 'content_html', 'TEXT')
     ensure_documents_column(conn, 'category', 'TEXT')
     ensure_documents_column(conn, 'workspace_id', 'TEXT')
+    ensure_documents_column(conn, 'deleted_at', 'TEXT')
 
 
 def ensure_workspaces_column(conn, column_name, column_type='TEXT'):
@@ -379,7 +416,8 @@ def init_db():
             category TEXT,
             workspace_id TEXT,
             username TEXT,
-            last_access_at {timestamp_type}
+            last_access_at {timestamp_type},
+            deleted_at {timestamp_type}
         );
     '''
 
@@ -684,11 +722,113 @@ def parse_int(value, default_value, min_value=None, max_value=None):
     return parsed
 
 
+def parse_float(value, default_value, min_value=None, max_value=None):
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = float(default_value)
+    if min_value is not None:
+        parsed = max(float(min_value), parsed)
+    if max_value is not None:
+        parsed = min(float(max_value), parsed)
+    return parsed
+
+
+def is_document_soft_deleted(doc_row):
+    doc = row_to_dict(doc_row) or {}
+    return bool(str(doc.get('deleted_at') or '').strip())
+
+
+def remove_document_file_from_storage(filename):
+    safe_filename = str(filename or '').strip()
+    if not safe_filename:
+        return ''
+    try:
+        if S3_BUCKET and s3_client:
+            s3_client.delete_object(Bucket=S3_BUCKET, Key=safe_filename)
+        else:
+            local_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+            if os.path.exists(local_path):
+                os.remove(local_path)
+        return ''
+    except Exception as e:
+        warning = f'File cleanup failed: {e}'
+        print(f"⚠️ {warning}")
+        return warning
+
+
+def hard_delete_document_record(conn, doc_id):
+    safe_doc_id = parse_int(doc_id, 0, 0)
+    if safe_doc_id <= 0:
+        return None
+    cursor = conn.execute(
+        'SELECT id, filename, username, workspace_id, deleted_at FROM documents WHERE id = ?',
+        (safe_doc_id,)
+    )
+    doc_row = cursor.fetchone()
+    if not doc_row:
+        return None
+    doc = row_to_dict(doc_row) or {}
+    conn.execute('DELETE FROM document_share_links WHERE document_id = ?', (safe_doc_id,))
+    conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (safe_doc_id,))
+    conn.execute('DELETE FROM documents WHERE id = ?', (safe_doc_id,))
+    return doc
+
+
+def purge_expired_trashed_documents(conn, username='', workspace_id=''):
+    safe_username = str(username or '').strip()
+    safe_workspace_id = str(workspace_id or '').strip()
+    cutoff = (datetime.utcnow() - timedelta(days=TRASH_RETENTION_DAYS)).isoformat()
+    where_parts = [
+        "COALESCE(deleted_at, '') <> ''",
+        "COALESCE(deleted_at, '') <= ?",
+    ]
+    params = [cutoff]
+    if safe_username:
+        where_parts.append('username = ?')
+        params.append(safe_username)
+    if safe_workspace_id:
+        where_parts.append('workspace_id = ?')
+        params.append(safe_workspace_id)
+
+    where_sql = ' AND '.join(where_parts)
+    cursor = conn.execute(
+        f'''
+        SELECT id, filename
+        FROM documents
+        WHERE {where_sql}
+        ORDER BY deleted_at ASC, id ASC
+        ''',
+        tuple(params)
+    )
+    stale_rows = [row_to_dict(item) for item in cursor.fetchall()]
+    if not stale_rows:
+        return {'purged_count': 0, 'warnings': []}
+
+    purged_files = []
+    for row in stale_rows:
+        doc_id = parse_int((row or {}).get('id'), 0, 0)
+        if doc_id <= 0:
+            continue
+        deleted = hard_delete_document_record(conn, doc_id)
+        if deleted:
+            purged_files.append(str((deleted or {}).get('filename') or '').strip())
+    conn.commit()
+
+    warnings = []
+    for filename in purged_files:
+        warning = remove_document_file_from_storage(filename)
+        if warning:
+            warnings.append(f'{filename}: {warning}')
+    return {'purged_count': len(purged_files), 'warnings': warnings}
+
+
 def build_summary_cache_text_hash(text):
     normalized = re.sub(r'\s+', ' ', str(text or '').strip())
     if not normalized:
         return ''
-    return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
+    payload = f"{SUMMARY_CACHE_VERSION}:{normalized}"
+    return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
 def load_document_summary_cache(conn, document_id, content_hash, summary_length, keyword_limit):
@@ -1327,6 +1467,8 @@ def get_workspace_details(conn, workspace_row, for_username=''):
 
 def check_document_access(conn, doc_row, username='', share_token=''):
     doc = row_to_dict(doc_row) or {}
+    if is_document_soft_deleted(doc):
+        return False, 'Document is in Trash'
     viewer = str(username or '').strip()
     safe_share_token = str(share_token or '').strip()
     doc_id = parse_int(doc.get('id', 0), 0, 0)
@@ -1476,6 +1618,88 @@ def detect_mimetype(filename, file_ext=''):
         return MIME_BY_EXT[ext]
     guessed = mimetypes.guess_type(filename)[0]
     return guessed or 'application/octet-stream'
+
+
+def normalize_canvas_domain(value):
+    raw = str(value or '').strip()
+    if not raw:
+        raw = CANVAS_DEFAULT_DOMAIN
+    if raw.startswith('http://') or raw.startswith('https://'):
+        raw = raw.split('://', 1)[1]
+    raw = raw.split('/', 1)[0].strip().lower()
+    if ':' in raw:
+        host, port = raw.split(':', 1)
+        if port.isdigit():
+            raw = host
+    if not raw or '.' not in raw:
+        return ''
+    if not re.fullmatch(r'[a-z0-9.-]{3,255}', raw):
+        return ''
+    return raw
+
+
+def canvas_headers(token):
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return {}
+    return {'Authorization': f'Bearer {safe_token}'}
+
+
+def list_canvas_user_files(domain, headers, max_pages=5, per_page=100):
+    safe_domain = normalize_canvas_domain(domain)
+    if not safe_domain:
+        raise ValueError('Invalid Canvas domain')
+
+    safe_pages = max(1, min(20, int(max_pages or 5)))
+    safe_per_page = max(1, min(100, int(per_page or 100)))
+    next_url = f'https://{safe_domain}/api/v1/users/self/files?per_page={safe_per_page}'
+    files = []
+    page_count = 0
+
+    while next_url and page_count < safe_pages:
+        response = requests.get(next_url, headers=headers, timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        if isinstance(payload, list):
+            files.extend(payload)
+        page_count += 1
+        links = response.links if isinstance(response.links, dict) else {}
+        next_url = str((links.get('next') or {}).get('url') or '').strip()
+
+    return files
+
+
+def build_canvas_file_item(raw):
+    item = raw if isinstance(raw, dict) else {}
+    file_id = item.get('id')
+    filename = str(
+        item.get('filename')
+        or item.get('display_name')
+        or item.get('name')
+        or ''
+    ).strip()
+    if not filename or not allowed_file(filename):
+        return None
+
+    safe_size = 0
+    try:
+        safe_size = max(0, int(item.get('size') or 0))
+    except Exception:
+        safe_size = 0
+
+    file_type = ''
+    if '.' in filename:
+        file_type = filename.rsplit('.', 1)[1].lower().strip('.')
+
+    return {
+        'id': file_id,
+        'filename': filename,
+        'size': safe_size,
+        'url': str(item.get('url') or '').strip(),
+        'updated_at': str(item.get('updated_at') or '').strip(),
+        'content_type': str(item.get('content-type') or item.get('content_type') or '').strip(),
+        'file_type': file_type,
+    }
 
 
 def normalize_newlines(value):
@@ -2226,9 +2450,8 @@ def extract_document_content(filepath, ext):
             text, content_html = extract_docx_content(filepath)
         elif file_ext == 'pdf':
             with open(filepath, 'rb') as f:
-                reader = PyPDF2.PdfReader(f)
-                for page in reader.pages:
-                    text += (page.extract_text() or '') + "\n"
+                file_bytes = f.read()
+            text = extract_text_from_pdf_bytes(file_bytes)
         elif file_ext == 'txt':
             text = extract_text_content(filepath)
             content_html = plaintext_to_html(text)
@@ -2248,7 +2471,150 @@ def extract_text(filepath, ext):
     return text
 
 
-def extract_text_from_pdf_bytes(file_bytes):
+def normalize_pdf_text(text):
+    value = normalize_newlines(text or '')
+    value = value.replace('\x00', ' ')
+    value = re.sub(r'-\n(?=[A-Za-z])', '', value)
+    value = re.sub(r'[ \t]+', ' ', value)
+    # Recover common missing spaces between latin tokens.
+    value = re.sub(r'(?<=[a-z])(?=[A-Z])', ' ', value)
+    value = re.sub(r'(?<=[A-Za-z])(?=\d)', ' ', value)
+    value = re.sub(r'(?<=\d)(?=[A-Za-z])', ' ', value)
+    value = re.sub(r'([。！？.!?])(?=[A-Za-z0-9])', r'\1 ', value)
+    value = re.sub(r'\n{3,}', '\n\n', value)
+    return value.strip()
+
+
+def compute_pdf_text_quality_metrics(text):
+    normalized = normalize_pdf_text(text or '')
+    tokens = re.findall(r'\S+', normalized)
+    token_count = len(tokens)
+    char_count = len(normalized)
+    if token_count <= 0:
+        return {
+            'char_count': char_count,
+            'token_count': 0,
+            'avg_token_len': 0.0,
+            'long_token_ratio': 0.0,
+            'cjk_ratio': 0.0,
+            'line_count': 0,
+        }
+
+    avg_token_len = sum(len(item) for item in tokens) / max(1, token_count)
+    long_token_count = sum(1 for item in tokens if len(item) >= 18)
+    long_token_ratio = long_token_count / max(1, token_count)
+    cjk_chars = re.findall(r'[\u3400-\u9fff]', normalized)
+    cjk_ratio = len(cjk_chars) / max(1, char_count)
+    line_count = len([line for line in normalized.split('\n') if line.strip()])
+    return {
+        'char_count': char_count,
+        'token_count': token_count,
+        'avg_token_len': avg_token_len,
+        'long_token_ratio': long_token_ratio,
+        'cjk_ratio': cjk_ratio,
+        'line_count': line_count,
+    }
+
+
+def score_pdf_text_quality(text):
+    metrics = compute_pdf_text_quality_metrics(text)
+    char_count = metrics['char_count']
+    token_count = metrics['token_count']
+    avg_token_len = metrics['avg_token_len']
+    long_token_ratio = metrics['long_token_ratio']
+    cjk_ratio = metrics['cjk_ratio']
+    line_count = metrics['line_count']
+
+    if char_count <= 0 or token_count <= 0:
+        return 0.0, metrics
+
+    score = 0.0
+    score += min(char_count / 650.0, 28.0)
+    score += min(token_count / 90.0, 20.0)
+    score += min(line_count / 80.0, 6.0)
+    if cjk_ratio < 0.2:
+        score -= max(0.0, (avg_token_len - 8.8)) * 2.8
+        score -= long_token_ratio * 36.0
+    else:
+        score -= max(0.0, (avg_token_len - 12.0)) * 1.2
+        score -= long_token_ratio * 10.0
+
+    return round(score, 3), metrics
+
+
+def should_try_pdf_ocr_fallback(text):
+    score, metrics = score_pdf_text_quality(text)
+    char_count = metrics['char_count']
+    token_count = metrics['token_count']
+    avg_token_len = metrics['avg_token_len']
+    long_token_ratio = metrics['long_token_ratio']
+    cjk_ratio = metrics['cjk_ratio']
+
+    if char_count < 320 or token_count < 60:
+        return True, score, metrics
+    if cjk_ratio < 0.2:
+        if avg_token_len >= 10.5:
+            return True, score, metrics
+        if long_token_ratio >= 0.12:
+            return True, score, metrics
+    if score < 16.0:
+        return True, score, metrics
+    return False, score, metrics
+
+
+def extract_text_from_pdf_bytes_pymupdf(file_bytes):
+    if fitz is None:
+        return ''
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype='pdf')
+    except Exception as e:
+        print(f"PyMuPDF open failed: {e}")
+        return ''
+
+    page_outputs = []
+    try:
+        for page in doc:
+            page_lines = []
+            words = page.get_text('words') or []
+            if words:
+                grouped = {}
+                for item in words:
+                    if not isinstance(item, (list, tuple)) or len(item) < 8:
+                        continue
+                    token = str(item[4] or '').strip()
+                    if not token:
+                        continue
+                    block_no = int(item[5])
+                    line_no = int(item[6])
+                    word_no = int(item[7])
+                    key = (block_no, line_no)
+                    grouped.setdefault(key, []).append((word_no, token))
+
+                for key in sorted(grouped.keys()):
+                    tokens = [token for _, token in sorted(grouped[key], key=lambda pair: pair[0])]
+                    line = ' '.join(tokens).strip()
+                    if line:
+                        page_lines.append(line)
+
+            if not page_lines:
+                raw_text = page.get_text('text') or ''
+                raw_text = normalize_newlines(raw_text).strip()
+                if raw_text:
+                    page_lines.append(raw_text)
+
+            page_outputs.append('\n'.join(page_lines).strip())
+    except Exception as e:
+        print(f"PyMuPDF extraction failed: {e}")
+        return ''
+    finally:
+        doc.close()
+
+    result = '\n\n'.join([chunk for chunk in page_outputs if chunk]).strip()
+    return normalize_pdf_text(result)
+
+
+def extract_text_from_pdf_bytes_pypdf2(file_bytes):
     text = ""
     try:
         reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
@@ -2256,8 +2622,127 @@ def extract_text_from_pdf_bytes(file_bytes):
             page_text = page.extract_text() or ""
             text += page_text + "\n"
     except Exception as e:
-        print(f"Error extracting text from PDF bytes: {e}")
-        text = "Text extraction failed."
+        print(f"PyPDF2 extraction failed: {e}")
+        return ""
+    return normalize_pdf_text(text)
+
+
+def run_ocrmypdf_on_pdf_bytes(file_bytes):
+    if not ENABLE_PDF_OCR_FALLBACK:
+        return b'', 'ocrmypdf fallback disabled by ENABLE_PDF_OCR_FALLBACK'
+    if not file_bytes:
+        return b'', 'Empty PDF bytes'
+
+    ocrmypdf_path = shutil.which(OCRMYPDF_BINARY)
+    if not ocrmypdf_path:
+        return b'', f'ocrmypdf binary not found: {OCRMYPDF_BINARY}'
+
+    try:
+        with tempfile.TemporaryDirectory(prefix='studyhub-pdfocr-') as tmp_dir:
+            input_path = os.path.join(tmp_dir, 'input.pdf')
+            output_path = os.path.join(tmp_dir, 'output.pdf')
+            with open(input_path, 'wb') as f:
+                f.write(file_bytes)
+
+            cmd = [
+                ocrmypdf_path,
+                '--force-ocr',
+                '--output-type', 'pdf',
+                '--optimize', '0',
+                '--quiet',
+                '-l', OCRMYPDF_LANGUAGE,
+                input_path,
+                output_path,
+            ]
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=OCRMYPDF_TIMEOUT_SECONDS,
+                check=False,
+            )
+            if proc.returncode != 0:
+                stderr = (proc.stderr or b'').decode('utf-8', errors='ignore').strip()
+                stdout = (proc.stdout or b'').decode('utf-8', errors='ignore').strip()
+                details = stderr or stdout or f'return code {proc.returncode}'
+                return b'', f'ocrmypdf failed: {details[:260]}'
+
+            if not os.path.exists(output_path):
+                return b'', 'ocrmypdf did not produce output file'
+            with open(output_path, 'rb') as f:
+                return f.read(), ''
+    except subprocess.TimeoutExpired:
+        return b'', f'ocrmypdf timeout after {OCRMYPDF_TIMEOUT_SECONDS}s'
+    except Exception as e:
+        return b'', f'ocrmypdf runtime error: {e}'
+
+
+def extract_text_from_pdf_bytes_with_meta(file_bytes):
+    meta = {
+        'extractor': 'none',
+        'ocr_attempted': False,
+        'ocr_used': False,
+        'quality_score_before': 0.0,
+        'quality_score_after': 0.0,
+        'quality_metrics_before': {},
+        'quality_metrics_after': {},
+        'note': '',
+    }
+    if not file_bytes:
+        meta['note'] = 'Empty PDF bytes'
+        return "", meta
+
+    primary_text = extract_text_from_pdf_bytes_pymupdf(file_bytes)
+    extractor = 'pymupdf'
+    if not primary_text:
+        primary_text = extract_text_from_pdf_bytes_pypdf2(file_bytes)
+        extractor = 'pypdf2'
+
+    if not primary_text:
+        meta['note'] = 'Primary PDF text extractors returned empty text'
+        return "Text extraction failed.", meta
+
+    before_score, before_metrics = score_pdf_text_quality(primary_text)
+    meta['extractor'] = extractor
+    meta['quality_score_before'] = before_score
+    meta['quality_metrics_before'] = before_metrics
+
+    should_ocr, _, _ = should_try_pdf_ocr_fallback(primary_text)
+    if not should_ocr:
+        meta['quality_score_after'] = before_score
+        meta['quality_metrics_after'] = before_metrics
+        return primary_text, meta
+
+    ocr_pdf_bytes, ocr_error = run_ocrmypdf_on_pdf_bytes(file_bytes)
+    meta['ocr_attempted'] = True
+    if not ocr_pdf_bytes:
+        meta['quality_score_after'] = before_score
+        meta['quality_metrics_after'] = before_metrics
+        meta['note'] = ocr_error
+        return primary_text, meta
+
+    ocr_text = extract_text_from_pdf_bytes_pymupdf(ocr_pdf_bytes) or extract_text_from_pdf_bytes_pypdf2(ocr_pdf_bytes)
+    if not ocr_text:
+        meta['quality_score_after'] = before_score
+        meta['quality_metrics_after'] = before_metrics
+        meta['note'] = 'ocrmypdf produced file but text extraction stayed empty'
+        return primary_text, meta
+
+    after_score, after_metrics = score_pdf_text_quality(ocr_text)
+    meta['quality_score_after'] = after_score
+    meta['quality_metrics_after'] = after_metrics
+    if after_score >= before_score + 1.0:
+        meta['ocr_used'] = True
+        if ocr_error:
+            meta['note'] = ocr_error
+        return ocr_text, meta
+
+    meta['note'] = 'OCR output not better than primary extraction'
+    return primary_text, meta
+
+
+def extract_text_from_pdf_bytes(file_bytes):
+    text, _ = extract_text_from_pdf_bytes_with_meta(file_bytes)
     return text
 
 
@@ -2374,6 +2859,20 @@ def write_file_bytes_to_storage(filename, file_bytes, mimetype='application/octe
     local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
     with open(local_path, 'wb') as f:
         f.write(file_bytes)
+
+
+def read_file_bytes_from_storage(filename):
+    safe_filename = str(filename or '').strip()
+    if not safe_filename:
+        raise ValueError('filename is required')
+
+    if S3_BUCKET and s3_client:
+        s3_obj = s3_client.get_object(Bucket=S3_BUCKET, Key=safe_filename)
+        return s3_obj['Body'].read()
+
+    local_path = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+    with open(local_path, 'rb') as f:
+        return f.read()
 
 
 # 启动时运行初始化（放在辅助函数定义之后，避免前置调用未定义函数）
@@ -3114,7 +3613,10 @@ def get_documents():
         if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
             return jsonify({'error': 'No access to this workspace'}), 403
 
-        where_parts = ['username = ?']
+        where_parts = [
+            'username = ?',
+            "COALESCE(deleted_at, '') = ''",
+        ]
         params = [username]
         if workspace_id:
             where_parts.append('workspace_id = ?')
@@ -3225,6 +3727,96 @@ def get_documents():
                 }
             return jsonify(payload), 200
         return jsonify(docs), 200
+    finally:
+        conn.close()
+
+
+@app.route('/api/documents/trash', methods=['GET'])
+def get_trashed_documents():
+    username = (request.args.get('username') or '').strip()
+    workspace_id = (request.args.get('workspace_id') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    query = (request.args.get('q') or '').strip().lower()
+    sort_key = (request.args.get('sort') or 'deleted_newest').strip().lower()
+    order_by_map = {
+        'deleted_newest': "deleted_at DESC, id DESC",
+        'deleted_oldest': "deleted_at ASC, id ASC",
+        'title_asc': "LOWER(COALESCE(title, '')) ASC, id ASC",
+        'title_desc': "LOWER(COALESCE(title, '')) DESC, id DESC",
+    }
+    order_by_sql = order_by_map.get(sort_key, order_by_map['deleted_newest'])
+
+    limit = parse_int(request.args.get('limit'), 100, 1, 300)
+    offset = parse_int(request.args.get('offset'), 0, 0)
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+            return jsonify({'error': 'No access to this workspace'}), 403
+
+        purge_result = purge_expired_trashed_documents(conn, username=username, workspace_id=workspace_id)
+
+        where_parts = [
+            'username = ?',
+            "COALESCE(deleted_at, '') <> ''",
+        ]
+        params = [username]
+        if workspace_id:
+            where_parts.append('workspace_id = ?')
+            params.append(workspace_id)
+        if query:
+            where_parts.append(
+                "("
+                "LOWER(COALESCE(title, '')) LIKE ? OR "
+                "LOWER(COALESCE(filename, '')) LIKE ? OR "
+                "LOWER(COALESCE(category, '')) LIKE ? OR "
+                "LOWER(COALESCE(content, '')) LIKE ? OR "
+                "LOWER(COALESCE(tags, '')) LIKE ?"
+                ")"
+            )
+            like_query = f'%{query}%'
+            params.extend([like_query, like_query, like_query, like_query, like_query])
+        where_sql = ' AND '.join(where_parts)
+
+        total_cursor = conn.execute(
+            f'''
+            SELECT COUNT(1) AS total
+            FROM documents
+            WHERE {where_sql}
+            ''',
+            tuple(params)
+        )
+        total_row = row_to_dict(total_cursor.fetchone()) or {}
+        total = parse_int(total_row.get('total', 0), 0, 0)
+
+        list_params = [*params, limit, offset]
+        cursor = conn.execute(
+            f'''
+            SELECT *
+            FROM documents
+            WHERE {where_sql}
+            ORDER BY {order_by_sql}
+            LIMIT ? OFFSET ?
+            ''',
+            tuple(list_params)
+        )
+        items = [row_to_dict(item) for item in cursor.fetchall()]
+        return jsonify({
+            'items': items,
+            'total': total,
+            'limit': limit,
+            'offset': offset,
+            'q': query,
+            'sort': sort_key,
+            'retention_days': TRASH_RETENTION_DAYS,
+            'purged_count': parse_int((purge_result or {}).get('purged_count', 0), 0, 0),
+            'warnings': (purge_result or {}).get('warnings') if isinstance((purge_result or {}).get('warnings'), list) else [],
+        }), 200
     finally:
         conn.close()
 
@@ -3415,6 +4007,273 @@ def upload_file():
     
     return jsonify({'error': 'File type not allowed'}), 400
 
+
+@app.route('/api/canvas/files', methods=['POST'])
+def get_canvas_files():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get('token') or '').strip()
+    domain = normalize_canvas_domain(data.get('domain') or CANVAS_DEFAULT_DOMAIN)
+    username = str(data.get('username') or '').strip()
+    requested_workspace_id = str(data.get('workspace_id') or '').strip()
+
+    if not token:
+        return jsonify({'error': 'Missing Canvas token'}), 400
+    if not domain:
+        return jsonify({'error': 'Invalid Canvas domain'}), 400
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    workspace_id = requested_workspace_id
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        if workspace_id:
+            if not workspace_belongs_to_user(conn, workspace_id, username):
+                return jsonify({'error': 'No access to this workspace'}), 403
+        else:
+            workspace_id = get_or_create_default_workspace_id(conn, username)
+    finally:
+        conn.close()
+
+    try:
+        raw_files = list_canvas_user_files(
+            domain,
+            canvas_headers(token),
+            max_pages=CANVAS_MAX_LIST_PAGES,
+            per_page=100,
+        )
+        supported_files = []
+        for raw in raw_files:
+            item = build_canvas_file_item(raw)
+            if item:
+                supported_files.append(item)
+
+        supported_files.sort(
+            key=lambda item: str(item.get('updated_at') or ''),
+            reverse=True,
+        )
+        return jsonify({
+            'files': supported_files,
+            'count': len(supported_files),
+            'domain': domain,
+            'workspace_id': workspace_id,
+        }), 200
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 400
+        if status in (401, 403):
+            return jsonify({'error': 'Canvas token is invalid or expired'}), 401
+        detail = ''
+        try:
+            detail = str(e.response.text or '')[:300] if e.response is not None else ''
+        except Exception:
+            detail = ''
+        return jsonify({'error': f'Failed to fetch Canvas files ({status}). {detail}'.strip()}), 400
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Failed to connect to Canvas: {e}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Failed to fetch Canvas files: {e}'}), 500
+
+
+@app.route('/api/canvas/import', methods=['POST'])
+def import_canvas_file():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get('token') or '').strip()
+    domain = normalize_canvas_domain(data.get('domain') or CANVAS_DEFAULT_DOMAIN)
+    username = str(data.get('username') or '').strip()
+    requested_workspace_id = str(data.get('workspace_id') or '').strip()
+    requested_category = normalize_document_category(data.get('category') or '')
+    file_id = parse_int(data.get('file_id'), 0, 1)
+
+    if not token:
+        return jsonify({'error': 'Missing Canvas token'}), 400
+    if not domain:
+        return jsonify({'error': 'Invalid Canvas domain'}), 400
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+    if not file_id:
+        return jsonify({'error': 'Missing or invalid file ID'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    workspace_id = ''
+    workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+    try:
+        if requested_workspace_id:
+            if not workspace_belongs_to_user(conn, requested_workspace_id, username):
+                return jsonify({'error': 'No access to this workspace'}), 403
+            workspace_id = requested_workspace_id
+        else:
+            workspace_id = get_or_create_default_workspace_id(conn, username)
+
+        workspace_row = get_workspace_record(conn, workspace_id)
+        workspace_settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+        if not workspace_settings.get('allow_uploads', True):
+            return jsonify({'error': 'Uploads are disabled in this workspace settings'}), 403
+    finally:
+        conn.close()
+
+    headers = canvas_headers(token)
+    local_filepath = ''
+    unique_filename = ''
+    original_filename = ''
+    ext = ''
+    extracted_text = ''
+    extracted_html = ''
+    final_category = ''
+    imported_ok = False
+    s3_uploaded = False
+
+    try:
+        info_url = f'https://{domain}/api/v1/files/{file_id}'
+        info_res = requests.get(info_url, headers=headers, timeout=20)
+        info_res.raise_for_status()
+        info_payload = info_res.json()
+        file_info = info_payload if isinstance(info_payload, dict) else {}
+
+        original_filename = str(
+            file_info.get('filename')
+            or file_info.get('display_name')
+            or file_info.get('name')
+            or ''
+        ).strip()
+        if not original_filename:
+            return jsonify({'error': 'Canvas file has no valid filename'}), 400
+        if not allowed_file(original_filename):
+            return jsonify({'error': 'File type is not supported by this project'}), 400
+
+        ext = original_filename.rsplit('.', 1)[1].lower().strip('.')
+        unique_filename = f'{uuid.uuid4().hex}.{ext}'
+
+        max_size = int(app.config.get('MAX_CONTENT_LENGTH') or 0)
+        canvas_file_size = parse_int(file_info.get('size'), 0, 0)
+        if max_size and canvas_file_size and canvas_file_size > max_size:
+            return jsonify({
+                'error': f'Canvas file is too large ({canvas_file_size} bytes). Max allowed is {max_size} bytes.'
+            }), 400
+
+        download_url = str(file_info.get('url') or file_info.get('download_url') or '').strip()
+        if not download_url:
+            return jsonify({'error': 'Canvas file has no download URL'}), 400
+
+        file_res = requests.get(download_url, headers=headers, timeout=60, stream=True)
+        file_res.raise_for_status()
+        chunks = []
+        total_bytes = 0
+        for chunk in file_res.iter_content(chunk_size=262144):
+            if not chunk:
+                continue
+            total_bytes += len(chunk)
+            if max_size and total_bytes > max_size:
+                return jsonify({
+                    'error': f'Downloaded file exceeded size limit ({max_size} bytes).'
+                }), 400
+            chunks.append(chunk)
+
+        file_bytes = b''.join(chunks)
+        if not file_bytes:
+            return jsonify({'error': 'Failed to download file from Canvas'}), 400
+
+        local_filepath = os.path.join(app.config['UPLOAD_FOLDER'], unique_filename)
+        with open(local_filepath, 'wb') as f:
+            f.write(file_bytes)
+
+        extracted_text, extracted_html = extract_document_content(local_filepath, ext)
+
+        if S3_BUCKET and s3_client:
+            s3_client.upload_file(
+                local_filepath,
+                S3_BUCKET,
+                unique_filename,
+                ExtraArgs={'ContentType': detect_mimetype(original_filename, ext)}
+            )
+            s3_uploaded = True
+            try:
+                os.remove(local_filepath)
+                local_filepath = ''
+            except Exception:
+                pass
+
+        if requested_category:
+            final_category = requested_category
+        elif workspace_settings.get('auto_categorize', True):
+            final_category = infer_document_category(original_filename, extracted_text)
+        else:
+            final_category = normalize_document_category(workspace_settings.get('default_category'))
+            if not final_category:
+                final_category = DEFAULT_DOCUMENT_CATEGORY
+
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        try:
+            if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+                return jsonify({'error': 'No access to this workspace'}), 403
+
+            conn.execute(
+                '''
+                INSERT INTO documents (
+                    filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    unique_filename,
+                    original_filename,
+                    datetime.utcnow().isoformat(),
+                    ext,
+                    extracted_text,
+                    extracted_html if ext in ('docx', 'txt') else '',
+                    username,
+                    'Canvas Import',
+                    final_category,
+                    workspace_id
+                )
+            )
+            conn.commit()
+
+            cursor = conn.execute(
+                '''
+                SELECT *
+                FROM documents
+                WHERE filename = ? AND username = ?
+                ORDER BY id DESC
+                LIMIT 1
+                ''',
+                (unique_filename, username)
+            )
+            doc_row = cursor.fetchone()
+            doc_payload = row_to_dict(doc_row) or {}
+            imported_ok = True
+            return jsonify({
+                'message': 'Successfully imported from Canvas',
+                'document': doc_payload,
+                'workspace_id': workspace_id,
+            }), 201
+        finally:
+            conn.close()
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 400
+        if status in (401, 403):
+            return jsonify({'error': 'Canvas token is invalid or expired'}), 401
+        return jsonify({'error': f'Canvas API request failed with status {status}'}), 400
+    except requests.exceptions.RequestException as e:
+        return jsonify({'error': f'Failed to connect to Canvas: {e}'}), 400
+    except Exception as e:
+        print(f"Canvas Import Error: {e}")
+        return jsonify({'error': f'Import failed: {e}'}), 500
+    finally:
+        if not imported_ok and unique_filename:
+            if s3_uploaded:
+                remove_document_file_from_storage(unique_filename)
+            elif local_filepath and os.path.exists(local_filepath):
+                try:
+                    os.remove(local_filepath)
+                except Exception:
+                    pass
+
+
 @app.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
     username = (request.args.get('username') or '').strip()
@@ -3427,6 +4286,8 @@ def get_document(doc_id):
         doc = cursor.fetchone()
         
         if doc:
+            if is_document_soft_deleted(doc):
+                return jsonify({'error': 'Document is in Trash'}), 404
             allowed, reason = check_document_access(conn, doc, username, share_token)
             if not allowed:
                 return jsonify({'error': reason}), 403
@@ -3475,42 +4336,109 @@ def get_document(doc_id):
 def delete_document(doc_id):
     data = request.get_json(silent=True) or {}
     username = (data.get('username') or request.args.get('username') or '').strip()
+    permanent = parse_bool(data.get('permanent') or request.args.get('permanent'), False)
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
 
     conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
     try:
-        cursor = conn.execute('SELECT id, filename, username FROM documents WHERE id = ?', (doc_id,))
+        cursor = conn.execute(
+            'SELECT id, filename, username, deleted_at FROM documents WHERE id = ?',
+            (doc_id,)
+        )
         doc = cursor.fetchone()
         if not doc:
             return jsonify({'error': 'Document not found'}), 404
 
         owner = (doc.get('username') if hasattr(doc, 'get') else doc['username']) or ''
-        if username and owner and username != owner:
+        if owner and username != owner:
             return jsonify({'error': 'You can only delete your own documents'}), 403
 
-        conn.execute('DELETE FROM document_share_links WHERE document_id = ?', (doc_id,))
-        conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (doc_id,))
-        conn.execute('DELETE FROM documents WHERE id = ?', (doc_id,))
-        conn.commit()
+        was_deleted = is_document_soft_deleted(doc)
+        if permanent:
+            deleted = hard_delete_document_record(conn, doc_id)
+            if not deleted:
+                return jsonify({'error': 'Document not found'}), 404
+            conn.commit()
+        else:
+            if was_deleted:
+                return jsonify({
+                    'message': 'Document is already in Trash',
+                    'id': doc_id,
+                    'moved_to_trash': True,
+                    'already_deleted': True,
+                }), 200
+            now_iso = utcnow_iso()
+            conn.execute(
+                'UPDATE documents SET deleted_at = ?, last_access_at = ? WHERE id = ?',
+                (now_iso, now_iso, doc_id)
+            )
+            conn.execute('DELETE FROM document_share_links WHERE document_id = ?', (doc_id,))
+            conn.commit()
     finally:
         conn.close()
 
-    filename = doc.get('filename') if hasattr(doc, 'get') else doc['filename']
     cleanup_warning = ''
-    try:
-        if S3_BUCKET and s3_client:
-            s3_client.delete_object(Bucket=S3_BUCKET, Key=filename)
-        else:
-            local_path = os.path.join(app.config['UPLOAD_FOLDER'], filename)
-            if os.path.exists(local_path):
-                os.remove(local_path)
-    except Exception as e:
-        cleanup_warning = f'File cleanup failed: {e}'
-        print(f"⚠️ {cleanup_warning}")
+    if permanent:
+        filename = (deleted or {}).get('filename', '')
+        cleanup_warning = remove_document_file_from_storage(filename)
 
-    response = {'message': 'Document deleted successfully', 'id': doc_id}
+    response = {
+        'id': doc_id,
+        'message': 'Document deleted permanently' if permanent else 'Document moved to Trash',
+        'moved_to_trash': not permanent,
+        'permanent': permanent,
+        'trash_retention_days': TRASH_RETENTION_DAYS,
+    }
     if cleanup_warning:
         response['warning'] = cleanup_warning
     return jsonify(response), 200
+
+
+@app.route('/api/documents/<int:doc_id>/restore', methods=['POST'])
+def restore_document(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+        doc_data = row_to_dict(doc) or {}
+        owner = str(doc_data.get('username') or '').strip()
+        if owner and owner != username:
+            return jsonify({'error': 'You can only restore your own documents'}), 403
+        if not is_document_soft_deleted(doc_data):
+            return jsonify({
+                'message': 'Document is already active',
+                'id': doc_id,
+                'restored': False,
+            }), 200
+
+        conn.execute(
+            "UPDATE documents SET deleted_at = '' WHERE id = ?",
+            (doc_id,)
+        )
+        conn.commit()
+
+        refreshed_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        refreshed = row_to_dict(refreshed_cursor.fetchone()) or {}
+        return jsonify({
+            'message': 'Document restored successfully',
+            'id': doc_id,
+            'restored': True,
+            'document': refreshed,
+        }), 200
+    finally:
+        conn.close()
 
 
 @app.route('/api/documents/<int:doc_id>/share-links', methods=['POST'])
@@ -4191,6 +5119,300 @@ def hf_error_message(response):
     return (response.text or '').strip()[:240] or 'Unknown error'
 
 
+def split_text_for_summary(text_content, max_chars=3600, min_chars=1200, overlap_chars=220):
+    normalized = normalize_newlines(text_content or '')
+    normalized = re.sub(r'[ \t]+', ' ', normalized).strip()
+    if not normalized:
+        return []
+    if len(normalized) <= max_chars:
+        return [normalized]
+
+    markers = (
+        ('\n\n', 2),
+        ('. ', 2),
+        ('! ', 2),
+        ('? ', 2),
+        ('。', 1),
+        ('！', 1),
+        ('？', 1),
+        ('; ', 2),
+        ('；', 1),
+    )
+    chunks = []
+    start = 0
+    total_len = len(normalized)
+    guard = 0
+
+    while start < total_len and guard < 10000:
+        guard += 1
+        hard_end = min(total_len, start + max_chars)
+        end = hard_end
+
+        if hard_end < total_len:
+            window = normalized[start:hard_end]
+            best_pos = -1
+            best_tail = 0
+            for marker, tail in markers:
+                marker_pos = window.rfind(marker)
+                if marker_pos > best_pos:
+                    best_pos = marker_pos
+                    best_tail = tail
+            if best_pos >= min_chars:
+                end = start + best_pos + best_tail
+
+        if end <= start:
+            end = hard_end
+
+        chunk = normalized[start:end].strip()
+        if chunk:
+            chunks.append(chunk)
+
+        if end >= total_len:
+            break
+
+        next_start = max(0, end - max(0, overlap_chars))
+        if next_start <= start:
+            next_start = end
+        start = next_start
+
+    if not chunks:
+        return [normalized[:max_chars]]
+    return chunks
+
+
+def build_fallback_summary(text_content, sentence_limit=3, max_chars=560):
+    raw_text = normalize_newlines(text_content or '')
+    raw_text = re.sub(r'(?im)^\s*part\s+\d+\s*:\s*', '', raw_text)
+    raw_text = re.sub(r'[ \t]+', ' ', raw_text).strip()
+    if not raw_text:
+        return ''
+
+    safe_limit = max(1, int(sentence_limit or 3))
+    fragments = [
+        part.strip()
+        for part in re.split(r'(?<=[.!?。！？])\s+|\n+', raw_text)
+        if part.strip()
+    ]
+
+    if len(fragments) < safe_limit:
+        compact_lines = [
+            part.strip()
+            for part in re.split(r'\n+', normalize_newlines(text_content or ''))
+            if part.strip()
+        ]
+        for item in compact_lines:
+            candidate = re.sub(r'\s+', ' ', item)
+            if candidate and candidate not in fragments:
+                fragments.append(candidate)
+
+    if fragments:
+        if len(fragments) <= safe_limit:
+            picked = fragments
+        else:
+            picked = []
+            key_indexes = [0, len(fragments) // 2, len(fragments) - 1]
+            for idx in key_indexes:
+                sentence = fragments[idx]
+                if sentence not in picked:
+                    picked.append(sentence)
+                if len(picked) >= safe_limit:
+                    break
+            if len(picked) < safe_limit:
+                for sentence in fragments:
+                    if sentence in picked:
+                        continue
+                    picked.append(sentence)
+                    if len(picked) >= safe_limit:
+                        break
+        summary = ' '.join(picked[:safe_limit]).strip()
+    else:
+        summary = raw_text
+
+    if len(summary) > max_chars:
+        text_len = len(summary)
+        slice_len = max(90, max_chars // max(1, safe_limit))
+        points = [0, text_len // 2, max(0, text_len - slice_len)]
+        excerpts = []
+        for point in points:
+            start = max(0, min(point, max(0, text_len - slice_len)))
+            end = min(text_len, start + slice_len)
+            snippet = summary[start:end].strip()
+            if snippet and snippet not in excerpts:
+                excerpts.append(snippet)
+        summary = ' ... '.join(excerpts).strip() or summary[:max_chars]
+        if len(summary) > max_chars:
+            clipped = summary[:max_chars]
+            summary = clipped.rsplit(' ', 1)[0].strip() or clipped
+
+    return summary
+
+
+def call_hf_summarizer_once(text_content, length_options):
+    safe_text = str(text_content or '').strip()
+    if not safe_text:
+        return {'ok': False, 'summary': '', 'error': 'Empty input text'}
+
+    hf_headers = get_hf_headers('application/json')
+    if not hf_headers:
+        return {'ok': False, 'summary': '', 'error': 'HF_API_TOKEN is not configured on server.'}
+
+    payload = {
+        "inputs": safe_text,
+        "parameters": {
+            "max_new_tokens": length_options['max_new_tokens'],
+            "min_new_tokens": length_options['min_new_tokens'],
+            "do_sample": False
+        },
+        "options": {"wait_for_model": True}
+    }
+
+    try:
+        response = requests.post(
+            hf_model_url(SUMMARIZER_MODEL_ID),
+            headers=hf_headers,
+            json=payload,
+            timeout=90
+        )
+    except Exception as e:
+        return {'ok': False, 'summary': '', 'error': str(e) or 'AI service busy.'}
+
+    if response.status_code >= 400:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f"Summary service failed ({response.status_code}): {hf_error_message(response)}"
+        }
+
+    summary = ''
+    try:
+        summary_res = response.json()
+        if isinstance(summary_res, list) and summary_res and isinstance(summary_res[0], dict):
+            summary = str(
+                summary_res[0].get('summary_text')
+                or summary_res[0].get('generated_text')
+                or ''
+            ).strip()
+        elif isinstance(summary_res, dict):
+            summary = str(
+                summary_res.get('summary_text')
+                or summary_res.get('generated_text')
+                or ''
+            ).strip()
+    except Exception:
+        summary = ''
+
+    if summary:
+        return {'ok': True, 'summary': summary, 'error': ''}
+
+    return {'ok': False, 'summary': '', 'error': 'Summary service returned empty output.'}
+
+
+def summarize_text_with_chunk_merge(text_content, length_options):
+    safe_text = str(text_content or '').strip()
+    sentence_limit = max(1, int((length_options or {}).get('sentence_limit', 3) or 3))
+    hf_available = bool(get_hf_headers('application/json'))
+    chunks = split_text_for_summary(
+        safe_text,
+        max_chars=3600,
+        min_chars=1200,
+        overlap_chars=220
+    )
+
+    if not chunks:
+        return {
+            'summary': '',
+            'summary_source': 'fallback',
+            'summary_note': 'No text provided.',
+            'meta': {'chunk_count': 0, 'merge_rounds': 0}
+        }
+
+    hf_success_count = 0
+    fallback_count = 0
+    error_samples = []
+
+    def summarize_unit(unit_text):
+        nonlocal hf_success_count, fallback_count, error_samples
+        result = call_hf_summarizer_once(unit_text, length_options)
+        if result.get('ok'):
+            hf_success_count += 1
+            return str(result.get('summary') or '').strip()
+
+        fallback_count += 1
+        err = str(result.get('error') or '').strip()
+        if err and err not in error_samples and len(error_samples) < 2:
+            error_samples.append(err)
+        return build_fallback_summary(
+            unit_text,
+            sentence_limit=max(2, sentence_limit),
+            max_chars=560
+        )
+
+    layer = [summarize_unit(chunk) for chunk in chunks]
+    merge_rounds = 0
+    if not hf_available and len(layer) > 1:
+        merge_rounds = 1
+        pick_idx = [0, len(layer) // 2, len(layer) - 1]
+        picked = []
+        for idx in pick_idx:
+            unit = str(layer[idx] or '').strip()
+            if unit and unit not in picked:
+                picked.append(unit)
+        combined = '\n'.join(picked).strip()
+        layer = [build_fallback_summary(combined or safe_text, sentence_limit=max(3, sentence_limit), max_chars=780)]
+    else:
+        while len(layer) > 1 and merge_rounds < 5:
+            merge_rounds += 1
+            combined_text = '\n\n'.join(
+                part
+                for part in layer
+                if str(part).strip()
+            ).strip()
+            if not combined_text:
+                break
+            merge_chunks = split_text_for_summary(
+                combined_text,
+                max_chars=3400,
+                min_chars=900,
+                overlap_chars=120
+            )
+            if not merge_chunks:
+                break
+            layer = [summarize_unit(chunk) for chunk in merge_chunks]
+
+    summary = str(layer[0] if layer else '').strip()
+    if not summary:
+        summary = build_fallback_summary(
+            safe_text,
+            sentence_limit=max(3, sentence_limit),
+            max_chars=560
+        )
+        fallback_count += 1
+
+    summary_source = 'huggingface' if hf_success_count > 0 else 'fallback'
+    note_parts = []
+    if len(chunks) > 1:
+        note_parts.append(f"Chunked summary used {len(chunks)} sections")
+    if merge_rounds > 0:
+        note_parts.append(f"{merge_rounds} merge round(s)")
+    if fallback_count > 0:
+        note_parts.append(f"{fallback_count} section(s) used fallback")
+    if error_samples:
+        note_parts.append("HF note: " + ' | '.join(error_samples))
+    summary_note = '; '.join(note_parts)
+
+    return {
+        'summary': summary,
+        'summary_source': summary_source,
+        'summary_note': summary_note,
+        'meta': {
+            'chunk_count': len(chunks),
+            'merge_rounds': merge_rounds,
+            'hf_success_count': hf_success_count,
+            'fallback_count': fallback_count,
+        }
+    }
+
+
 def normalize_ocr_text(payload, depth=0):
     if depth > 5 or payload is None:
         return ''
@@ -4308,12 +5530,18 @@ def run_local_ocr(img_bytes):
 
 
 def get_ocr_runtime_status():
+    ocrmypdf_path = shutil.which(OCRMYPDF_BINARY)
     status = {
         'external_ocr_configured': bool(EXTERNAL_OCR_SERVICE_URL),
         'external_ocr_url': EXTERNAL_OCR_SERVICE_URL or '',
         'hf_token_configured': bool(HF_TOKEN),
         'hf_ocr_model': OCR_MODEL_ID,
         'hf_model_base_url': HF_MODEL_BASE_URL,
+        'pdf_ocr_fallback_enabled': ENABLE_PDF_OCR_FALLBACK,
+        'ocrmypdf_binary': OCRMYPDF_BINARY,
+        'ocrmypdf_available': bool(ocrmypdf_path),
+        'ocrmypdf_path': ocrmypdf_path or '',
+        'ocrmypdf_language': OCRMYPDF_LANGUAGE,
         'cv2_available': cv2 is not None,
         'numpy_available': np is not None,
         'rapidocr_available': RapidOCR is not None,
@@ -4345,6 +5573,8 @@ def get_ocr_runtime_status():
         status['hints'].append('Set HF_API_TOKEN in environment variables to enable Hugging Face OCR fallback.')
     if not status['external_ocr_configured']:
         status['hints'].append('Set EXTERNAL_OCR_SERVICE_URL to enable external OCR service routing.')
+    if ENABLE_PDF_OCR_FALLBACK and not status['ocrmypdf_available']:
+        status['hints'].append('Install ocrmypdf binary to enable automatic PDF OCR fallback for low-quality text extraction.')
 
     local_error_lower = str(status['local_engine_error'] or '').lower()
     import_error_lower = str(status['rapidocr_import_error'] or '').lower()
@@ -4584,6 +5814,8 @@ def analyze_text():
     doc_text_content = ''
     document_owner_username = ''
     text_source = 'request_text'
+    refreshed_from_file = False
+    pdf_refresh_meta = {}
 
     if requested_doc_id > 0:
         conn = get_db_connection()
@@ -4609,6 +5841,32 @@ def analyze_text():
             document_owner_username = str(
                 (doc.get('username') if hasattr(doc, 'get') else doc['username']) or ''
             ).strip()
+
+            # On explicit rebuild, refresh PDF text from source file so summary
+            # uses latest/full extraction quality instead of stale db content.
+            doc_file_type = str(
+                (doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']) or ''
+            ).strip().lower()
+            doc_filename = str(
+                (doc.get('filename') if hasattr(doc, 'get') else doc['filename']) or ''
+            ).strip()
+            if force_refresh and doc_file_type == 'pdf' and doc_filename:
+                try:
+                    source_bytes = read_file_bytes_from_storage(doc_filename)
+                    refreshed_text, refresh_meta = extract_text_from_pdf_bytes_with_meta(source_bytes)
+                    pdf_refresh_meta = refresh_meta if isinstance(refresh_meta, dict) else {}
+                    refreshed_text = str(refreshed_text or '').strip()
+                    if refreshed_text:
+                        if refreshed_text != doc_text_content:
+                            conn.execute(
+                                'UPDATE documents SET content = ?, content_html = ? WHERE id = ?',
+                                (refreshed_text, '', requested_doc_id)
+                            )
+                            conn.commit()
+                        doc_text_content = refreshed_text
+                        refreshed_from_file = True
+                except Exception as e:
+                    print(f"PDF re-extraction on summary refresh failed: {e}")
         finally:
             conn.close()
 
@@ -4662,6 +5920,13 @@ def analyze_text():
         12
     )
 
+    token_map = {
+        'short': {'max_new_tokens': 80, 'min_new_tokens': 18, 'sentence_limit': 2},
+        'medium': {'max_new_tokens': 120, 'min_new_tokens': 24, 'sentence_limit': 3},
+        'long': {'max_new_tokens': 200, 'min_new_tokens': 48, 'sentence_limit': 5},
+    }
+    length_options = token_map.get(summary_length, token_map['medium'])
+
     if not text_content:
         if requested_doc_id > 0:
             return jsonify({
@@ -4672,6 +5937,24 @@ def analyze_text():
 
     use_document_cache = requested_doc_id > 0 and text_source == 'document_content'
     text_hash = build_summary_cache_text_hash(text_content)
+    text_char_count = len(text_content)
+    text_word_count = len(re.findall(r'\S+', text_content))
+    base_options_used = {
+        "summary_length": summary_length,
+        "keyword_limit": keyword_limit,
+        "sentence_limit": length_options['sentence_limit'],
+        "chunk_count": 1,
+        "merge_rounds": 0,
+        "refreshed_from_file": refreshed_from_file,
+        "pdf_extractor": str(pdf_refresh_meta.get('extractor') or ''),
+        "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')),
+        "pdf_ocr_used": bool(pdf_refresh_meta.get('ocr_used')),
+        "pdf_quality_score_before": parse_float(pdf_refresh_meta.get('quality_score_before'), 0.0),
+        "pdf_quality_score_after": parse_float(pdf_refresh_meta.get('quality_score_after'), 0.0),
+        "text_char_count": text_char_count,
+        "text_word_count": text_word_count,
+        "summarizer_model": SUMMARIZER_MODEL_ID,
+    }
     if use_document_cache and text_hash and not force_refresh:
         conn = get_db_connection()
         if conn:
@@ -4686,6 +5969,71 @@ def analyze_text():
             finally:
                 conn.close()
             if cached_payload:
+                cached_options_raw = cached_payload.get("options_used")
+                cached_options = cached_options_raw if isinstance(cached_options_raw, dict) else {}
+                options_used = dict(base_options_used)
+                if cached_options:
+                    options_used["summary_length"] = str(
+                        cached_options.get("summary_length") or summary_length
+                    ).strip().lower() or summary_length
+                    options_used["keyword_limit"] = parse_int(
+                        cached_options.get("keyword_limit"),
+                        keyword_limit,
+                        3,
+                        12
+                    )
+                    options_used["sentence_limit"] = parse_int(
+                        cached_options.get("sentence_limit"),
+                        length_options['sentence_limit'],
+                        1,
+                        20
+                    )
+                    options_used["chunk_count"] = parse_int(
+                        cached_options.get("chunk_count"),
+                        1,
+                        1
+                    )
+                    options_used["merge_rounds"] = parse_int(
+                        cached_options.get("merge_rounds"),
+                        0,
+                        0
+                    )
+                    options_used["refreshed_from_file"] = parse_bool(
+                        cached_options.get("refreshed_from_file"),
+                        refreshed_from_file
+                    )
+                    options_used["pdf_extractor"] = str(
+                        cached_options.get("pdf_extractor") or options_used["pdf_extractor"]
+                    ).strip()
+                    options_used["pdf_ocr_attempted"] = parse_bool(
+                        cached_options.get("pdf_ocr_attempted"),
+                        options_used["pdf_ocr_attempted"]
+                    )
+                    options_used["pdf_ocr_used"] = parse_bool(
+                        cached_options.get("pdf_ocr_used"),
+                        options_used["pdf_ocr_used"]
+                    )
+                    options_used["pdf_quality_score_before"] = parse_float(
+                        cached_options.get("pdf_quality_score_before"),
+                        options_used["pdf_quality_score_before"]
+                    )
+                    options_used["pdf_quality_score_after"] = parse_float(
+                        cached_options.get("pdf_quality_score_after"),
+                        options_used["pdf_quality_score_after"]
+                    )
+                    options_used["text_char_count"] = parse_int(
+                        cached_options.get("text_char_count"),
+                        text_char_count,
+                        0
+                    )
+                    options_used["text_word_count"] = parse_int(
+                        cached_options.get("text_word_count"),
+                        text_word_count,
+                        0
+                    )
+                    options_used["summarizer_model"] = str(
+                        cached_options.get("summarizer_model") or SUMMARIZER_MODEL_ID
+                    ).strip() or SUMMARIZER_MODEL_ID
                 return jsonify({
                     "summary": str(cached_payload.get("summary") or '').strip(),
                     "keywords": cached_payload.get("keywords") if isinstance(cached_payload.get("keywords"), list) else [],
@@ -4702,53 +6050,24 @@ def analyze_text():
                     "document_id": requested_doc_id,
                     "cache_hit": True,
                     "cached_at": cached_payload.get("cached_at"),
-                    "options_used": {
-                        "summary_length": summary_length,
-                        "keyword_limit": keyword_limit,
-                    }
+                    "options_used": options_used,
                 })
 
-    token_map = {
-        'short': {'max_new_tokens': 80, 'min_new_tokens': 18, 'sentence_limit': 2},
-        'medium': {'max_new_tokens': 120, 'min_new_tokens': 24, 'sentence_limit': 3},
-        'long': {'max_new_tokens': 200, 'min_new_tokens': 48, 'sentence_limit': 5},
-    }
-    length_options = token_map.get(summary_length, token_map['medium'])
+    summary_result = summarize_text_with_chunk_merge(text_content, length_options)
+    summary = str(summary_result.get('summary') or '').strip()
+    summary_source = str(summary_result.get('summary_source') or 'fallback').strip().lower() or 'fallback'
+    summary_note = str(summary_result.get('summary_note') or '').strip()
+    summary_meta = summary_result.get('meta') if isinstance(summary_result.get('meta'), dict) else {}
+    pdf_refresh_note = str(pdf_refresh_meta.get('note') or '').strip()
 
-    summary = ""
-    summary_source = "fallback"
-    summary_note = ""
-    hf_headers = get_hf_headers('application/json')
-    if hf_headers:
-        try:
-            payload = {
-                "inputs": text_content[:4000],
-                "parameters": {
-                    "max_new_tokens": length_options['max_new_tokens'],
-                    "min_new_tokens": length_options['min_new_tokens'],
-                    "do_sample": False
-                },
-                "options": {"wait_for_model": True}
-            }
-            response = requests.post(hf_model_url(SUMMARIZER_MODEL_ID), headers=hf_headers, json=payload, timeout=90)
-            if response.status_code < 400:
-                summary_res = response.json()
-                if isinstance(summary_res, list) and summary_res and isinstance(summary_res[0], dict):
-                    summary = str(summary_res[0].get('summary_text') or summary_res[0].get('generated_text') or '').strip()
-                elif isinstance(summary_res, dict):
-                    summary = str(summary_res.get('summary_text') or summary_res.get('generated_text') or '').strip()
-                if summary:
-                    summary_source = "huggingface"
-            else:
-                summary_note = f"Summary service failed ({response.status_code})."
-        except Exception:
-            summary_note = "AI service busy."
-    else:
-        summary_note = "HF_API_TOKEN is not configured on server."
+    if pdf_refresh_note and force_refresh and requested_doc_id > 0:
+        summary_note = f"{summary_note}; PDF refresh: {pdf_refresh_note}" if summary_note else f"PDF refresh: {pdf_refresh_note}"
 
     if not summary:
-        cleaned = re.sub(r'\s+', ' ', text_content)
-        summary = cleaned[:220]
+        summary = build_fallback_summary(text_content, sentence_limit=length_options['sentence_limit'], max_chars=560)
+        summary_source = 'fallback'
+        if not summary_note:
+            summary_note = "Summary service returned empty output."
 
     keywords = []
     try:
@@ -4771,10 +6090,22 @@ def analyze_text():
         "document_id": requested_doc_id if requested_doc_id > 0 else None,
         "cache_hit": False,
         "options_used": {
-            "summary_length": summary_length,
-            "keyword_limit": keyword_limit,
-            "sentence_limit": length_options['sentence_limit'],
-        }
+            **base_options_used,
+            "chunk_count": parse_int(summary_meta.get('chunk_count'), 1, 1),
+            "merge_rounds": parse_int(summary_meta.get('merge_rounds'), 0, 0),
+            "refreshed_from_file": refreshed_from_file,
+            "pdf_extractor": str(pdf_refresh_meta.get('extractor') or base_options_used.get('pdf_extractor') or ''),
+            "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')) or bool(base_options_used.get('pdf_ocr_attempted')),
+            "pdf_ocr_used": bool(pdf_refresh_meta.get('ocr_used')),
+            "pdf_quality_score_before": parse_float(
+                pdf_refresh_meta.get('quality_score_before'),
+                parse_float(base_options_used.get('pdf_quality_score_before'), 0.0)
+            ),
+            "pdf_quality_score_after": parse_float(
+                pdf_refresh_meta.get('quality_score_after'),
+                parse_float(base_options_used.get('pdf_quality_score_after'), 0.0)
+            ),
+        },
     }
 
     if use_document_cache and text_hash:
@@ -4795,6 +6126,7 @@ def analyze_text():
                         "key_sentences": key_sentences,
                         "summary_source": summary_source,
                         "summary_note": summary_note,
+                        "options_used": response_payload.get("options_used") if isinstance(response_payload.get("options_used"), dict) else {},
                     }
                 )
             finally:

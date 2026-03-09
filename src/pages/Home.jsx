@@ -2,7 +2,13 @@ import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { todayKey } from '../lib/dates.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
-import { loadAccounts, persistAccounts } from '../lib/accounts.js';
+import { loadAccounts } from '../lib/accounts.js';
+import {
+  loadAccountHistory,
+  persistAccountHistory,
+  saveAccountToHistory,
+  removeAccountFromHistory,
+} from '../lib/accountHistory.js';
 import {
   createWorkspace,
   loadWorkspaceState,
@@ -24,6 +30,14 @@ const DOCUMENTS_LAYOUT_OPTIONS = [
 const DOCUMENTS_SORT_OPTIONS = [
   { value: 'newest', label: 'Newest first' },
   { value: 'oldest', label: 'Oldest first' },
+  { value: 'title_asc', label: 'Title A-Z' },
+  { value: 'title_desc', label: 'Title Z-A' },
+];
+const DEFAULT_CANVAS_DOMAIN = 'canvas.instructure.com';
+const TRASH_PAGE_SIZE_OPTIONS = [10, 20, 50];
+const TRASH_SORT_OPTIONS = [
+  { value: 'deleted_newest', label: 'Recently deleted' },
+  { value: 'deleted_oldest', label: 'Oldest deleted' },
   { value: 'title_asc', label: 'Title A-Z' },
   { value: 'title_desc', label: 'Title Z-A' },
 ];
@@ -54,6 +68,12 @@ const SUMMARY_CENTER_SOURCE_OPTIONS = [
   { value: 'cache', label: 'Cache hit' },
   { value: 'huggingface', label: 'HuggingFace' },
   { value: 'fallback', label: 'Fallback' },
+];
+const SUMMARY_CENTER_CHUNK_OPTIONS = [
+  { value: 'all', label: 'All chunks' },
+  { value: 'single', label: '1 chunk' },
+  { value: 'multi', label: '2+ chunks' },
+  { value: 'heavy', label: '5+ chunks' },
 ];
 const WORKSPACE_SETTINGS_TABS = [
   { id: 'general', label: 'General' },
@@ -132,6 +152,14 @@ const DEFAULT_WORKSPACE_SETTINGS = {
   auto_revoke_previous_share_links: false,
   allow_export: true,
 };
+const DEFAULT_SUMMARY_PROGRESS = {
+  active: false,
+  token: '',
+  phase: 'idle',
+  forceRefresh: false,
+  docId: 0,
+  docTitle: '',
+};
 
 const DEFAULT_BULK_RESULT_SUMMARY = null;
 const DEFAULT_TOAST_STATE = { open: false, message: '', tone: 'info' };
@@ -168,6 +196,7 @@ const MAX_STARRED_NOTES_PER_WORKSPACE = 60;
 const MAX_RECENT_NOTES_PER_WORKSPACE = 80;
 const MAX_SUMMARY_HISTORY_PER_WORKSPACE = 60;
 const MAX_UPLOAD_QUEUE_ITEMS = 30;
+const TRASH_FETCH_LIMIT = 200;
 const DEFAULT_FILTERS = { query: '', start: '', end: '', tag: '', category: '', fileType: '' };
 const FILTER_DATE_RANGE_OPTIONS = [
   { id: 'today', label: 'Today', daysBack: 0 },
@@ -219,6 +248,11 @@ const normalizeSummaryCenterSort = (value) => {
 const normalizeSummaryCenterSource = (value) => {
   const next = String(value || '').trim().toLowerCase();
   return SUMMARY_CENTER_SOURCE_OPTIONS.some((item) => item.value === next) ? next : 'all';
+};
+
+const normalizeSummaryCenterChunkFilter = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return SUMMARY_CENTER_CHUNK_OPTIONS.some((item) => item.value === next) ? next : 'all';
 };
 
 const normalizeFileTypeFilter = (value) => {
@@ -273,6 +307,31 @@ const normalizeDocumentsLayout = (value) => {
   return DOCUMENTS_LAYOUT_OPTIONS.some((item) => item.value === next)
     ? next
     : DEFAULT_DOCUMENTS_LAYOUT;
+};
+
+const normalizeTrashPageSize = (value) => {
+  const next = Number(value) || TRASH_PAGE_SIZE_OPTIONS[1];
+  if (TRASH_PAGE_SIZE_OPTIONS.includes(next)) return next;
+  return TRASH_PAGE_SIZE_OPTIONS[1];
+};
+
+const normalizeTrashSort = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  if (TRASH_SORT_OPTIONS.some((item) => item.value === next)) return next;
+  return 'deleted_newest';
+};
+
+const normalizeCanvasDomainInput = (value) => {
+  let next = String(value || '').trim();
+  if (!next) return DEFAULT_CANVAS_DOMAIN;
+  if (next.startsWith('http://') || next.startsWith('https://')) {
+    next = next.split('://', 1)[1] || '';
+  }
+  next = next.split('/', 1)[0].trim().toLowerCase();
+  if (!next) return '';
+  if (!next.includes('.')) return '';
+  if (!/^[a-z0-9.-]{3,255}$/.test(next)) return '';
+  return next;
 };
 
 const toDateInputValue = (date) => {
@@ -515,12 +574,31 @@ const normalizeSummaryHistoryEntry = (raw) => {
   const docId = toPositiveDocId(raw.docId || raw.doc_id || raw.document_id);
   const title = String(raw.title || '').trim().slice(0, 200);
   const summary = String(raw.summary || '').trim();
+  const options = raw.optionsUsed && typeof raw.optionsUsed === 'object'
+    ? raw.optionsUsed
+    : (raw.options_used && typeof raw.options_used === 'object' ? raw.options_used : {});
+  const chunkCount = Math.max(
+    1,
+    Number(raw.chunkCount ?? raw.chunk_count ?? options.chunk_count) || 1
+  );
+  const mergeRounds = Math.max(
+    0,
+    Number(raw.mergeRounds ?? raw.merge_rounds ?? options.merge_rounds) || 0
+  );
+  const textWordCount = Math.max(
+    0,
+    Number(raw.textWordCount ?? raw.text_word_count ?? options.text_word_count) || 0
+  );
+  const textCharCount = Math.max(
+    0,
+    Number(raw.textCharCount ?? raw.text_char_count ?? options.text_char_count) || 0
+  );
   if (!summary) return null;
   return {
     id,
     docId,
     title: title || (docId ? `Note ${docId}` : 'Untitled note'),
-    fileType: String(raw.fileType || '').trim().toLowerCase(),
+    fileType: String(raw.fileType || raw.file_type || '').trim().toLowerCase(),
     summary,
     keywords: Array.isArray(raw.keywords) ? raw.keywords.map((item) => String(item || '').trim()).filter(Boolean) : [],
     keySentences: Array.isArray(raw.keySentences || raw.key_sentences)
@@ -531,6 +609,16 @@ const normalizeSummaryHistoryEntry = (raw) => {
     summarySource: normalizeSummarySource(raw.summarySource || raw.summary_source || 'fallback'),
     summaryNote: String(raw.summaryNote || raw.summary_note || '').trim(),
     summaryLength: String(raw.summaryLength || raw.summary_length || 'medium').trim().toLowerCase() || 'medium',
+    chunkCount,
+    mergeRounds,
+    refreshedFromFile: Boolean(
+      raw.refreshedFromFile ?? raw.refreshed_from_file ?? options.refreshed_from_file
+    ),
+    pdfExtractor: String(raw.pdfExtractor || raw.pdf_extractor || options.pdf_extractor || '').trim(),
+    pdfOcrUsed: Boolean(raw.pdfOcrUsed ?? raw.pdf_ocr_used ?? options.pdf_ocr_used),
+    textWordCount,
+    textCharCount,
+    summarizerModel: String(raw.summarizerModel || raw.summarizer_model || options.summarizer_model || '').trim(),
     generatedAt: String(raw.generatedAt || raw.generated_at || raw.updatedAt || new Date().toISOString()),
   };
 };
@@ -660,7 +748,6 @@ const normalizeAccountRecord = (raw) => {
     return {
       username,
       email: '',
-      authToken: '',
       lastActiveAt: '',
     };
   }
@@ -671,8 +758,7 @@ const normalizeAccountRecord = (raw) => {
   return {
     username,
     email: String(raw.email || '').trim(),
-    authToken: String(raw.authToken || raw.auth_token || '').trim(),
-    lastActiveAt: String(raw.lastActiveAt || ''),
+    lastActiveAt: String(raw.lastActiveAt || raw.last_login || raw.lastLogin || ''),
   };
 };
 
@@ -690,7 +776,6 @@ const normalizeAccounts = (rawList) => {
     map.set(normalized.username, {
       username: normalized.username,
       email: normalized.email || existing.email,
-      authToken: normalized.authToken || existing.authToken || '',
       lastActiveAt: normalized.lastActiveAt || existing.lastActiveAt,
     });
   });
@@ -758,6 +843,7 @@ const normalizeCategory = (value) => {
 const normalizeDocument = (doc) => ({
   ...doc,
   uploadedAt: doc.uploaded_at ?? doc.uploadedAt ?? '',
+  deletedAt: doc.deleted_at ?? doc.deletedAt ?? '',
   lastAccessAt: doc.last_access_at ?? doc.lastAccessAt ?? '',
   contentHtml: doc.content_html ?? doc.contentHtml ?? '',
   category: normalizeCategory(doc.category),
@@ -873,6 +959,20 @@ export default function HomePage() {
   const [savedViews, setSavedViews] = useState([]);
   const [activeSavedViewId, setActiveSavedViewId] = useState('');
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
+  const [trashModalOpen, setTrashModalOpen] = useState(false);
+  const [trashItems, setTrashItems] = useState([]);
+  const [trashTotal, setTrashTotal] = useState(0);
+  const [trashRetentionDays, setTrashRetentionDays] = useState(30);
+  const [trashPurgedCount, setTrashPurgedCount] = useState(0);
+  const [trashLoading, setTrashLoading] = useState(false);
+  const [trashLoadError, setTrashLoadError] = useState('');
+  const [trashActionLoadingId, setTrashActionLoadingId] = useState('');
+  const [selectedTrashDocumentIds, setSelectedTrashDocumentIds] = useState([]);
+  const [trashBulkActionLoading, setTrashBulkActionLoading] = useState(false);
+  const [trashPage, setTrashPage] = useState(1);
+  const [trashPageSize, setTrashPageSize] = useState(TRASH_PAGE_SIZE_OPTIONS[1]);
+  const [trashSort, setTrashSort] = useState('deleted_newest');
+  const [trashQuery, setTrashQuery] = useState('');
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const [dragUploadActive, setDragUploadActive] = useState(false);
   const [uploadQueue, setUploadQueue] = useState([]);
@@ -886,10 +986,12 @@ export default function HomePage() {
   const savedViewsImportInputRef = useRef(null);
   const uploadDragDepthRef = useRef(0);
   const documentsRequestSeqRef = useRef(0);
+  const trashRequestSeqRef = useRef(0);
   const aiImageInputRef = useRef(null);
   const toastTimerRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const inputDialogResolverRef = useRef(null);
+  const summaryProgressTimerRef = useRef(null);
 
   const [filters, setFilters] = useState(DEFAULT_FILTERS);
   const [searchDraft, setSearchDraft] = useState('');
@@ -913,7 +1015,12 @@ export default function HomePage() {
   const [latestInviteLinks, setLatestInviteLinks] = useState([]);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
-  const [savedAccounts, setSavedAccounts] = useState(() => normalizeAccounts(loadAccounts()));
+  const [savedAccounts, setSavedAccounts] = useState(() => {
+    const fromHistory = normalizeAccounts(loadAccountHistory());
+    if (fromHistory.length) return fromHistory;
+    const legacy = normalizeAccounts(loadAccounts());
+    return legacy;
+  });
   const [workspaceState, setWorkspaceState] = useState(() =>
     loadWorkspaceState(sessionStorage.getItem('username') || 'Guest')
   );
@@ -926,6 +1033,8 @@ export default function HomePage() {
   const [summaryCenterQuery, setSummaryCenterQuery] = useState('');
   const [summaryCenterSort, setSummaryCenterSort] = useState('newest');
   const [summaryCenterSource, setSummaryCenterSource] = useState('all');
+  const [summaryCenterModel, setSummaryCenterModel] = useState('all');
+  const [summaryCenterChunk, setSummaryCenterChunk] = useState('all');
   const [summaryCenterExpandedIds, setSummaryCenterExpandedIds] = useState([]);
   const [summaryCenterActionId, setSummaryCenterActionId] = useState('');
   const [starredDragId, setStarredDragId] = useState(0);
@@ -946,7 +1055,14 @@ export default function HomePage() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [uploadCategory, setUploadCategory] = useState('');
+  const [canvasDomain, setCanvasDomain] = useState(DEFAULT_CANVAS_DOMAIN);
+  const [canvasToken, setCanvasToken] = useState('');
+  const [canvasFiles, setCanvasFiles] = useState([]);
+  const [canvasFilesLoading, setCanvasFilesLoading] = useState(false);
+  const [canvasFilesError, setCanvasFilesError] = useState('');
+  const [canvasImportingFileId, setCanvasImportingFileId] = useState('');
 
   const [fileHint, setFileHint] = useState('');
   const fileInputRef = useRef(null);
@@ -1019,19 +1135,38 @@ export default function HomePage() {
     });
     return base;
   }, [summaryHistory]);
+  const summaryCenterModelOptions = useMemo(() => {
+    const modelSet = new Set();
+    summaryHistory.forEach((item) => {
+      const model = String(item?.summarizerModel || '').trim();
+      if (model) modelSet.add(model);
+    });
+    return ['all', ...Array.from(modelSet).sort((a, b) => a.localeCompare(b))];
+  }, [summaryHistory]);
   const summaryHistoryItems = useMemo(() => {
     const query = String(summaryCenterQuery || '').trim().toLowerCase();
     const sourceFilter = normalizeSummaryCenterSource(summaryCenterSource);
+    const modelFilter = String(summaryCenterModel || 'all').trim();
+    const chunkFilter = normalizeSummaryCenterChunkFilter(summaryCenterChunk);
     const sortKey = normalizeSummaryCenterSort(summaryCenterSort);
     const filtered = summaryHistory.filter((item) => {
       if (sourceFilter !== 'all' && normalizeSummarySource(item.summarySource) !== sourceFilter) {
         return false;
       }
+      const itemModel = String(item?.summarizerModel || '').trim();
+      if (modelFilter !== 'all' && itemModel !== modelFilter) {
+        return false;
+      }
+      const chunkCount = Math.max(1, Number(item?.chunkCount) || 1);
+      if (chunkFilter === 'single' && chunkCount !== 1) return false;
+      if (chunkFilter === 'multi' && chunkCount < 2) return false;
+      if (chunkFilter === 'heavy' && chunkCount < 5) return false;
       if (!query) return true;
       const source = [
         item.title,
         item.summary,
         item.fileType,
+        itemModel,
         normalizeSummarySource(item.summarySource),
         Array.isArray(item.keywords) ? item.keywords.join(' ') : '',
       ]
@@ -1048,7 +1183,19 @@ export default function HomePage() {
       sorted.sort((a, b) => toTimeMs(b.generatedAt) - toTimeMs(a.generatedAt));
     }
     return sorted;
-  }, [summaryCenterQuery, summaryCenterSource, summaryCenterSort, summaryHistory]);
+  }, [
+    summaryCenterQuery,
+    summaryCenterSource,
+    summaryCenterModel,
+    summaryCenterChunk,
+    summaryCenterSort,
+    summaryHistory,
+  ]);
+  useEffect(() => {
+    if (summaryCenterModel === 'all') return;
+    if (summaryCenterModelOptions.includes(summaryCenterModel)) return;
+    setSummaryCenterModel('all');
+  }, [summaryCenterModel, summaryCenterModelOptions]);
   const workspaceMemberCount = useMemo(
     () => memberCountOfWorkspace(activeWorkspace, accountName),
     [activeWorkspace, accountName]
@@ -1363,6 +1510,84 @@ export default function HomePage() {
     }
   };
 
+  const fetchTrashDocuments = async ({
+    silent = false,
+    targetPage = trashPage,
+    targetPageSize = trashPageSize,
+    query = trashQuery,
+    sort = trashSort,
+  } = {}) => {
+    const requestSeq = trashRequestSeqRef.current + 1;
+    trashRequestSeqRef.current = requestSeq;
+    const commitIfLatest = (callback) => {
+      if (requestSeq !== trashRequestSeqRef.current) return;
+      callback();
+    };
+    const safePage = Math.max(1, Number(targetPage) || 1);
+    const safePageSize = normalizeTrashPageSize(targetPageSize);
+    const safeQuery = String(query || '').trim();
+    const safeSort = normalizeTrashSort(sort);
+    const offset = (safePage - 1) * safePageSize;
+
+    if (!username || !authToken || !activeWorkspaceId) {
+      commitIfLatest(() => {
+        setTrashItems([]);
+        setTrashTotal(0);
+        setTrashRetentionDays(30);
+        setTrashPurgedCount(0);
+        setTrashLoading(false);
+        setTrashLoadError('');
+      });
+      return;
+    }
+
+    commitIfLatest(() => {
+      if (!silent) setTrashLoading(true);
+      setTrashLoadError('');
+    });
+
+    try {
+      const params = new URLSearchParams({
+        username,
+        limit: String(Math.min(TRASH_FETCH_LIMIT, safePageSize)),
+        offset: String(Math.max(0, offset)),
+        sort: safeSort,
+      });
+      if (safeQuery) params.set('q', safeQuery);
+      if (activeWorkspaceId) params.set('workspace_id', activeWorkspaceId);
+      const res = await fetch(`/api/documents/trash?${params.toString()}`);
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        throw new Error(payload.error || 'Failed to load Trash');
+      }
+
+      const items = Array.isArray(payload?.items)
+        ? payload.items.map((item) => normalizeDocument(item))
+        : [];
+      const total = Number(payload?.total);
+      const retentionDays = Math.max(1, Number(payload?.retention_days) || 30);
+      const purgedCount = Math.max(0, Number(payload?.purged_count) || 0);
+
+      commitIfLatest(() => {
+        setTrashItems(items);
+        setTrashTotal(Number.isFinite(total) ? Math.max(0, total) : items.length);
+        setTrashRetentionDays(retentionDays);
+        setTrashPurgedCount(purgedCount);
+      });
+    } catch (err) {
+      console.error('Failed to fetch trash documents', err);
+      commitIfLatest(() => {
+        setTrashItems([]);
+        setTrashTotal(0);
+        setTrashLoadError(err?.message || 'Failed to load Trash');
+      });
+    } finally {
+      commitIfLatest(() => {
+        setTrashLoading(false);
+      });
+    }
+  };
+
   useEffect(() => {
     fetchDocuments(documentsPage);
   }, [
@@ -1379,6 +1604,27 @@ export default function HomePage() {
     filters.category,
     filters.fileType,
   ]);
+
+  useEffect(() => {
+    if (!trashModalOpen) return;
+    fetchTrashDocuments();
+  }, [trashModalOpen, username, authToken, activeWorkspaceId, trashPage, trashPageSize, trashQuery, trashSort]);
+
+  useEffect(() => {
+    if (!trashModalOpen) {
+      setSelectedTrashDocumentIds([]);
+      setTrashBulkActionLoading(false);
+      return;
+    }
+    const currentIds = new Set(
+      trashItems
+        .map((item) => toPositiveDocId(item?.id))
+        .filter(Boolean)
+    );
+    setSelectedTrashDocumentIds((prev) =>
+      prev.filter((id) => currentIds.has(toPositiveDocId(id)))
+    );
+  }, [trashModalOpen, trashItems]);
 
   useEffect(() => {
     setActiveDocEditMode(false);
@@ -1403,6 +1649,24 @@ export default function HomePage() {
     setBulkCategoryDraft('');
     setBulkTagsDraft('');
     setBulkResultSummary(DEFAULT_BULK_RESULT_SUMMARY);
+    setTrashItems([]);
+    setTrashTotal(0);
+    setTrashPurgedCount(0);
+    setTrashLoadError('');
+    setTrashLoading(false);
+    setTrashActionLoadingId('');
+    setSelectedTrashDocumentIds([]);
+    setTrashBulkActionLoading(false);
+    setTrashPage(1);
+    setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+    setTrashSort('deleted_newest');
+    setTrashQuery('');
+    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+    setCanvasToken('');
+    setCanvasFiles([]);
+    setCanvasFilesLoading(false);
+    setCanvasFilesError('');
+    setCanvasImportingFileId('');
     setDragUploadActive(false);
     setUploadQueue([]);
     setUploadQueueRunning(false);
@@ -1449,6 +1713,9 @@ export default function HomePage() {
       setSummaryHistory([]);
       setSummaryCenterOpen(false);
       setSummaryCenterQuery('');
+      setSummaryCenterModel('all');
+      setSummaryCenterChunk('all');
+      setSummaryProgress(DEFAULT_SUMMARY_PROGRESS);
       setSidebarMenuDocId(null);
       setActiveDoc(null);
       setActiveDocError('');
@@ -1461,10 +1728,33 @@ export default function HomePage() {
       setShowFiles(false);
       setShowAI(false);
       setShortcutsOpen(false);
+      setTrashModalOpen(false);
+      setTrashItems([]);
+      setTrashTotal(0);
+      setTrashPurgedCount(0);
+      setTrashLoadError('');
+      setTrashLoading(false);
+      setTrashActionLoadingId('');
+      setSelectedTrashDocumentIds([]);
+      setTrashBulkActionLoading(false);
+      setTrashPage(1);
+      setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+      setTrashSort('deleted_newest');
+      setTrashQuery('');
+      setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+      setCanvasToken('');
+      setCanvasFiles([]);
+      setCanvasFilesLoading(false);
+      setCanvasFilesError('');
+      setCanvasImportingFileId('');
       setDragUploadActive(false);
       setUploadQueue([]);
       setUploadQueueRunning(false);
       uploadDragDepthRef.current = 0;
+      if (summaryProgressTimerRef.current) {
+        window.clearTimeout(summaryProgressTimerRef.current);
+        summaryProgressTimerRef.current = null;
+      }
       setWorkspaceMenuOpen(false);
       closeWorkspaceDialogs();
       if (message) showToast(message, 'warning');
@@ -1483,7 +1773,6 @@ export default function HomePage() {
           !original ||
           original.username !== item.username ||
           original.email !== item.email ||
-          original.authToken !== item.authToken ||
           original.lastActiveAt !== item.lastActiveAt
         );
       })
@@ -1491,7 +1780,13 @@ export default function HomePage() {
       setSavedAccounts(normalized);
       return;
     }
-    persistAccounts(normalized);
+    persistAccountHistory(
+      normalized.map((item) => ({
+        username: item.username,
+        email: item.email,
+        lastLogin: item.lastActiveAt || new Date().toISOString(),
+      }))
+    );
   }, [savedAccounts]);
 
   useEffect(() => {
@@ -1502,6 +1797,13 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
+    setTrashModalOpen(false);
+    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+    setCanvasToken('');
+    setCanvasFiles([]);
+    setCanvasFilesLoading(false);
+    setCanvasFilesError('');
+    setCanvasImportingFileId('');
   }, [accountName, isLoggedIn, username]);
 
   useEffect(() => {
@@ -1530,11 +1832,18 @@ export default function HomePage() {
   }, [accountName, activeWorkspaceId]);
 
   useEffect(() => {
+    if (summaryProgressTimerRef.current) {
+      window.clearTimeout(summaryProgressTimerRef.current);
+      summaryProgressTimerRef.current = null;
+    }
+    setSummaryProgress(DEFAULT_SUMMARY_PROGRESS);
     const nextHistory = loadSummaryHistory(accountName, activeWorkspaceId);
     setSummaryHistory(nextHistory);
     setSummaryCenterQuery('');
     setSummaryCenterSort('newest');
     setSummaryCenterSource('all');
+    setSummaryCenterModel('all');
+    setSummaryCenterChunk('all');
     setSummaryCenterExpandedIds([]);
     setSummaryCenterActionId('');
     setSummaryCenterOpen(false);
@@ -1649,7 +1958,6 @@ export default function HomePage() {
     const nextAccounts = upsertAccount(savedAccounts, {
       username,
       email: accountEmail,
-      authToken,
       lastActiveAt: new Date().toISOString(),
     });
     setSavedAccounts((prev) => {
@@ -1659,7 +1967,6 @@ export default function HomePage() {
           (item, idx) =>
             item.username === nextAccounts[idx].username &&
             item.email === nextAccounts[idx].email &&
-            item.authToken === nextAccounts[idx].authToken &&
             item.lastActiveAt === nextAccounts[idx].lastActiveAt
         )
       ) {
@@ -1667,7 +1974,7 @@ export default function HomePage() {
       }
       return nextAccounts;
     });
-  }, [username, accountEmail, authToken]);
+  }, [username, accountEmail]);
 
   useEffect(() => {
     let timer = null;
@@ -1701,6 +2008,10 @@ export default function HomePage() {
         inputDialogResolverRef.current(null);
         inputDialogResolverRef.current = null;
       }
+      if (summaryProgressTimerRef.current) {
+        window.clearTimeout(summaryProgressTimerRef.current);
+        summaryProgressTimerRef.current = null;
+      }
       uploadDragDepthRef.current = 0;
     };
   }, []);
@@ -1721,6 +2032,7 @@ export default function HomePage() {
         setWorkspaceSettingsOpen(false);
         setWorkspaceInviteOpen(false);
         setAccountManagerOpen(false);
+        setTrashModalOpen(false);
         setShortcutsOpen(false);
         setInviteCopied(false);
         setDragUploadActive(false);
@@ -1787,11 +2099,32 @@ export default function HomePage() {
       ),
     [documentsTotal, documentsPageSize]
   );
+  const trashPageCount = useMemo(
+    () =>
+      Math.max(
+        1,
+        Math.ceil((Number(trashTotal) || 0) / normalizeTrashPageSize(trashPageSize))
+      ),
+    [trashTotal, trashPageSize]
+  );
+  const trashRangeStart = useMemo(() => {
+    if (!trashTotal) return 0;
+    return (Math.max(1, Number(trashPage) || 1) - 1) * normalizeTrashPageSize(trashPageSize) + 1;
+  }, [trashTotal, trashPage, trashPageSize]);
+  const trashRangeEnd = useMemo(
+    () => Math.min(Number(trashTotal) || 0, trashRangeStart + normalizeTrashPageSize(trashPageSize) - 1),
+    [trashTotal, trashRangeStart, trashPageSize]
+  );
 
   useEffect(() => {
     if (documentsPage <= documentsPageCount) return;
     setDocumentsPage(documentsPageCount);
   }, [documentsPage, documentsPageCount]);
+
+  useEffect(() => {
+    if (trashPage <= trashPageCount) return;
+    setTrashPage(trashPageCount);
+  }, [trashPage, trashPageCount]);
 
   const pageTags = useMemo(() => {
     const bag = new Set();
@@ -2074,6 +2407,19 @@ export default function HomePage() {
   const allDocumentsSelectedOnPage =
     visibleDocumentIds.length > 0 &&
     visibleDocumentIds.every((id) => selectedDocumentIdSet.has(id));
+  const trashSelectedIdSet = useMemo(
+    () =>
+      new Set(
+        selectedTrashDocumentIds
+          .map((id) => toPositiveDocId(id))
+          .filter(Boolean)
+      ),
+    [selectedTrashDocumentIds]
+  );
+  const selectedTrashCount = selectedTrashDocumentIds.length;
+  const allTrashItemsSelectedOnPage =
+    trashItems.length > 0 &&
+    trashItems.every((item) => trashSelectedIdSet.has(toPositiveDocId(item?.id)));
 
   const formatDisplayDate = (value) => formatDisplayDateValue(value);
 
@@ -2160,6 +2506,25 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(0);
   };
 
+  const removeDocumentFromClientState = (docId) => {
+    const removedId = toPositiveDocId(docId);
+    if (!removedId) return;
+    setDocuments((prev) => prev.filter((item) => toPositiveDocId(item.id) !== removedId));
+    setSidebarRecentIds((prev) => prev.filter((id) => toPositiveDocId(id) !== removedId));
+    setSidebarRecentMeta((prev) => {
+      const next = { ...(prev || {}) };
+      delete next[removedId];
+      return next;
+    });
+    setStarredNotes((prev) => prev.filter((item) => toPositiveDocId(item.id) !== removedId));
+    setSummaryHistory((prev) => prev.filter((item) => toPositiveDocId(item.docId) !== removedId));
+    setSelectedDocumentIds((prev) => prev.filter((id) => toPositiveDocId(id) !== removedId));
+    if (toPositiveDocId(activeDoc?.id) === removedId) {
+      clearActiveDocShareState();
+      setActiveDoc(null);
+    }
+  };
+
   const updateWorkspaceSettingsDraft = (patch) => {
     setWorkspaceSettingsDraft((prev) => {
       const merged = {
@@ -2218,6 +2583,25 @@ export default function HomePage() {
     setShowFiles(false);
     setShowAI(false);
     setShortcutsOpen(false);
+    setTrashModalOpen(false);
+    setTrashItems([]);
+    setTrashTotal(0);
+    setTrashPurgedCount(0);
+    setTrashLoadError('');
+    setTrashLoading(false);
+    setTrashActionLoadingId('');
+    setSelectedTrashDocumentIds([]);
+    setTrashBulkActionLoading(false);
+    setTrashPage(1);
+    setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+    setTrashSort('deleted_newest');
+    setTrashQuery('');
+    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+    setCanvasToken('');
+    setCanvasFiles([]);
+    setCanvasFilesLoading(false);
+    setCanvasFilesError('');
+    setCanvasImportingFileId('');
     setDragUploadActive(false);
     setUploadQueue([]);
     setUploadQueueRunning(false);
@@ -2226,56 +2610,27 @@ export default function HomePage() {
     closeWorkspaceDialogs();
 
     if (forgetCurrent && currentUsername) {
-      setSavedAccounts((prev) => prev.filter((item) => item.username !== currentUsername));
+      const nextHistory = removeAccountFromHistory(currentUsername);
+      setSavedAccounts(normalizeAccounts(nextHistory));
     }
   };
 
   const handleSwitchAccount = (account) => {
     const target = normalizeAccountRecord(account);
     if (!target) return;
-
-    sessionStorage.setItem('username', target.username);
-    if (target.email) sessionStorage.setItem('email', target.email);
-    else sessionStorage.removeItem('email');
-    if (target.authToken) {
-      sessionStorage.setItem('auth_token', target.authToken);
-      sessionStorage.setItem('loginAt', new Date().toISOString());
-    } else {
-      sessionStorage.removeItem('auth_token');
-      sessionStorage.removeItem('loginAt');
-    }
-
-    setIsLoggedIn(Boolean(target.authToken));
-    setDocuments([]);
-    setDocumentsTotal(0);
-    setDocumentsPage(1);
-    setDocumentsLoading(false);
-    setDocumentsLoadError('');
-    setAvailableTags([]);
-    setAvailableCategories([]);
-    setSidebarRecentIds([]);
-    setSidebarRecentMeta({});
-    setStarredNotes([]);
-    setSummaryHistory([]);
-    setSummaryCenterOpen(false);
-    setSummaryCenterQuery('');
-    setWorkspaceMenuOpen(false);
-    closeWorkspaceDialogs();
-    setSidebarMenuDocId(null);
-    setActiveDoc(null);
-    setActiveDocError('');
-    setActiveDocLoading(false);
-    setActiveDocFileVersion(0);
-    setActiveDocEditMode(false);
-    setActiveDocDraftHtml('');
-    setActiveDocSaveError('');
-    clearActiveDocShareState();
-    setShowFiles(false);
-    setShowAI(false);
-    setSavedAccounts((prev) => upsertAccount(prev, target));
-    if (!target.authToken) {
-      showToast('This account has no active session token. Please sign in before accessing cloud data.', 'warning');
-    }
+    const nextHistory = saveAccountToHistory({
+      username: target.username,
+      email: target.email,
+    });
+    setSavedAccounts(normalizeAccounts(nextHistory));
+    handleSignOut();
+    navigate('/login', {
+      state: {
+        prefillUsername: target.username,
+        prefillEmail: target.email || '',
+        fromAccountSwitch: true,
+      },
+    });
   };
 
   const handleCreateWorkspace = async () => {
@@ -2622,9 +2977,7 @@ export default function HomePage() {
 
   const handleSaveManualAccount = () => {
     const draft = normalizeAccountRecord(accountDraft);
-    const target = draft?.username === storedUsername && authToken
-      ? { ...draft, authToken }
-      : draft;
+    const target = draft;
     if (!target) {
       showToast('Please enter an account name.', 'warning');
       return;
@@ -2645,7 +2998,8 @@ export default function HomePage() {
       handleSignOut({ forgetCurrent: true });
       return;
     }
-    setSavedAccounts((prev) => prev.filter((item) => item.username !== target));
+    const nextHistory = removeAccountFromHistory(target);
+    setSavedAccounts(normalizeAccounts(nextHistory));
   };
 
   const describeFiles = (fileList) =>
@@ -2704,6 +3058,9 @@ export default function HomePage() {
   };
 
   const toSummaryHistoryEntry = (docLike, result, options = {}) => {
+    const optionsUsed = result?.options_used && typeof result.options_used === 'object'
+      ? result.options_used
+      : {};
     const normalized = normalizeSummaryHistoryEntry({
       id: options.id || createClientId('summary'),
       docId: toPositiveDocId(options.docId ?? docLike?.id ?? result?.document_id),
@@ -2717,6 +3074,15 @@ export default function HomePage() {
       summaryLength: String(result?.options_used?.summary_length || activeWorkspaceSettings.summary_length || 'medium')
         .trim()
         .toLowerCase(),
+      chunkCount: Math.max(1, Number(optionsUsed.chunk_count) || 1),
+      mergeRounds: Math.max(0, Number(optionsUsed.merge_rounds) || 0),
+      refreshedFromFile: Boolean(optionsUsed.refreshed_from_file),
+      pdfExtractor: String(optionsUsed.pdf_extractor || '').trim(),
+      pdfOcrUsed: Boolean(optionsUsed.pdf_ocr_used),
+      textWordCount: Math.max(0, Number(optionsUsed.text_word_count) || 0),
+      textCharCount: Math.max(0, Number(optionsUsed.text_char_count) || 0),
+      summarizerModel: String(optionsUsed.summarizer_model || '').trim(),
+      optionsUsed,
       generatedAt: new Date().toISOString(),
     });
     return normalized;
@@ -2800,6 +3166,131 @@ export default function HomePage() {
       return;
     }
     setFileHint(describeFiles(files));
+  };
+
+  const buildAuthenticatedJsonHeaders = () => {
+    const headers = { 'Content-Type': 'application/json' };
+    if (authToken) {
+      headers.Authorization = `Bearer ${authToken}`;
+    }
+    return headers;
+  };
+
+  const handleFetchCanvasFiles = async () => {
+    if (!isLoggedIn || !username) {
+      showToast('Please sign in first.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceSettings.allow_uploads) {
+      showToast('Uploads are disabled in this workspace settings.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceId) {
+      showToast('Please select a workspace first.', 'warning');
+      return;
+    }
+    const token = String(canvasToken || '').trim();
+    if (!token) {
+      showToast('Please paste a Canvas token first.', 'warning');
+      return;
+    }
+    const domain = normalizeCanvasDomainInput(canvasDomain);
+    if (!domain) {
+      showToast('Please enter a valid Canvas domain.', 'warning');
+      return;
+    }
+
+    setCanvasFilesLoading(true);
+    setCanvasFilesError('');
+    try {
+      const response = await fetch('/api/canvas/files', {
+        method: 'POST',
+        headers: buildAuthenticatedJsonHeaders(),
+        body: JSON.stringify({
+          token,
+          domain,
+          username,
+          workspace_id: activeWorkspaceId,
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to fetch Canvas files');
+      }
+
+      const items = Array.isArray(payload?.files) ? payload.files : [];
+      setCanvasFiles(items);
+      setCanvasDomain(normalizeCanvasDomainInput(payload?.domain || domain) || DEFAULT_CANVAS_DOMAIN);
+      showToast(`Loaded ${items.length} supported file(s) from Canvas.`, 'success');
+    } catch (err) {
+      const message = err?.message || 'Failed to fetch Canvas files';
+      setCanvasFiles([]);
+      setCanvasFilesError(message);
+      showToast(message, 'error');
+    } finally {
+      setCanvasFilesLoading(false);
+    }
+  };
+
+  const handleImportCanvasFile = async (fileItem) => {
+    const fileId = Number(fileItem?.id);
+    if (!Number.isFinite(fileId) || fileId <= 0) {
+      showToast('Invalid Canvas file id.', 'warning');
+      return;
+    }
+    if (!isLoggedIn || !username) {
+      showToast('Please sign in first.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceSettings.allow_uploads) {
+      showToast('Uploads are disabled in this workspace settings.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceId) {
+      showToast('Please select a workspace first.', 'warning');
+      return;
+    }
+    const token = String(canvasToken || '').trim();
+    if (!token) {
+      showToast('Please paste a Canvas token first.', 'warning');
+      return;
+    }
+    const domain = normalizeCanvasDomainInput(canvasDomain);
+    if (!domain) {
+      showToast('Please enter a valid Canvas domain.', 'warning');
+      return;
+    }
+
+    setCanvasImportingFileId(String(fileId));
+    try {
+      const response = await fetch('/api/canvas/import', {
+        method: 'POST',
+        headers: buildAuthenticatedJsonHeaders(),
+        body: JSON.stringify({
+          token,
+          domain,
+          file_id: fileId,
+          username,
+          workspace_id: activeWorkspaceId,
+          category: String(uploadCategory || '').trim(),
+        }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload?.error || 'Failed to import Canvas file');
+      }
+
+      const shouldRefetchViaPageReset = documentsPage !== 1;
+      setDocumentsPage(1);
+      if (!shouldRefetchViaPageReset) {
+        await fetchDocuments(1);
+      }
+      showToast(payload?.message || `Imported "${fileItem?.filename || 'Canvas file'}".`, 'success');
+    } catch (err) {
+      showToast(err?.message || 'Failed to import Canvas file', 'error');
+    } finally {
+      setCanvasImportingFileId('');
+    }
   };
 
   const uploadSingleFile = async (file, activeUser) => {
@@ -3113,9 +3604,63 @@ export default function HomePage() {
     aiImageInputRef.current?.click();
   };
 
+  const startSummaryProgress = ({ forceRefresh = false, docId = 0, docTitle = '' } = {}) => {
+    if (summaryProgressTimerRef.current) {
+      window.clearTimeout(summaryProgressTimerRef.current);
+      summaryProgressTimerRef.current = null;
+    }
+    const token = createClientId('summary-progress');
+    const nextDocId = toPositiveDocId(docId);
+    const shouldRefreshText = Boolean(forceRefresh && nextDocId > 0);
+    setSummaryProgress({
+      active: true,
+      token,
+      phase: shouldRefreshText ? 'refreshing' : 'summarizing',
+      forceRefresh: shouldRefreshText,
+      docId: nextDocId,
+      docTitle: String(docTitle || '').trim(),
+    });
+    if (shouldRefreshText) {
+      summaryProgressTimerRef.current = window.setTimeout(() => {
+        setSummaryProgress((prev) => {
+          if (!prev.active || prev.token !== token) return prev;
+          return {
+            ...prev,
+            phase: 'summarizing',
+          };
+        });
+      }, 1800);
+    }
+    return token;
+  };
+
+  const stopSummaryProgress = (token = '') => {
+    if (summaryProgressTimerRef.current) {
+      window.clearTimeout(summaryProgressTimerRef.current);
+      summaryProgressTimerRef.current = null;
+    }
+    setSummaryProgress((prev) => {
+      if (!prev.active) return prev;
+      if (token && prev.token && prev.token !== token) return prev;
+      return DEFAULT_SUMMARY_PROGRESS;
+    });
+  };
+
+  const summaryProgressLabel = useMemo(() => {
+    if (!summaryProgress.active) return '';
+    if (summaryProgress.forceRefresh && summaryProgress.phase === 'refreshing') {
+      return 'Refreshing PDF text from source file...';
+    }
+    if (summaryProgress.forceRefresh) {
+      return 'Running full-document chunk summary...';
+    }
+    return 'Generating summary...';
+  }, [summaryProgress]);
+
   const requestSummary = async ({
     text = '',
     docId = 0,
+    docTitle = '',
     trackLoading = true,
     silentError = false,
     forceRefresh = false,
@@ -3131,6 +3676,13 @@ export default function HomePage() {
     if (safeText) payload.text = safeText;
     if (safeDocId > 0) payload.doc_id = safeDocId;
     if (forceRefresh) payload.force_refresh = true;
+    const progressToken = trackLoading
+      ? startSummaryProgress({
+          forceRefresh,
+          docId: safeDocId,
+          docTitle: String(docTitle || '').trim(),
+        })
+      : '';
 
     if (trackLoading) setIsAnalyzing(true);
     try {
@@ -3152,7 +3704,10 @@ export default function HomePage() {
       }
       return null;
     } finally {
-      if (trackLoading) setIsAnalyzing(false);
+      if (trackLoading) {
+        setIsAnalyzing(false);
+        stopSummaryProgress(progressToken);
+      }
     }
   };
 
@@ -3168,7 +3723,11 @@ export default function HomePage() {
     }
 
     setAiHideInputText(false);
-    const data = await requestSummary({ text: extractedText, forceRefresh });
+    const data = await requestSummary({
+      text: extractedText,
+      forceRefresh,
+      docTitle: forceRefresh ? 'Manual text' : '',
+    });
     if (!data) return;
     setAnalysisResult(data);
     const docId = toPositiveDocId(data?.document_id);
@@ -3270,6 +3829,14 @@ export default function HomePage() {
       summary_note: entry.summaryNote,
       options_used: {
         summary_length: entry.summaryLength,
+        chunk_count: entry.chunkCount,
+        merge_rounds: entry.mergeRounds,
+        refreshed_from_file: entry.refreshedFromFile,
+        pdf_extractor: entry.pdfExtractor,
+        pdf_ocr_used: entry.pdfOcrUsed,
+        text_word_count: entry.textWordCount,
+        text_char_count: entry.textCharCount,
+        summarizer_model: entry.summarizerModel,
       },
       document_id: entry.docId || null,
       text_source: 'summary_history',
@@ -3361,6 +3928,14 @@ export default function HomePage() {
       summary_source: normalizeSummarySource(entry.summarySource),
       summary_note: entry.summaryNote || '',
       summary_length: entry.summaryLength || '',
+      chunk_count: entry.chunkCount || 1,
+      merge_rounds: entry.mergeRounds || 0,
+      refreshed_from_file: Boolean(entry.refreshedFromFile),
+      pdf_extractor: entry.pdfExtractor || '',
+      pdf_ocr_used: Boolean(entry.pdfOcrUsed),
+      text_word_count: entry.textWordCount || 0,
+      text_char_count: entry.textCharCount || 0,
+      summarizer_model: entry.summarizerModel || '',
       generated_at: entry.generatedAt || '',
     }));
     const blob = new Blob([JSON.stringify(payload, null, 2)], {
@@ -3383,10 +3958,16 @@ export default function HomePage() {
     }
     const safeEntryId = String(entry?.id || '').trim();
     setSummaryCenterActionId(safeEntryId || `doc-${targetDocId}`);
+    const progressToken = startSummaryProgress({
+      forceRefresh: true,
+      docId: targetDocId,
+      docTitle: String(entry?.title || '').trim(),
+    });
     try {
       const result = await requestSummary({
         docId: targetDocId,
         text: '',
+        docTitle: String(entry?.title || '').trim(),
         trackLoading: false,
         forceRefresh: true,
       });
@@ -3406,6 +3987,7 @@ export default function HomePage() {
       }
       showToast('Summary rebuilt successfully.', 'success');
     } finally {
+      stopSummaryProgress(progressToken);
       setSummaryCenterActionId('');
     }
   };
@@ -3434,6 +4016,7 @@ export default function HomePage() {
     const result = await requestSummary({
       text: docId > 0 ? '' : text,
       docId,
+      docTitle: String(doc?.title || '').trim(),
       forceRefresh,
     });
     if (!result) return;
@@ -3638,6 +4221,25 @@ export default function HomePage() {
       setSummaryCenterOpen(false);
       setSummaryCenterQuery('');
       setSidebarMenuDocId(null);
+      setTrashModalOpen(false);
+      setTrashItems([]);
+      setTrashTotal(0);
+      setTrashPurgedCount(0);
+      setTrashLoadError('');
+      setTrashLoading(false);
+      setTrashActionLoadingId('');
+      setSelectedTrashDocumentIds([]);
+      setTrashBulkActionLoading(false);
+      setTrashPage(1);
+      setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+      setTrashSort('deleted_newest');
+      setTrashQuery('');
+      setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+      setCanvasToken('');
+      setCanvasFiles([]);
+      setCanvasFilesLoading(false);
+      setCanvasFilesError('');
+      setCanvasImportingFileId('');
       setActiveDoc(null);
       setActiveDocError('');
       setActiveDocLoading(false);
@@ -3818,11 +4420,244 @@ export default function HomePage() {
     setToastState((prev) => ({ ...prev, open: false }));
   };
 
+  const handleOpenTrashModal = () => {
+    setTrashModalOpen(true);
+  };
+
+  const toggleTrashDocumentSelection = (docId) => {
+    const safeId = toPositiveDocId(docId);
+    if (!safeId) return;
+    setSelectedTrashDocumentIds((prev) => {
+      const has = prev.some((id) => toPositiveDocId(id) === safeId);
+      if (has) {
+        return prev.filter((id) => toPositiveDocId(id) !== safeId);
+      }
+      return [...prev, safeId];
+    });
+  };
+
+  const toggleSelectAllTrashOnPage = () => {
+    const visibleIds = trashItems
+      .map((item) => toPositiveDocId(item?.id))
+      .filter(Boolean);
+    if (!visibleIds.length) return;
+    if (allTrashItemsSelectedOnPage) {
+      setSelectedTrashDocumentIds((prev) =>
+        prev.filter((id) => !visibleIds.includes(toPositiveDocId(id)))
+      );
+      return;
+    }
+    setSelectedTrashDocumentIds((prev) => {
+      const merged = new Set(prev.map((id) => toPositiveDocId(id)).filter(Boolean));
+      visibleIds.forEach((id) => merged.add(id));
+      return Array.from(merged);
+    });
+  };
+
+  const clearSelectedTrashDocuments = () => {
+    setSelectedTrashDocumentIds([]);
+  };
+
+  const handleBulkRestoreFromTrash = async () => {
+    const selectedIds = Array.from(new Set(
+      selectedTrashDocumentIds.map((id) => toPositiveDocId(id)).filter(Boolean)
+    ));
+    if (!selectedIds.length) {
+      showToast('Please select at least one trashed document.', 'warning');
+      return;
+    }
+
+    setTrashBulkActionLoading(true);
+    try {
+      const results = await Promise.all(selectedIds.map(async (docId) => {
+        try {
+          const res = await fetch(`/api/documents/${docId}/restore`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: username || '' }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Restore failed');
+          return { id: docId, ok: true };
+        } catch (err) {
+          return { id: docId, ok: false, message: err?.message || 'Restore failed' };
+        }
+      }));
+
+      const successIds = results.filter((item) => item.ok).map((item) => toPositiveDocId(item.id)).filter(Boolean);
+      const failedCount = results.length - successIds.length;
+      const shouldMoveToPreviousTrashPage =
+        trashPage > 1 && successIds.length > 0 && successIds.length >= trashItems.length;
+
+      if (successIds.length) {
+        await fetchDocuments(documentsPage);
+      }
+      setSelectedTrashDocumentIds((prev) =>
+        prev.filter((id) => !successIds.includes(toPositiveDocId(id)))
+      );
+
+      if (shouldMoveToPreviousTrashPage) {
+        setTrashPage((prev) => Math.max(1, prev - 1));
+      } else {
+        void fetchTrashDocuments({ silent: true });
+      }
+
+      if (failedCount) {
+        showToast(`Restore selected: ${successIds.length} succeeded, ${failedCount} failed.`, 'warning');
+      } else {
+        showToast(`Restored ${successIds.length} document(s).`, 'success');
+      }
+    } finally {
+      setTrashBulkActionLoading(false);
+    }
+  };
+
+  const handleBulkDeleteForeverFromTrash = async () => {
+    const selectedIds = Array.from(new Set(
+      selectedTrashDocumentIds.map((id) => toPositiveDocId(id)).filter(Boolean)
+    ));
+    if (!selectedIds.length) {
+      showToast('Please select at least one trashed document.', 'warning');
+      return;
+    }
+
+    const confirmed = await requestConfirmation({
+      title: `Delete ${selectedIds.length} selected item(s) forever?`,
+      description: 'This removes files and metadata permanently.',
+      confirmLabel: 'Delete Forever',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    setTrashBulkActionLoading(true);
+    try {
+      const results = await Promise.all(selectedIds.map(async (docId) => {
+        try {
+          const res = await fetch(`/api/documents/${docId}`, {
+            method: 'DELETE',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ username: username || '', permanent: true }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) throw new Error(data.error || 'Permanent delete failed');
+          return { id: docId, ok: true, warning: String(data.warning || '').trim() };
+        } catch (err) {
+          return { id: docId, ok: false, message: err?.message || 'Permanent delete failed' };
+        }
+      }));
+
+      const successItems = results.filter((item) => item.ok);
+      const successIds = successItems.map((item) => toPositiveDocId(item.id)).filter(Boolean);
+      const failedCount = results.length - successIds.length;
+      const warningCount = successItems.filter((item) => item.warning).length;
+      const shouldMoveToPreviousTrashPage =
+        trashPage > 1 && successIds.length > 0 && successIds.length >= trashItems.length;
+
+      successIds.forEach((docId) => {
+        removeDocumentFromClientState(docId);
+      });
+      if (successIds.length) {
+        await fetchDocuments(documentsPage);
+      }
+
+      setSelectedTrashDocumentIds((prev) =>
+        prev.filter((id) => !successIds.includes(toPositiveDocId(id)))
+      );
+
+      if (shouldMoveToPreviousTrashPage) {
+        setTrashPage((prev) => Math.max(1, prev - 1));
+      } else {
+        void fetchTrashDocuments({ silent: true });
+      }
+
+      if (failedCount) {
+        showToast(`Delete forever: ${successIds.length} succeeded, ${failedCount} failed.`, 'warning');
+      } else if (warningCount) {
+        showToast(`Deleted ${successIds.length} item(s). ${warningCount} storage warning(s).`, 'warning');
+      } else {
+        showToast(`Deleted ${successIds.length} item(s) permanently.`, 'success');
+      }
+    } finally {
+      setTrashBulkActionLoading(false);
+    }
+  };
+
+  const handleRestoreFromTrash = async (doc) => {
+    const docId = toPositiveDocId(doc?.id);
+    if (!docId) return;
+    const shouldMoveToPreviousTrashPage = trashPage > 1 && trashItems.length <= 1;
+    setTrashActionLoadingId(`restore-${docId}`);
+    try {
+      const res = await fetch(`/api/documents/${docId}/restore`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username || '' }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Restore failed');
+
+      await fetchDocuments(documentsPage);
+      if (shouldMoveToPreviousTrashPage) {
+        setTrashPage((prev) => Math.max(1, prev - 1));
+      } else {
+        void fetchTrashDocuments({ silent: true });
+      }
+      showToast(data.message || 'Document restored.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to restore document.', 'error');
+    } finally {
+      setTrashActionLoadingId('');
+    }
+  };
+
+  const handleDeleteForeverFromTrash = async (doc) => {
+    const docId = toPositiveDocId(doc?.id);
+    if (!docId) return;
+    const shouldMoveToPreviousTrashPage = trashPage > 1 && trashItems.length <= 1;
+    const shouldDelete = await requestConfirmation({
+      title: `Delete "${doc?.title || `Note ${docId}`}" forever?`,
+      description: 'This removes the file and metadata permanently.',
+      confirmLabel: 'Delete Forever',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldDelete) return;
+
+    setTrashActionLoadingId(`delete-${docId}`);
+    try {
+      const res = await fetch(`/api/documents/${docId}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: username || '', permanent: true }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Permanent delete failed');
+
+      removeDocumentFromClientState(docId);
+      await fetchDocuments(documentsPage);
+      if (shouldMoveToPreviousTrashPage) {
+        setTrashPage((prev) => Math.max(1, prev - 1));
+      } else {
+        void fetchTrashDocuments({ silent: true });
+      }
+      if (data.warning) {
+        showToast(`Deleted permanently. ${data.warning}`, 'warning');
+      } else {
+        showToast(data.message || 'Document deleted permanently.', 'success');
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to delete permanently.', 'error');
+    } finally {
+      setTrashActionLoadingId('');
+    }
+  };
+
   const handleDelete = async (doc) => {
     const shouldDelete = await requestConfirmation({
-      title: `Delete "${doc.title}"?`,
-      description: 'This note will be removed permanently.',
-      confirmLabel: 'Delete',
+      title: `Move "${doc.title}" to Trash?`,
+      description: `This note will stay in Trash for ${trashRetentionDays} day(s) before auto-delete.`,
+      confirmLabel: 'Move to Trash',
       cancelLabel: 'Cancel',
       danger: true,
     });
@@ -3834,34 +4669,25 @@ export default function HomePage() {
         body: JSON.stringify({ username: username || '' }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || 'Delete failed');
+      if (!res.ok) throw new Error(data.error || 'Move to Trash failed');
 
-      const removedId = Number(doc.id);
+      const removedId = toPositiveDocId(doc.id);
       const nextTotal = Math.max(0, (Number(documentsTotal) || 0) - 1);
       const shouldMoveToPreviousPage = documentsPage > 1 && documents.length <= 1;
 
-      setDocuments((prev) => prev.filter((item) => Number(item.id) !== removedId));
+      removeDocumentFromClientState(removedId);
       setDocumentsTotal(nextTotal);
-      setSidebarRecentIds((prev) => prev.filter((id) => id !== removedId));
-      setSidebarRecentMeta((prev) => {
-        const next = { ...(prev || {}) };
-        delete next[removedId];
-        return next;
-      });
-      setStarredNotes((prev) => prev.filter((item) => toPositiveDocId(item.id) !== removedId));
-      setSummaryHistory((prev) => prev.filter((item) => toPositiveDocId(item.docId) !== removedId));
-      setSelectedDocumentIds((prev) => prev.filter((id) => Number(id) !== removedId));
-      if (activeDoc?.id === doc.id) {
-        clearActiveDocShareState();
-      }
-      setActiveDoc((prev) => (prev?.id === doc.id ? null : prev));
       if (shouldMoveToPreviousPage) {
         setDocumentsPage((prev) => Math.max(1, prev - 1));
       } else {
         await fetchDocuments(documentsPage);
       }
+      if (trashModalOpen) {
+        void fetchTrashDocuments({ silent: true });
+      }
+      showToast(data.message || 'Document moved to Trash.', data.already_deleted ? 'info' : 'success');
     } catch (err) {
-      showToast(err.message || 'Delete failed', 'error');
+      showToast(err.message || 'Move to Trash failed', 'error');
     }
   };
 
@@ -3953,16 +4779,16 @@ export default function HomePage() {
       return;
     }
     const shouldDelete = await requestConfirmation({
-      title: `Delete ${selectedCount} selected note(s)?`,
-      description: 'This action cannot be undone.',
-      confirmLabel: 'Delete',
+      title: `Move ${selectedCount} selected note(s) to Trash?`,
+      description: `You can restore items from Trash within ${trashRetentionDays} day(s).`,
+      confirmLabel: 'Move to Trash',
       cancelLabel: 'Cancel',
       danger: true,
     });
     if (!shouldDelete) return;
 
-    await runBulkAction(
-      'Delete selected documents',
+    const successItems = await runBulkAction(
+      'Move selected documents to Trash',
       async (docId) => {
         const res = await fetch(`/api/documents/${docId}`, {
           method: 'DELETE',
@@ -3970,7 +4796,7 @@ export default function HomePage() {
           body: JSON.stringify({ username: username || '' }),
         });
         const data = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(data.error || 'Delete failed');
+        if (!res.ok) throw new Error(data.error || 'Move to Trash failed');
         return data;
       },
       {
@@ -3987,6 +4813,9 @@ export default function HomePage() {
         },
       }
     );
+    if (successItems.length && trashModalOpen) {
+      void fetchTrashDocuments({ silent: true });
+    }
   };
 
   const handleBulkApplyCategory = async () => {
@@ -4862,6 +5691,7 @@ export default function HomePage() {
         workspaceSettingsOpen ||
         workspaceInviteOpen ||
         accountManagerOpen ||
+        trashModalOpen ||
         shortcutsOpen;
 
       if (blockingModalOpen && key !== 'escape') return;
@@ -4907,6 +5737,7 @@ export default function HomePage() {
     workspaceSettingsOpen,
     workspaceInviteOpen,
     accountManagerOpen,
+    trashModalOpen,
     shortcutsOpen,
   ]);
 
@@ -5373,8 +6204,29 @@ export default function HomePage() {
         <main id="main" className="notion-content" role="main">
           {!isLoggedIn && (
             <div id="login-warning" className="notion-warning" role="alert">
-              You are not signed in yet. Uploading, viewing, deleting, and tag editing require sign-in.
+              You are not signed in yet. Uploading, viewing, summarizing, deleting, and tag editing require sign-in.
             </div>
+          )}
+
+          {summaryProgress.active && (
+            <section className="notion-summary-progress" aria-live="polite">
+              <div className="notion-summary-progress-head">
+                <strong>{summaryProgressLabel}</strong>
+                {summaryProgress.docTitle && (
+                  <span className="muted tiny">Document: {summaryProgress.docTitle}</span>
+                )}
+              </div>
+              {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
+                <div className="notion-summary-progress-steps" role="status">
+                  <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
+                    1. Refresh full PDF text
+                  </span>
+                  <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
+                    2. Chunk and summarize
+                  </span>
+                </div>
+              )}
+            </section>
           )}
 
           {(activeDocLoading || activeDocError || activeDoc) && (
@@ -5423,11 +6275,11 @@ export default function HomePage() {
                           disabled={!activeWorkspaceSettings.allow_ai_tools}
                           title={
                             activeWorkspaceSettings.allow_ai_tools
-                              ? 'Bypass cache and regenerate summary'
+                              ? 'Bypass cache and refresh document text before summarizing'
                               : 'AI is disabled in workspace settings'
                           }
                         >
-                          Rebuild Summary
+                          Rebuild (Refresh Text)
                         </button>
                         <button
                           type="button"
@@ -5611,6 +6463,12 @@ export default function HomePage() {
                           tags={activeDoc.tags}
                           downloadUrl={activeDocFileUrl}
                           editable={activeWorkspaceSettings.allow_note_editing}
+                          onSummarizeDocument={() => handleUseDocumentForAI(activeDoc)}
+                          canSummarize={isLoggedIn && activeWorkspaceSettings.allow_ai_tools}
+                          isSummarizing={isAnalyzing}
+                          summarizeDisabledHint={
+                            isLoggedIn ? 'AI is disabled in workspace settings' : 'Please sign in'
+                          }
                           saveLoading={activeDocSaveLoading}
                           saveError={activeDocSaveError}
                           onClearSaveError={() => setActiveDocSaveError('')}
@@ -6201,6 +7059,86 @@ export default function HomePage() {
                           </section>
                         )}
                       </form>
+                      <section className="notion-canvas-import" aria-label="Canvas import">
+                        <div className="notion-canvas-import-head">
+                          <h3>Import from Canvas (PAT)</h3>
+                          <p className="muted tiny">
+                            For MVP testing. Token is used only for requests and is not saved on server.
+                          </p>
+                        </div>
+                        <div className="notion-canvas-import-controls">
+                          <label className="notion-results-control" htmlFor="canvas-domain-input">
+                            <span>Canvas Domain</span>
+                            <input
+                              id="canvas-domain-input"
+                              type="text"
+                              value={canvasDomain}
+                              onChange={(event) => setCanvasDomain(event.target.value)}
+                              placeholder="canvas.yourschool.edu"
+                              autoComplete="off"
+                              disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
+                            />
+                          </label>
+                          <label className="notion-results-control notion-canvas-token-control" htmlFor="canvas-token-input">
+                            <span>Personal Access Token</span>
+                            <input
+                              id="canvas-token-input"
+                              type="password"
+                              value={canvasToken}
+                              onChange={(event) => setCanvasToken(event.target.value)}
+                              placeholder="Paste Canvas token"
+                              autoComplete="off"
+                              disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
+                            />
+                          </label>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={handleFetchCanvasFiles}
+                            disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
+                          >
+                            {canvasFilesLoading ? 'Loading...' : 'Get Files'}
+                          </button>
+                        </div>
+                        {canvasFilesError && <p className="muted tiny">Canvas: {canvasFilesError}</p>}
+                        {!!canvasFiles.length && (
+                          <>
+                            <p className="muted tiny">
+                              {canvasFiles.length} supported file(s) ready to import.
+                            </p>
+                            <ul className="notion-canvas-file-list">
+                              {canvasFiles.slice(0, 24).map((item) => {
+                                const fileId = Number(item?.id) || 0;
+                                const importing = canvasImportingFileId === String(fileId);
+                                return (
+                                  <li key={`canvas-file-${fileId}`}>
+                                    <div>
+                                      <strong>{item?.filename || `File ${fileId}`}</strong>
+                                      <span>
+                                        {(item?.file_type || '').toUpperCase() || 'FILE'} ·{' '}
+                                        {formatFileSize(item?.size)}
+                                      </span>
+                                    </div>
+                                    <button
+                                      type="button"
+                                      className="btn btn-primary"
+                                      onClick={() => void handleImportCanvasFile(item)}
+                                      disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
+                                    >
+                                      {importing ? 'Importing...' : 'Import'}
+                                    </button>
+                                  </li>
+                                );
+                              })}
+                            </ul>
+                            {canvasFiles.length > 24 && (
+                              <p className="muted tiny">
+                                Showing first 24 files. Refine in Canvas or import in batches.
+                              </p>
+                            )}
+                          </>
+                        )}
+                      </section>
                       <p className="notion-upload-drop-hint">
                         Drag & drop files here for quick upload.
                       </p>
@@ -6285,6 +7223,15 @@ export default function HomePage() {
                       >
                         {documentsLoading ? 'Refreshing...' : 'Refresh'}
                       </button>
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={handleOpenTrashModal}
+                        disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
+                        title="Open Trash"
+                      >
+                        Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
+                      </button>
                     </div>
                   </div>
                   <div className="notion-files-summary-bar">
@@ -6352,7 +7299,7 @@ export default function HomePage() {
                     <section className="notion-bulk-panel" aria-label="Bulk actions">
                       <div className="notion-bulk-panel-head">
                         <h3>{selectedDocumentCount} selected</h3>
-                        <p>Edit or delete selected notes together.</p>
+                        <p>Edit selected notes together or move them to Trash.</p>
                       </div>
                       <div className="notion-bulk-controls">
                         <label className="notion-results-control" htmlFor="bulk-category-input">
@@ -6457,7 +7404,7 @@ export default function HomePage() {
                           onClick={handleBulkDelete}
                           disabled={bulkActionLoading || documentsLoading || selectAllMatchedLoading}
                         >
-                          {bulkActionLoading ? 'Processing...' : 'Delete Selected'}
+                          {bulkActionLoading ? 'Processing...' : 'Move to Trash'}
                         </button>
                       </div>
                     </section>
@@ -6644,6 +7591,26 @@ export default function HomePage() {
                 <small>Fallback</small>
               </span>
             </div>
+            {summaryProgress.active && (
+              <section className="notion-summary-progress" aria-live="polite">
+                <div className="notion-summary-progress-head">
+                  <strong>{summaryProgressLabel}</strong>
+                  {summaryProgress.docTitle && (
+                    <span className="muted tiny">Document: {summaryProgress.docTitle}</span>
+                  )}
+                </div>
+                {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
+                  <div className="notion-summary-progress-steps" role="status">
+                    <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
+                      1. Refresh full PDF text
+                    </span>
+                    <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
+                      2. Chunk and summarize
+                    </span>
+                  </div>
+                )}
+              </section>
+            )}
             <div className="notion-summary-center-toolbar">
               <div className="notion-summary-center-search">
                 <input
@@ -6678,6 +7645,34 @@ export default function HomePage() {
                   >
                     {SUMMARY_CENTER_SORT_OPTIONS.map((item) => (
                       <option key={`summary-sort-${item.value}`} value={item.value}>
+                        {item.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label htmlFor="summary-center-model-select">
+                  <span>Model</span>
+                  <select
+                    id="summary-center-model-select"
+                    value={summaryCenterModel}
+                    onChange={(event) => setSummaryCenterModel(String(event.target.value || 'all').trim() || 'all')}
+                  >
+                    {summaryCenterModelOptions.map((item) => (
+                      <option key={`summary-model-${item}`} value={item}>
+                        {item === 'all' ? 'All models' : item}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label htmlFor="summary-center-chunk-select">
+                  <span>Chunking</span>
+                  <select
+                    id="summary-center-chunk-select"
+                    value={summaryCenterChunk}
+                    onChange={(event) => setSummaryCenterChunk(normalizeSummaryCenterChunkFilter(event.target.value))}
+                  >
+                    {SUMMARY_CENTER_CHUNK_OPTIONS.map((item) => (
+                      <option key={`summary-chunk-${item.value}`} value={item.value}>
                         {item.label}
                       </option>
                     ))}
@@ -6725,7 +7720,10 @@ export default function HomePage() {
                       <strong>{entry.title}</strong>
                       <span>
                         {(entry.fileType || 'text').toUpperCase()} · {formatDateTimeLabel(entry.generatedAt)} ·{' '}
-                        {getSummarySourceLabel(entry.summarySource)}
+                        {getSummarySourceLabel(entry.summarySource)} · {entry.chunkCount || 1} chunk
+                        {(entry.chunkCount || 1) > 1 ? 's' : ''}
+                        {entry.mergeRounds ? ` · merge ${entry.mergeRounds}` : ''}
+                        {entry.refreshedFromFile ? ' · refreshed text' : ''}
                       </span>
                     </div>
                     <p
@@ -6735,6 +7733,9 @@ export default function HomePage() {
                     >
                       {entry.summary}
                     </p>
+                    {entry.summaryNote && (
+                      <p className="muted tiny">{entry.summaryNote}</p>
+                    )}
                     {entry.keywords.length > 0 && (
                       <div className="notion-summary-history-tags">
                         {entry.keywords.slice(0, 10).map((keyword) => (
@@ -6768,8 +7769,9 @@ export default function HomePage() {
                         className="btn"
                         onClick={() => handleRebuildSummaryHistoryItem(entry)}
                         disabled={summaryCenterActionId === String(entry.id)}
+                        title="Bypass cache and refresh document text before summarizing"
                       >
-                        {summaryCenterActionId === String(entry.id) ? 'Rebuilding...' : 'Rebuild'}
+                        {summaryCenterActionId === String(entry.id) ? 'Rebuilding...' : 'Rebuild + Refresh'}
                       </button>
                       <button
                         type="button"
@@ -6794,6 +7796,258 @@ export default function HomePage() {
             )}
             <div className="notion-modal-actions">
               <button type="button" className="btn" onClick={() => setSummaryCenterOpen(false)}>
+                Close
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {trashModalOpen && (
+        <div
+          className="notion-modal-backdrop"
+          role="presentation"
+          onClick={() => setTrashModalOpen(false)}
+        >
+          <section
+            className="notion-modal-card notion-trash-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="trash-modal-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="notion-trash-head">
+              <div>
+                <h3 id="trash-modal-title">Trash</h3>
+                <p className="notion-settings-help">
+                  Notes in Trash are auto-deleted after {trashRetentionDays} day(s).
+                </p>
+              </div>
+              <div className="notion-trash-head-actions">
+                <span className="notion-summary-chip">Items {trashTotal}</span>
+                {!!selectedTrashCount && (
+                  <span className="notion-summary-chip is-selected">
+                    Selected {selectedTrashCount}
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="notion-trash-toolbar">
+              <label className="notion-results-control notion-trash-search-control" htmlFor="trash-search-input">
+                <span>Search Trash</span>
+                <input
+                  id="trash-search-input"
+                  type="text"
+                  placeholder="Search title, tags, category..."
+                  value={trashQuery}
+                  onChange={(event) => {
+                    setTrashQuery(event.target.value);
+                    setTrashPage(1);
+                  }}
+                />
+              </label>
+              <label className="notion-results-control" htmlFor="trash-sort-select">
+                <span>Sort</span>
+                <select
+                  id="trash-sort-select"
+                  value={trashSort}
+                  onChange={(event) => {
+                    setTrashSort(normalizeTrashSort(event.target.value));
+                    setTrashPage(1);
+                  }}
+                >
+                  {TRASH_SORT_OPTIONS.map((item) => (
+                    <option key={`trash-sort-${item.value}`} value={item.value}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="notion-results-control" htmlFor="trash-page-size-select">
+                <span>Per page</span>
+                <select
+                  id="trash-page-size-select"
+                  value={trashPageSize}
+                  onChange={(event) => {
+                    setTrashPageSize(normalizeTrashPageSize(Number(event.target.value) || TRASH_PAGE_SIZE_OPTIONS[1]));
+                    setTrashPage(1);
+                  }}
+                >
+                  {TRASH_PAGE_SIZE_OPTIONS.map((size) => (
+                    <option key={`trash-page-size-${size}`} value={size}>
+                      {size}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <button
+                type="button"
+                className="btn"
+                onClick={() => fetchTrashDocuments()}
+                disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+              >
+                {trashLoading ? 'Refreshing...' : 'Refresh'}
+              </button>
+            </div>
+
+            <p className="muted tiny">
+              Showing {trashRangeStart}-{trashRangeEnd} of {trashTotal} item(s)
+              {trashQuery.trim() ? ` for "${trashQuery.trim()}"` : ''}.
+            </p>
+
+            {!!trashItems.length && (
+              <div className="notion-trash-bulk-actions">
+                <div className="notion-trash-bulk-buttons">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={toggleSelectAllTrashOnPage}
+                    disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+                  >
+                    {allTrashItemsSelectedOnPage ? 'Unselect Page' : 'Select Page'}
+                  </button>
+                  {!!selectedTrashCount && (
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={clearSelectedTrashDocuments}
+                      disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+                    >
+                      Clear Selection
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={handleBulkRestoreFromTrash}
+                    disabled={
+                      !selectedTrashCount ||
+                      trashLoading ||
+                      Boolean(trashActionLoadingId) ||
+                      trashBulkActionLoading
+                    }
+                  >
+                    {trashBulkActionLoading ? 'Processing...' : 'Restore Selected'}
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-delete"
+                    onClick={handleBulkDeleteForeverFromTrash}
+                    disabled={
+                      !selectedTrashCount ||
+                      trashLoading ||
+                      Boolean(trashActionLoadingId) ||
+                      trashBulkActionLoading
+                    }
+                  >
+                    {trashBulkActionLoading ? 'Processing...' : 'Delete Forever Selected'}
+                  </button>
+                </div>
+              </div>
+            )}
+
+            {trashPurgedCount > 0 && (
+              <p className="muted tiny">Auto-purged {trashPurgedCount} expired item(s) in this refresh.</p>
+            )}
+            {trashLoadError && <p className="muted tiny">Load failed: {trashLoadError}</p>}
+            {trashLoading && !trashLoadError && <p className="muted tiny">Loading Trash...</p>}
+
+            {!trashLoading && !trashLoadError && !trashItems.length && (
+              <p className="muted">
+                {trashQuery.trim() ? 'No Trash items match your search.' : 'Trash is empty.'}
+              </p>
+            )}
+
+            {!!trashItems.length && (
+              <ul className="notion-trash-list" aria-label="Trashed documents">
+                {trashItems.map((item) => {
+                  const docId = toPositiveDocId(item?.id);
+                  const checked = trashSelectedIdSet.has(docId);
+                  const busy =
+                    trashBulkActionLoading ||
+                    trashActionLoadingId === `restore-${docId}` ||
+                    trashActionLoadingId === `delete-${docId}`;
+                  const tags = Array.isArray(item?.tags) ? item.tags.filter(Boolean).slice(0, 5) : [];
+                  return (
+                    <li key={`trash-item-${docId}`}>
+                      <div className="notion-trash-item-head">
+                        <div className="notion-trash-item-title">
+                          <label className="notion-trash-item-select">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleTrashDocumentSelection(docId)}
+                              disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+                              aria-label={`Select ${item?.title || `Note ${docId}`}`}
+                            />
+                          </label>
+                          <strong>{item?.title || `Note ${docId}`}</strong>
+                        </div>
+                        <span>{String(getDocExt(item) || 'file').toUpperCase()}</span>
+                      </div>
+                      <p className="muted tiny">
+                        Deleted: {formatDateTimeLabel(item?.deletedAt || item?.deleted_at)} · Uploaded:{' '}
+                        {formatDateTimeLabel(item?.uploadedAt || item?.uploaded_at)}
+                      </p>
+                      <p className="muted tiny">
+                        Category: {normalizeCategory(item?.category)}
+                        {tags.length ? ` · Tags: ${tags.join(', ')}` : ''}
+                      </p>
+                      <div className="notion-trash-item-actions">
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={() => void handleRestoreFromTrash(item)}
+                          disabled={busy || Boolean(trashActionLoadingId)}
+                        >
+                          {busy && trashActionLoadingId.startsWith('restore-') ? 'Restoring...' : 'Restore'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn btn-delete"
+                          onClick={() => void handleDeleteForeverFromTrash(item)}
+                          disabled={busy || Boolean(trashActionLoadingId)}
+                        >
+                          {busy && trashActionLoadingId.startsWith('delete-')
+                            ? 'Deleting...'
+                            : 'Delete Forever'}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+
+            {!!trashItems.length && trashPageCount > 1 && (
+              <div className="notion-trash-pagination">
+                <span className="muted tiny">
+                  Page {trashPage} / {trashPageCount}
+                </span>
+                <div className="notion-trash-pagination-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setTrashPage((prev) => Math.max(1, prev - 1))}
+                    disabled={trashLoading || trashPage <= 1 || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+                  >
+                    Previous
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => setTrashPage((prev) => Math.min(trashPageCount, prev + 1))}
+                    disabled={trashLoading || trashPage >= trashPageCount || Boolean(trashActionLoadingId) || trashBulkActionLoading}
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div className="notion-modal-actions">
+              <button type="button" className="btn" onClick={() => setTrashModalOpen(false)}>
                 Close
               </button>
             </div>
@@ -6905,7 +8159,7 @@ export default function HomePage() {
           >
             <h3 id="account-manager-title">Account Manager</h3>
             <p className="notion-settings-help">
-              Save multiple accounts and switch quickly. Each account keeps a separate workspace state.
+              Save multiple accounts and switch quickly. For security, selecting an account opens Sign in with that account prefilled.
             </p>
 
             <section className="notion-settings-block" aria-label="Saved accounts">
@@ -6921,7 +8175,7 @@ export default function HomePage() {
                           className="notion-inline-list-switch"
                           onClick={() => handleSwitchAccount(account)}
                         >
-                          Switch
+                          Sign in
                         </button>
                         <button
                           type="button"
@@ -6972,7 +8226,7 @@ export default function HomePage() {
 
             <div className="notion-modal-actions">
               <button type="button" className="btn btn-primary" onClick={handleSaveManualAccount}>
-                Save and Switch
+                Save and Continue to Sign-in
               </button>
               <button
                 type="button"

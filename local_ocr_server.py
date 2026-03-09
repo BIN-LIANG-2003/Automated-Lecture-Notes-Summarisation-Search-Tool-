@@ -1,8 +1,13 @@
 # local_ocr_server.py
+import os
 import cv2
 import numpy as np
 import torch
 from PIL import Image
+
+# Skip PaddleX online source probing to reduce startup noise/latency.
+os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
+
 from paddleocr import PaddleOCR
 from transformers import TrOCRProcessor, VisionEncoderDecoderModel
 from fastapi import FastAPI, UploadFile

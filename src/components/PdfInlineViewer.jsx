@@ -42,6 +42,10 @@ export default function PdfInlineViewer({
   tags = [],
   downloadUrl = '',
   editable = false,
+  onSummarizeDocument,
+  canSummarize = true,
+  isSummarizing = false,
+  summarizeDisabledHint = '',
   onSaveEditedPdf,
   saveLoading = false,
   saveError = '',
@@ -399,6 +403,17 @@ export default function PdfInlineViewer({
             >
               Download File
             </a>
+          )}
+          {typeof onSummarizeDocument === 'function' && (
+            <button
+              type="button"
+              className="notion-pdf-btn notion-pdf-btn-primary"
+              onClick={() => onSummarizeDocument()}
+              disabled={!canSummarize || isSummarizing}
+              title={!canSummarize ? summarizeDisabledHint || 'Summarize is not available right now.' : undefined}
+            >
+              {isSummarizing ? 'Summarizing...' : 'Summarize'}
+            </button>
           )}
           <button
             type="button"

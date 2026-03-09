@@ -286,6 +286,21 @@ export default function DocumentsList({
                   >
                     View
                   </button>
+                  <button
+                    className="btn btn-primary document-primary-summarize"
+                    onClick={() => isLoggedIn && onSummarize?.(doc)}
+                    title={
+                      !isLoggedIn
+                        ? 'Please sign in'
+                        : canSummarize
+                          ? 'Summarize this document'
+                          : 'AI is disabled in workspace settings'
+                    }
+                    disabled={!isLoggedIn || !canSummarize}
+                    type="button"
+                  >
+                    Summarize
+                  </button>
 
                   <div
                     className={`document-more-wrap${isMenuOpen ? ' open' : ''}`}
@@ -397,14 +412,14 @@ export default function DocumentsList({
                               !isLoggedIn
                                 ? 'Please sign in'
                                 : canSummarize
-                                  ? undefined
+                                  ? 'Bypass cache and refresh document text before summarizing'
                                   : 'AI is disabled in workspace settings'
                             }
                             disabled={!isLoggedIn || !canSummarize}
                             type="button"
                             role="menuitem"
                           >
-                            Rebuild Summary
+                            Rebuild (Refresh Text)
                           </button>
                           <button
                             className="document-more-item"
@@ -442,7 +457,7 @@ export default function DocumentsList({
                             type="button"
                             role="menuitem"
                           >
-                            Delete
+                            Move to Trash
                           </button>
                         </div>
                       </div>

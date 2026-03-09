@@ -1,3 +1,5 @@
+import { buildSummaryDiagnostics } from '../lib/summaryDiagnostics.js';
+
 export default function AIAssistantPanel({
   allowAiTools = true,
   allowOcr = true,
@@ -18,6 +20,8 @@ export default function AIAssistantPanel({
   analysisResult = null,
   summaryHistoryCount = 0,
 }) {
+  const diagnostics = buildSummaryDiagnostics(analysisResult);
+
   if (!allowAiTools) {
     return (
       <section id="ai-section" className="notion-ai-section">
@@ -96,6 +100,16 @@ export default function AIAssistantPanel({
             <article className="notion-ai-output">
               <h3>Summary Result</h3>
               <p>{analysisResult.summary || 'No summary available.'}</p>
+              {!!diagnostics.length && (
+                <div className="notion-ai-diagnostics" aria-label="Summary diagnostics">
+                  {diagnostics.map((item) => (
+                    <div key={item.key} className="notion-ai-diagnostic-item">
+                      <span>{item.label}</span>
+                      <strong>{item.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              )}
               <h4>Keywords</h4>
               <ul>
                 {(analysisResult.keywords || []).map((keyword, index) => (
