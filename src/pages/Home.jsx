@@ -1,5 +1,11 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
+import TrashModal from '../components/TrashModal.jsx';
+import UploadPanel from '../components/UploadPanel.jsx';
+import WorkspaceSidebar from '../components/WorkspaceSidebar.jsx';
+import useDocumentsList from '../hooks/useDocumentsList.js';
+import useUploadQueue from '../hooks/useUploadQueue.js';
 import { todayKey } from '../lib/dates.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
 import { loadAccounts } from '../lib/accounts.js';
@@ -58,6 +64,19 @@ const SUGGESTED_CATEGORIES = [
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
 const HOME_TAB_OPTIONS = ['home', 'files', 'ai'];
+const SIDEBAR_DENSITY_OPTIONS = [
+  { value: 'comfortable', label: 'Comfortable' },
+  { value: 'compact', label: 'Compact' },
+];
+const DEFAULT_WORKSPACE_ACCENT_COLOR = '#2f76e8';
+const WORKSPACE_ACCENT_PRESETS = [
+  { value: '#2f76e8', label: 'Ocean' },
+  { value: '#0f9d7a', label: 'Mint' },
+  { value: '#e16a3d', label: 'Sunset' },
+  { value: '#7a56d8', label: 'Iris' },
+  { value: '#d1498b', label: 'Rose' },
+  { value: '#2f3b52', label: 'Slate' },
+];
 const SUMMARY_CENTER_SORT_OPTIONS = [
   { value: 'newest', label: 'Newest' },
   { value: 'oldest', label: 'Oldest' },
@@ -76,13 +95,14 @@ const SUMMARY_CENTER_CHUNK_OPTIONS = [
   { value: 'heavy', label: '5+ chunks' },
 ];
 const WORKSPACE_SETTINGS_TABS = [
-  { id: 'general', label: 'General' },
-  { id: 'defaults', label: 'Defaults' },
-  { id: 'experience', label: 'Experience' },
-  { id: 'permissions', label: 'Permissions' },
-  { id: 'ai', label: 'AI' },
-  { id: 'access', label: 'Access' },
-  { id: 'danger', label: 'Danger' },
+  { id: 'general', label: 'General', description: 'Name, icon, accent color, workspace identity.' },
+  { id: 'defaults', label: 'Defaults', description: 'File views, category rules, Canvas domain.' },
+  { id: 'experience', label: 'Experience', description: 'Sidebar density and overview widgets.' },
+  { id: 'notifications', label: 'Notifications', description: 'Control in-app upload, AI, and sharing toasts.' },
+  { id: 'permissions', label: 'Permissions', description: 'What members can upload, edit, and export.' },
+  { id: 'ai', label: 'AI', description: 'Summaries, OCR, and keyword defaults.' },
+  { id: 'access', label: 'Access', description: 'Invites, trusted domains, and link sharing.' },
+  { id: 'danger', label: 'Danger', description: 'Irreversible workspace cleanup actions.' },
 ];
 const SHARE_POLICY_PRESETS = [
   {
@@ -133,20 +153,37 @@ const KEYBOARD_SHORTCUT_ITEMS = [
 const DEFAULT_WORKSPACE_SETTINGS = {
   workspace_icon: '📚',
   description: '',
+  accent_color: DEFAULT_WORKSPACE_ACCENT_COLOR,
   default_category: DEFAULT_NOTE_CATEGORY,
   auto_categorize: true,
   default_home_tab: 'home',
+  default_documents_layout: DEFAULT_DOCUMENTS_LAYOUT,
+  default_documents_sort: DEFAULT_DOCUMENTS_SORT,
+  default_documents_page_size: DEFAULT_DOCUMENTS_PAGE_SIZE,
+  preferred_canvas_domain: DEFAULT_CANVAS_DOMAIN,
   recent_items_limit: DEFAULT_SIDEBAR_RECENT_LIMIT,
+  sidebar_density: 'comfortable',
+  show_starred_section: true,
+  show_recent_section: true,
+  show_quick_actions: true,
+  show_usage_chart: true,
+  show_recent_activity: true,
+  show_canvas_import: true,
   allow_uploads: true,
   allow_note_editing: true,
   allow_ai_tools: true,
   allow_ocr: true,
   summary_length: 'medium',
   keyword_limit: 5,
+  notify_upload_events: true,
+  notify_summary_events: true,
+  notify_sharing_events: true,
   allow_member_invites: false,
   default_invite_expiry_days: 7,
   default_share_expiry_days: 7,
   link_sharing_mode: 'workspace',
+  restrict_invites_to_domains: false,
+  allowed_email_domains: '',
   allow_member_share_management: false,
   max_active_share_links_per_document: 5,
   auto_revoke_previous_share_links: false,
@@ -195,7 +232,6 @@ const MAX_SAVED_VIEWS_PER_WORKSPACE = 10;
 const MAX_STARRED_NOTES_PER_WORKSPACE = 60;
 const MAX_RECENT_NOTES_PER_WORKSPACE = 80;
 const MAX_SUMMARY_HISTORY_PER_WORKSPACE = 60;
-const MAX_UPLOAD_QUEUE_ITEMS = 30;
 const TRASH_FETCH_LIMIT = 200;
 const DEFAULT_FILTERS = { query: '', start: '', end: '', tag: '', category: '', fileType: '' };
 const FILTER_DATE_RANGE_OPTIONS = [
@@ -228,7 +264,6 @@ const EDITABLE_FILE_TYPE_VALUES = new Set(['txt', 'docx']);
 
 const createClientId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const createSavedViewId = () => createClientId('view');
-const createUploadQueueId = () => createClientId('upload');
 const toPositiveDocId = (value) => {
   const next = Number(value);
   if (!Number.isFinite(next) || next <= 0) return 0;
@@ -332,6 +367,84 @@ const normalizeCanvasDomainInput = (value) => {
   if (!next.includes('.')) return '';
   if (!/^[a-z0-9.-]{3,255}$/.test(next)) return '';
   return next;
+};
+
+const normalizeAccentColor = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(next) ? next : DEFAULT_WORKSPACE_ACCENT_COLOR;
+};
+
+const normalizeSidebarDensity = (value) => {
+  const next = String(value || '').trim().toLowerCase();
+  return SIDEBAR_DENSITY_OPTIONS.some((item) => item.value === next) ? next : 'comfortable';
+};
+
+const normalizeWorkspaceDomainToken = (value) => {
+  const raw = String(value || '').trim().replace(/^@+/, '');
+  if (!raw) return '';
+  const next = normalizeCanvasDomainInput(raw);
+  return next || '';
+};
+
+const normalizeWorkspaceDomainList = (value) => {
+  const candidates = Array.isArray(value) ? value : String(value || '').split(/[\n,;]+/);
+  const seen = new Set();
+  const output = [];
+  candidates.forEach((item) => {
+    const domain = normalizeWorkspaceDomainToken(item);
+    if (!domain || seen.has(domain)) return;
+    seen.add(domain);
+    output.push(domain);
+  });
+  return output.slice(0, 8).join(', ');
+};
+
+const parseWorkspaceDomainList = (value) =>
+  normalizeWorkspaceDomainList(value)
+    .split(/,\s*/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const getEmailDomain = (email) => {
+  const normalized = String(email || '').trim().toLowerCase();
+  if (!normalized.includes('@')) return '';
+  return normalized.split('@').slice(1).join('@');
+};
+
+const clampRgbChannel = (value) => Math.min(255, Math.max(0, Math.round(value)));
+
+const hexToRgb = (value) => {
+  const safe = normalizeAccentColor(value).slice(1);
+  return {
+    r: Number.parseInt(safe.slice(0, 2), 16),
+    g: Number.parseInt(safe.slice(2, 4), 16),
+    b: Number.parseInt(safe.slice(4, 6), 16),
+  };
+};
+
+const shiftHexColor = (value, amount) => {
+  const { r, g, b } = hexToRgb(value);
+  const delta = Number(amount) || 0;
+  const toHex = (channel) => clampRgbChannel(channel + delta).toString(16).padStart(2, '0');
+  return `#${toHex(r)}${toHex(g)}${toHex(b)}`;
+};
+
+const rgbaFromHex = (value, alpha = 1) => {
+  const { r, g, b } = hexToRgb(value);
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+const buildWorkspaceThemeStyle = (settings) => {
+  const accent = normalizeAccentColor(settings?.accent_color);
+  return {
+    '--primary': accent,
+    '--primary-600': shiftHexColor(accent, -18),
+    '--workspace-accent': accent,
+    '--workspace-accent-strong': shiftHexColor(accent, -32),
+    '--workspace-accent-soft': rgbaFromHex(accent, 0.12),
+    '--workspace-accent-faint': rgbaFromHex(accent, 0.08),
+    '--workspace-accent-border': rgbaFromHex(accent, 0.24),
+  };
 };
 
 const toDateInputValue = (date) => {
@@ -690,17 +803,55 @@ const normalizeWorkspaceSettings = (raw) => {
   const defaultHomeTab = HOME_TAB_OPTIONS.includes(String(source.default_home_tab || '').toLowerCase())
     ? String(source.default_home_tab).toLowerCase()
     : DEFAULT_WORKSPACE_SETTINGS.default_home_tab;
+  const defaultDocumentsLayout = normalizeDocumentsLayout(
+    source.default_documents_layout || DEFAULT_WORKSPACE_SETTINGS.default_documents_layout
+  );
+  const defaultDocumentsSort = normalizeDocumentsSort(
+    source.default_documents_sort || DEFAULT_WORKSPACE_SETTINGS.default_documents_sort
+  );
+  const defaultDocumentsPageSize = normalizeDocumentsPageSize(
+    Number(source.default_documents_page_size) || DEFAULT_WORKSPACE_SETTINGS.default_documents_page_size
+  );
+  const preferredCanvasDomain = normalizeCanvasDomainInput(
+    source.preferred_canvas_domain || DEFAULT_WORKSPACE_SETTINGS.preferred_canvas_domain
+  ) || DEFAULT_CANVAS_DOMAIN;
+  const sidebarDensity = normalizeSidebarDensity(source.sidebar_density);
+  const allowedEmailDomains = normalizeWorkspaceDomainList(source.allowed_email_domains);
 
   return {
     workspace_icon: workspaceIcon.slice(0, 2) || DEFAULT_WORKSPACE_SETTINGS.workspace_icon,
     description: String(source.description || '').trim().slice(0, 220),
+    accent_color: normalizeAccentColor(source.accent_color || DEFAULT_WORKSPACE_SETTINGS.accent_color),
     default_category: normalizeCategory(source.default_category || DEFAULT_WORKSPACE_SETTINGS.default_category),
     auto_categorize: Boolean(source.auto_categorize ?? DEFAULT_WORKSPACE_SETTINGS.auto_categorize),
     default_home_tab: defaultHomeTab,
+    default_documents_layout: defaultDocumentsLayout,
+    default_documents_sort: defaultDocumentsSort,
+    default_documents_page_size: defaultDocumentsPageSize,
+    preferred_canvas_domain: preferredCanvasDomain,
     recent_items_limit: clamp(
       Number(source.recent_items_limit) || DEFAULT_WORKSPACE_SETTINGS.recent_items_limit,
       MIN_SIDEBAR_RECENT_LIMIT,
       MAX_SIDEBAR_RECENT_LIMIT
+    ),
+    sidebar_density: sidebarDensity,
+    show_starred_section: Boolean(
+      source.show_starred_section ?? DEFAULT_WORKSPACE_SETTINGS.show_starred_section
+    ),
+    show_recent_section: Boolean(
+      source.show_recent_section ?? DEFAULT_WORKSPACE_SETTINGS.show_recent_section
+    ),
+    show_quick_actions: Boolean(
+      source.show_quick_actions ?? DEFAULT_WORKSPACE_SETTINGS.show_quick_actions
+    ),
+    show_usage_chart: Boolean(
+      source.show_usage_chart ?? DEFAULT_WORKSPACE_SETTINGS.show_usage_chart
+    ),
+    show_recent_activity: Boolean(
+      source.show_recent_activity ?? DEFAULT_WORKSPACE_SETTINGS.show_recent_activity
+    ),
+    show_canvas_import: Boolean(
+      source.show_canvas_import ?? DEFAULT_WORKSPACE_SETTINGS.show_canvas_import
     ),
     allow_uploads: Boolean(source.allow_uploads ?? DEFAULT_WORKSPACE_SETTINGS.allow_uploads),
     allow_note_editing: Boolean(
@@ -710,6 +861,15 @@ const normalizeWorkspaceSettings = (raw) => {
     allow_ocr: Boolean(source.allow_ocr ?? DEFAULT_WORKSPACE_SETTINGS.allow_ocr),
     summary_length: summaryLength,
     keyword_limit: clamp(Number(source.keyword_limit) || DEFAULT_WORKSPACE_SETTINGS.keyword_limit, 3, 12),
+    notify_upload_events: Boolean(
+      source.notify_upload_events ?? DEFAULT_WORKSPACE_SETTINGS.notify_upload_events
+    ),
+    notify_summary_events: Boolean(
+      source.notify_summary_events ?? DEFAULT_WORKSPACE_SETTINGS.notify_summary_events
+    ),
+    notify_sharing_events: Boolean(
+      source.notify_sharing_events ?? DEFAULT_WORKSPACE_SETTINGS.notify_sharing_events
+    ),
     allow_member_invites: Boolean(
       source.allow_member_invites ?? DEFAULT_WORKSPACE_SETTINGS.allow_member_invites
     ),
@@ -724,6 +884,10 @@ const normalizeWorkspaceSettings = (raw) => {
       30
     ),
     link_sharing_mode: linkMode,
+    restrict_invites_to_domains: Boolean(
+      source.restrict_invites_to_domains ?? DEFAULT_WORKSPACE_SETTINGS.restrict_invites_to_domains
+    ),
+    allowed_email_domains: allowedEmailDomains,
     allow_member_share_management: Boolean(
       source.allow_member_share_management ?? DEFAULT_WORKSPACE_SETTINGS.allow_member_share_management
     ),
@@ -929,20 +1093,6 @@ const RichTextEditor = lazy(() => import('../components/RichTextEditor.jsx'));
 const PdfInlineViewer = lazy(() => import('../components/PdfInlineViewer.jsx'));
 
 export default function HomePage() {
-  const [documents, setDocuments] = useState([]);
-  const [documentsTotal, setDocumentsTotal] = useState(0);
-  const [documentsPage, setDocumentsPage] = useState(1);
-  const [documentsLoading, setDocumentsLoading] = useState(false);
-  const [documentsLoadError, setDocumentsLoadError] = useState('');
-  const [documentsPageSize, setDocumentsPageSize] = useState(
-    () => loadFilesViewPreferences().pageSize
-  );
-  const [documentsSort, setDocumentsSort] = useState(
-    () => loadFilesViewPreferences().sort
-  );
-  const [documentsLayout, setDocumentsLayout] = useState(
-    () => loadFilesViewPreferences().layout
-  );
   const [selectedDocumentIds, setSelectedDocumentIds] = useState([]);
   const [bulkActionLoading, setBulkActionLoading] = useState(false);
   const [selectAllMatchedLoading, setSelectAllMatchedLoading] = useState(false);
@@ -953,9 +1103,6 @@ export default function HomePage() {
   const [confirmDialogState, setConfirmDialogState] = useState(DEFAULT_CONFIRM_DIALOG_STATE);
   const [inputDialogState, setInputDialogState] = useState(DEFAULT_INPUT_DIALOG_STATE);
   const [inputDialogDraft, setInputDialogDraft] = useState('');
-  const [availableTags, setAvailableTags] = useState([]);
-  const [availableCategories, setAvailableCategories] = useState([]);
-  const [availableFileTypeCounts, setAvailableFileTypeCounts] = useState({});
   const [savedViews, setSavedViews] = useState([]);
   const [activeSavedViewId, setActiveSavedViewId] = useState('');
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
@@ -974,27 +1121,18 @@ export default function HomePage() {
   const [trashSort, setTrashSort] = useState('deleted_newest');
   const [trashQuery, setTrashQuery] = useState('');
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
-  const [dragUploadActive, setDragUploadActive] = useState(false);
-  const [uploadQueue, setUploadQueue] = useState([]);
-  const [uploadQueueRunning, setUploadQueueRunning] = useState(false);
-  const [uploadQueueExpanded, setUploadQueueExpanded] = useState(true);
   const navigate = useNavigate();
   const location = useLocation();
   const workspaceMenuRef = useRef(null);
   const recentMenuRef = useRef(null);
   const searchInputRef = useRef(null);
   const savedViewsImportInputRef = useRef(null);
-  const uploadDragDepthRef = useRef(0);
-  const documentsRequestSeqRef = useRef(0);
   const trashRequestSeqRef = useRef(0);
   const aiImageInputRef = useRef(null);
   const toastTimerRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const inputDialogResolverRef = useRef(null);
   const summaryProgressTimerRef = useRef(null);
-
-  const [filters, setFilters] = useState(DEFAULT_FILTERS);
-  const [searchDraft, setSearchDraft] = useState('');
   const [isLoggedIn, setIsLoggedIn] = useState(
     () => Boolean(sessionStorage.getItem('username') && sessionStorage.getItem('auth_token'))
   );
@@ -1013,6 +1151,7 @@ export default function HomePage() {
   const [workspaceSettingsTab, setWorkspaceSettingsTab] = useState('general');
   const [workspaceInviteDraft, setWorkspaceInviteDraft] = useState('');
   const [latestInviteLinks, setLatestInviteLinks] = useState([]);
+  const [latestInviteDelivery, setLatestInviteDelivery] = useState(null);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
   const [savedAccounts, setSavedAccounts] = useState(() => {
@@ -1063,9 +1202,6 @@ export default function HomePage() {
   const [canvasFilesLoading, setCanvasFilesLoading] = useState(false);
   const [canvasFilesError, setCanvasFilesError] = useState('');
   const [canvasImportingFileId, setCanvasImportingFileId] = useState('');
-
-  const [fileHint, setFileHint] = useState('');
-  const fileInputRef = useRef(null);
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
   const [now, setNow] = useState(() => new Date());
@@ -1090,6 +1226,27 @@ export default function HomePage() {
   const activeWorkspaceSettings = useMemo(
     () => normalizeWorkspaceSettings(activeWorkspace?.settings),
     [activeWorkspace?.settings]
+  );
+  const workspaceThemeStyle = useMemo(
+    () => buildWorkspaceThemeStyle(activeWorkspaceSettings),
+    [activeWorkspaceSettings]
+  );
+  const trustedInviteDomains = useMemo(
+    () => parseWorkspaceDomainList(activeWorkspaceSettings.allowed_email_domains),
+    [activeWorkspaceSettings.allowed_email_domains]
+  );
+  const enabledWorkspaceNotificationCount = useMemo(
+    () =>
+      [
+        activeWorkspaceSettings.notify_upload_events,
+        activeWorkspaceSettings.notify_summary_events,
+        activeWorkspaceSettings.notify_sharing_events,
+      ].filter(Boolean).length,
+    [
+      activeWorkspaceSettings.notify_upload_events,
+      activeWorkspaceSettings.notify_summary_events,
+      activeWorkspaceSettings.notify_sharing_events,
+    ]
   );
   const canCurrentUserManageShareLinks = useMemo(() => {
     if (!isLoggedIn || !username || !activeWorkspace) return false;
@@ -1120,6 +1277,8 @@ export default function HomePage() {
       ),
     [activeWorkspaceSettings.recent_items_limit]
   );
+  const sidebarDensityClass =
+    activeWorkspaceSettings.sidebar_density === 'compact' ? 'notion-shell-sidebar-compact' : '';
   const summaryHistoryStats = useMemo(() => {
     const base = {
       total: summaryHistory.length,
@@ -1204,7 +1363,6 @@ export default function HomePage() {
     () => (Array.isArray(activeWorkspace?.invites) ? activeWorkspace.invites : []),
     [activeWorkspace?.invites]
   );
-  const inviteCount = inviteItems.length;
   const pendingRequestCount = useMemo(
     () =>
       inviteItems.filter((item) => {
@@ -1232,6 +1390,80 @@ export default function HomePage() {
       toastTimerRef.current = null;
     }, 3600);
   };
+
+  const showWorkspaceToast = (channel, message, tone = 'info') => {
+    if (tone === 'warning' || tone === 'error') {
+      showToast(message, tone);
+      return;
+    }
+    const safeChannel = String(channel || '').trim();
+    if (safeChannel === 'upload' && !activeWorkspaceSettings.notify_upload_events) return;
+    if (safeChannel === 'summary' && !activeWorkspaceSettings.notify_summary_events) return;
+    if (safeChannel === 'sharing' && !activeWorkspaceSettings.notify_sharing_events) return;
+    showToast(message, tone);
+  };
+
+  const {
+    documents,
+    setDocuments,
+    documentsTotal,
+    setDocumentsTotal,
+    documentsPage,
+    setDocumentsPage,
+    documentsLoading,
+    documentsLoadError,
+    documentsPageSize,
+    setDocumentsPageSize,
+    documentsSort,
+    setDocumentsSort,
+    documentsLayout,
+    setDocumentsLayout,
+    filters,
+    setFilters,
+    searchDraft,
+    setSearchDraft,
+    buildDocumentsQueryParams,
+    fetchDocuments,
+    filteredDocuments,
+    documentsPageCount,
+    tags,
+    categories,
+    categorySuggestions,
+    fileTypeFilterCounts,
+    activeFilterCount,
+    hasActiveFilters,
+    advancedFilterCount,
+    hasAdvancedFilters,
+    activeDateRangePresetId,
+    activeQuickFilterPresetId,
+    activeFilterChips,
+    currentViewSnapshot,
+  } = useDocumentsList({
+    username,
+    authToken,
+    activeWorkspaceId,
+    defaultFilters: DEFAULT_FILTERS,
+    defaultDocumentsPageSize: DEFAULT_DOCUMENTS_PAGE_SIZE,
+    defaultDocumentsSort: DEFAULT_DOCUMENTS_SORT,
+    defaultDocumentsLayout: DEFAULT_DOCUMENTS_LAYOUT,
+    defaultNoteCategory: DEFAULT_NOTE_CATEGORY,
+    suggestedCategories: SUGGESTED_CATEGORIES,
+    fileTypeFilterOptions: FILE_TYPE_FILTER_OPTIONS,
+    filterDateRangeOptions: FILTER_DATE_RANGE_OPTIONS,
+    loadViewPreferences: loadFilesViewPreferences,
+    persistViewPreferences: persistFilesViewPreferences,
+    normalizeDocumentsPageSize,
+    normalizeDocumentsSort,
+    normalizeDocumentsLayout,
+    normalizeFileTypeFilter,
+    normalizeFacetFileTypeCounts,
+    buildFileTypeCountsFromDocuments,
+    normalizeDocument,
+    normalizeCategory,
+    getQuickDateRange,
+    formatDisplayDateValue,
+    getFileTypeFilterLabel,
+  });
 
   const closeConfirmDialog = (confirmed) => {
     const resolver = confirmResolverRef.current;
@@ -1327,6 +1559,7 @@ export default function HomePage() {
       const current = nextState.workspaces.find((item) => item.id === nextState.activeWorkspaceId) || nextState.workspaces[0];
       setWorkspaceNameDraft(current?.name || '');
       setWorkspaceSettingsDraft(normalizeWorkspaceSettings(current?.settings));
+      applyWorkspaceLandingView(current?.settings || DEFAULT_WORKSPACE_SETTINGS);
       return nextState;
     }
 
@@ -1350,6 +1583,7 @@ export default function HomePage() {
       const current = list.find((item) => item.id === activeId) || list[0] || null;
       setWorkspaceNameDraft(current?.name || '');
       setWorkspaceSettingsDraft(normalizeWorkspaceSettings(current?.settings));
+      applyWorkspaceLandingView(current?.settings || DEFAULT_WORKSPACE_SETTINGS);
       return nextState;
     } catch (err) {
       console.error('Failed to refresh workspaces', err);
@@ -1359,156 +1593,47 @@ export default function HomePage() {
     }
   };
 
-  const buildDocumentsQueryParams = ({
-    limit,
-    offset,
-    sort,
-    includeMeta = false,
-    includeFacets = false,
-  } = {}) => {
-    const params = new URLSearchParams({ username });
-    if (activeWorkspaceId) params.set('workspace_id', activeWorkspaceId);
-    if (includeMeta) params.set('include_meta', '1');
-    if (includeFacets) params.set('include_facets', '1');
-    if (Number.isFinite(Number(limit)) && Number(limit) > 0) params.set('limit', String(Number(limit)));
-    if (Number.isFinite(Number(offset)) && Number(offset) >= 0) params.set('offset', String(Number(offset)));
-    const sortKey = normalizeDocumentsSort(sort || documentsSort);
-    if (sortKey) params.set('sort', sortKey);
-    if (filters.query) params.set('q', filters.query);
-    if (filters.start) params.set('start_date', filters.start);
-    if (filters.end) params.set('end_date', filters.end);
-    if (filters.tag) params.set('tag', filters.tag);
-    if (filters.category) params.set('category', filters.category);
-    if (filters.fileType) params.set('file_type', normalizeFileTypeFilter(filters.fileType));
-    return params;
-  };
-
-  const fetchDocuments = async (targetPage = documentsPage) => {
-    const requestSeq = documentsRequestSeqRef.current + 1;
-    documentsRequestSeqRef.current = requestSeq;
-    const commitIfLatest = (callback) => {
-      if (requestSeq !== documentsRequestSeqRef.current) return;
-      callback();
-    };
-
-    if (!username || !authToken) {
-      commitIfLatest(() => {
-        setDocuments([]);
-        setDocumentsTotal(0);
-        setDocumentsLoading(false);
-        setDocumentsLoadError('');
-        setAvailableTags([]);
-        setAvailableCategories([]);
-        setAvailableFileTypeCounts({});
-      });
-      return;
-    }
-    if (!activeWorkspaceId) {
-      commitIfLatest(() => {
-        setDocuments([]);
-        setDocumentsTotal(0);
-        setDocumentsLoading(false);
-        setDocumentsLoadError('');
-        setAvailableTags([]);
-        setAvailableCategories([]);
-        setAvailableFileTypeCounts({});
-      });
-      return;
-    }
-    const safePage = Math.max(1, Number(targetPage) || 1);
-    const pageSize = normalizeDocumentsPageSize(documentsPageSize);
-    const offset = (safePage - 1) * pageSize;
-    const params = buildDocumentsQueryParams({
-      limit: pageSize,
-      offset,
-      sort: documentsSort,
-      includeMeta: true,
-      includeFacets: true,
-    });
-
-    commitIfLatest(() => {
-      setDocumentsLoading(true);
-      setDocumentsLoadError('');
-    });
-    try {
-      const res = await fetch(`/api/documents?${params.toString()}`);
-      if (res.ok) {
-        const payload = await res.json().catch(() => ({}));
-        const items = Array.isArray(payload?.items) ? payload.items : [];
-        const total = Number(payload?.total);
-        const facetTags = Array.isArray(payload?.facets?.tags) ? payload.facets.tags : [];
-        const facetCategories = Array.isArray(payload?.facets?.categories) ? payload.facets.categories : [];
-        const facetFileTypeCounts = normalizeFacetFileTypeCounts(payload?.facets?.file_types);
-        const normalized = items.map(normalizeDocument);
-        const normalizedFacetTags = Array.from(
-          new Set(
-            facetTags
-              .map((tag) => String(tag || '').trim())
-              .filter(Boolean)
-          )
-        ).sort((a, b) => a.localeCompare(b));
-        const normalizedFacetCategories = Array.from(
-          new Set(
-            facetCategories
-              .map((category) => normalizeCategory(category))
-              .filter(Boolean)
-          )
-        ).sort((a, b) => a.localeCompare(b));
-        const hasFacetPayload =
-          normalizedFacetTags.length ||
-          normalizedFacetCategories.length ||
-          Object.keys(facetFileTypeCounts).length;
-        const fallbackTags = new Set();
-        const fallbackCategories = new Set();
-        const fallbackFileTypeCounts = buildFileTypeCountsFromDocuments(normalized);
-        if (!hasFacetPayload) {
-          normalized.forEach((doc) => {
-            (doc.tags || []).forEach((tag) => fallbackTags.add(tag));
-            fallbackCategories.add(normalizeCategory(doc.category));
-          });
-        }
-        commitIfLatest(() => {
-          setDocuments(normalized);
-          setDocumentsTotal(Number.isFinite(total) ? Math.max(0, total) : normalized.length);
-          if (hasFacetPayload) {
-            setAvailableTags(normalizedFacetTags);
-            setAvailableCategories(normalizedFacetCategories);
-            setAvailableFileTypeCounts(
-              Object.keys(facetFileTypeCounts).length ? facetFileTypeCounts : fallbackFileTypeCounts
-            );
-          } else {
-            setAvailableTags(Array.from(fallbackTags).sort((a, b) => a.localeCompare(b)));
-            setAvailableCategories(Array.from(fallbackCategories).sort((a, b) => a.localeCompare(b)));
-            setAvailableFileTypeCounts(fallbackFileTypeCounts);
-          }
-        });
-      } else {
-        const payload = await res.json().catch(() => ({}));
-        commitIfLatest(() => {
-          setDocuments([]);
-          setDocumentsTotal(0);
-          setAvailableTags([]);
-          setAvailableCategories([]);
-          setAvailableFileTypeCounts({});
-          setDocumentsLoadError(payload.error || 'Failed to load documents');
-        });
-      }
-    } catch (err) {
-      console.error('Failed to fetch documents', err);
-      commitIfLatest(() => {
-        setDocuments([]);
-        setDocumentsTotal(0);
-        setAvailableTags([]);
-        setAvailableCategories([]);
-        setAvailableFileTypeCounts({});
-        setDocumentsLoadError('Failed to load documents');
-      });
-    } finally {
-      commitIfLatest(() => {
-        setDocumentsLoading(false);
-      });
+  const refreshDocumentsAfterUpload = async () => {
+    const shouldRefetchViaPageReset = documentsPage !== 1;
+    setDocumentsPage(1);
+    if (!shouldRefetchViaPageReset) {
+      await fetchDocuments(1);
     }
   };
+
+  const {
+    dragUploadActive,
+    uploadQueue,
+    uploadQueueRunning,
+    uploadQueueExpanded,
+    setUploadQueueExpanded,
+    fileHint,
+    fileInputRef,
+    uploadQueueSummary,
+    canRetryFailedUploads,
+    canClearUploadQueue,
+    handleFileChange,
+    handleUpload,
+    handleUploadDragEnter,
+    handleUploadDragOver,
+    handleUploadDragLeave,
+    handleUploadDrop,
+    handleRetryFailedUploads,
+    handleClearCompletedUploads,
+    clearDragUploadState,
+    resetUploadState,
+  } = useUploadQueue({
+    isLoggedIn,
+    activeWorkspaceId,
+    allowUploads: activeWorkspaceSettings.allow_uploads,
+    uploadCategory,
+    autoCategorize: activeWorkspaceSettings.auto_categorize,
+    defaultCategory: activeWorkspaceSettings.default_category,
+    showToast,
+    showWorkspaceToast,
+    onUploadsCompleted: refreshDocumentsAfterUpload,
+    resetKey: `${activeWorkspaceId || ''}:${username || ''}:${authToken || ''}`,
+  });
 
   const fetchTrashDocuments = async ({
     silent = false,
@@ -1589,23 +1714,6 @@ export default function HomePage() {
   };
 
   useEffect(() => {
-    fetchDocuments(documentsPage);
-  }, [
-    username,
-    authToken,
-    activeWorkspaceId,
-    documentsPage,
-    documentsPageSize,
-    documentsSort,
-    filters.query,
-    filters.start,
-    filters.end,
-    filters.tag,
-    filters.category,
-    filters.fileType,
-  ]);
-
-  useEffect(() => {
     if (!trashModalOpen) return;
     fetchTrashDocuments();
   }, [trashModalOpen, username, authToken, activeWorkspaceId, trashPage, trashPageSize, trashQuery, trashSort]);
@@ -1641,9 +1749,7 @@ export default function HomePage() {
   }, [activeDoc?.id, canCurrentUserManageShareLinks, username]);
 
   useEffect(() => {
-    setAvailableTags([]);
-    setAvailableCategories([]);
-    setAvailableFileTypeCounts({});
+    resetDocumentsData();
     setSelectedDocumentIds([]);
     setSelectAllMatchedLoading(false);
     setBulkCategoryDraft('');
@@ -1661,25 +1767,21 @@ export default function HomePage() {
     setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
     setTrashSort('deleted_newest');
     setTrashQuery('');
-    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
+    setCanvasDomain(
+      normalizeCanvasDomainInput(activeWorkspaceSettings.preferred_canvas_domain) || DEFAULT_CANVAS_DOMAIN
+    );
     setCanvasToken('');
     setCanvasFiles([]);
     setCanvasFilesLoading(false);
     setCanvasFilesError('');
     setCanvasImportingFileId('');
-    setDragUploadActive(false);
-    setUploadQueue([]);
-    setUploadQueueRunning(false);
-    uploadDragDepthRef.current = 0;
+    resetUploadState();
   }, [activeWorkspaceId, username, authToken]);
 
   useEffect(() => {
-    persistFilesViewPreferences({
-      pageSize: documentsPageSize,
-      sort: documentsSort,
-      layout: documentsLayout,
-    });
-  }, [documentsPageSize, documentsSort, documentsLayout]);
+    if (!activeWorkspaceId) return;
+    applyWorkspaceLandingView(activeWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     if (location.state?.showFiles) {
@@ -1700,13 +1802,7 @@ export default function HomePage() {
     const handleAuthExpired = (event) => {
       const message = String(event?.detail?.message || '').trim();
       setIsLoggedIn(false);
-      setDocuments([]);
-      setDocumentsTotal(0);
-      setDocumentsPage(1);
-      setDocumentsLoading(false);
-      setDocumentsLoadError('');
-      setAvailableTags([]);
-      setAvailableCategories([]);
+      resetDocumentsData();
       setSidebarRecentIds([]);
       setSidebarRecentMeta({});
       setStarredNotes([]);
@@ -1747,10 +1843,7 @@ export default function HomePage() {
       setCanvasFilesLoading(false);
       setCanvasFilesError('');
       setCanvasImportingFileId('');
-      setDragUploadActive(false);
-      setUploadQueue([]);
-      setUploadQueueRunning(false);
-      uploadDragDepthRef.current = 0;
+      resetUploadState();
       if (summaryProgressTimerRef.current) {
         window.clearTimeout(summaryProgressTimerRef.current);
         summaryProgressTimerRef.current = null;
@@ -1793,6 +1886,7 @@ export default function HomePage() {
     refreshWorkspaces({ preserveActive: false });
     setWorkspaceInviteDraft('');
     setLatestInviteLinks([]);
+    setLatestInviteDelivery(null);
     setInviteCopied(false);
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
@@ -2012,7 +2106,7 @@ export default function HomePage() {
         window.clearTimeout(summaryProgressTimerRef.current);
         summaryProgressTimerRef.current = null;
       }
-      uploadDragDepthRef.current = 0;
+      clearDragUploadState();
     };
   }, []);
 
@@ -2035,8 +2129,7 @@ export default function HomePage() {
         setTrashModalOpen(false);
         setShortcutsOpen(false);
         setInviteCopied(false);
-        setDragUploadActive(false);
-        uploadDragDepthRef.current = 0;
+        clearDragUploadState();
         if (inputDialogState.open) {
           closeInputDialog(false);
         }
@@ -2090,15 +2183,6 @@ export default function HomePage() {
     };
   }, []);
 
-  const filteredDocuments = documents;
-  const documentsPageCount = useMemo(
-    () =>
-      Math.max(
-        1,
-        Math.ceil((Number(documentsTotal) || 0) / normalizeDocumentsPageSize(documentsPageSize))
-      ),
-    [documentsTotal, documentsPageSize]
-  );
   const trashPageCount = useMemo(
     () =>
       Math.max(
@@ -2117,40 +2201,9 @@ export default function HomePage() {
   );
 
   useEffect(() => {
-    if (documentsPage <= documentsPageCount) return;
-    setDocumentsPage(documentsPageCount);
-  }, [documentsPage, documentsPageCount]);
-
-  useEffect(() => {
     if (trashPage <= trashPageCount) return;
     setTrashPage(trashPageCount);
   }, [trashPage, trashPageCount]);
-
-  const pageTags = useMemo(() => {
-    const bag = new Set();
-    documents.forEach((doc) => (doc.tags || []).forEach((tag) => bag.add(tag)));
-    return Array.from(bag).sort((a, b) => a.localeCompare(b));
-  }, [documents]);
-  const tags = useMemo(() => {
-    const bag = new Set([...(availableTags || []), ...pageTags]);
-    return Array.from(bag).sort((a, b) => a.localeCompare(b));
-  }, [availableTags, pageTags]);
-  const pageCategories = useMemo(() => {
-    const bag = new Set();
-    documents.forEach((doc) => {
-      const category = normalizeCategory(doc.category);
-      if (category) bag.add(category);
-    });
-    return Array.from(bag).sort((a, b) => a.localeCompare(b));
-  }, [documents]);
-  const categories = useMemo(() => {
-    const bag = new Set([...(availableCategories || []), ...pageCategories]);
-    return Array.from(bag).sort((a, b) => a.localeCompare(b));
-  }, [availableCategories, pageCategories]);
-  const categorySuggestions = useMemo(() => {
-    const bag = new Set([...SUGGESTED_CATEGORIES, ...categories]);
-    return Array.from(bag).sort((a, b) => a.localeCompare(b));
-  }, [categories]);
   const dashboardStats = useMemo(() => {
     const extCounts = new Map();
     const tagBag = new Set();
@@ -2181,195 +2234,82 @@ export default function HomePage() {
       topTypes,
     };
   }, [documents, documentsTotal]);
+  const recentDocumentActivity = useMemo(
+    () =>
+      [...documents]
+        .sort((a, b) => toTimeMs(b?.uploadedAt) - toTimeMs(a?.uploadedAt))
+        .slice(0, 5),
+    [documents]
+  );
+  const recentSummaryActivity = useMemo(
+    () =>
+      [...summaryHistory]
+        .sort((a, b) => toTimeMs(b?.generatedAt) - toTimeMs(a?.generatedAt))
+        .slice(0, 4),
+    [summaryHistory]
+  );
+  const overviewPreferenceCards = useMemo(
+    () => [
+      {
+        id: 'landing',
+        label: 'Default landing',
+        value:
+          activeWorkspaceSettings.default_home_tab === 'ai'
+            ? 'AI Assistant'
+            : activeWorkspaceSettings.default_home_tab === 'files'
+              ? 'My Files'
+              : 'Home overview',
+        detail: `${activeWorkspaceSettings.default_documents_layout} layout · ${activeWorkspaceSettings.default_documents_sort.replace('_', ' ')}`,
+      },
+      {
+        id: 'sidebar',
+        label: 'Sidebar',
+        value: `${activeWorkspaceSettings.sidebar_density} density`,
+        detail: `${activeWorkspaceSettings.show_starred_section ? 'Starred' : 'Starred hidden'} · ${
+          activeWorkspaceSettings.show_recent_section ? 'Recent visible' : 'Recent hidden'
+        }`,
+      },
+      {
+        id: 'sharing',
+        label: 'Sharing policy',
+        value:
+          activeWorkspaceSettings.link_sharing_mode === 'public'
+            ? 'Anyone with link'
+            : activeWorkspaceSettings.link_sharing_mode === 'workspace'
+              ? 'Workspace members'
+              : 'Restricted',
+        detail: trustedInviteDomains.length
+          ? `${trustedInviteDomains.length} trusted domain${trustedInviteDomains.length > 1 ? 's' : ''}`
+          : 'No trusted domains configured',
+      },
+      {
+        id: 'alerts',
+        label: 'In-app alerts',
+        value: `${enabledWorkspaceNotificationCount}/3 enabled`,
+        detail: activeWorkspaceSettings.show_usage_chart
+          ? 'Usage chart visible on overview'
+          : 'Usage chart hidden on overview',
+      },
+    ],
+    [
+      activeWorkspaceSettings.default_documents_layout,
+      activeWorkspaceSettings.default_documents_sort,
+      activeWorkspaceSettings.default_home_tab,
+      activeWorkspaceSettings.link_sharing_mode,
+      activeWorkspaceSettings.show_recent_section,
+      activeWorkspaceSettings.show_starred_section,
+      activeWorkspaceSettings.show_usage_chart,
+      activeWorkspaceSettings.sidebar_density,
+      enabledWorkspaceNotificationCount,
+      trustedInviteDomains.length,
+    ]
+  );
 
-  useEffect(() => {
-    // If the selected tag no longer exists after edits, clear stale filter automatically.
-    if (!filters.tag) return;
-    if (!tags.includes(filters.tag)) {
-      setFilters((prev) => ({ ...prev, tag: '' }));
-    }
-  }, [tags, filters.tag]);
-  useEffect(() => {
-    if (!filters.category) return;
-    if (!categories.includes(filters.category)) {
-      setFilters((prev) => ({ ...prev, category: '' }));
-    }
-  }, [categories, filters.category]);
-  const advancedFilterCount = useMemo(() => {
-    let count = 0;
-    if (filters.start || filters.end) count += 1;
-    if (filters.category) count += 1;
-    if (filters.tag) count += 1;
-    if (filters.fileType) count += 1;
-    return count;
-  }, [filters.start, filters.end, filters.category, filters.tag, filters.fileType]);
-  const hasAdvancedFilters = advancedFilterCount > 0;
   useEffect(() => {
     if (hasAdvancedFilters) {
       setAdvancedFiltersOpen(true);
     }
   }, [hasAdvancedFilters]);
-  const activeFilterCount = useMemo(() => {
-    let count = 0;
-    if (filters.query) count += 1;
-    if (filters.start || filters.end) count += 1;
-    if (filters.category) count += 1;
-    if (filters.tag) count += 1;
-    if (filters.fileType) count += 1;
-    return count;
-  }, [filters.query, filters.start, filters.end, filters.category, filters.tag, filters.fileType]);
-  const fileTypeFilterCounts = useMemo(() => {
-    const source =
-      availableFileTypeCounts && typeof availableFileTypeCounts === 'object' ? availableFileTypeCounts : {};
-    const output = { '': Math.max(0, Number(documentsTotal) || 0) };
-    FILE_TYPE_FILTER_OPTIONS.forEach((option) => {
-      const key = normalizeFileTypeFilter(option.value);
-      if (!key) return;
-      output[key] = Math.max(0, Number(source[key]) || 0);
-    });
-    return output;
-  }, [availableFileTypeCounts, documentsTotal]);
-  const hasActiveFilters = activeFilterCount > 0;
-  const activeDateRangePresetId = useMemo(() => {
-    if (!filters.start && !filters.end) return 'all';
-    const matched = FILTER_DATE_RANGE_OPTIONS.find((option) => {
-      if (option.daysBack === null) return false;
-      const range = getQuickDateRange(option.daysBack);
-      return range.start === filters.start && range.end === filters.end;
-    });
-    return matched?.id || '';
-  }, [filters.start, filters.end]);
-  const activeQuickFilterPresetId = useMemo(() => {
-    const normalized = {
-      query: String(filters.query || '').trim(),
-      start: String(filters.start || '').trim(),
-      end: String(filters.end || '').trim(),
-      tag: String(filters.tag || '').trim(),
-      category: String(filters.category || '').trim(),
-      fileType: normalizeFileTypeFilter(filters.fileType),
-    };
-    const recent7 = getQuickDateRange(6);
-    if (
-      !normalized.query &&
-      !normalized.tag &&
-      !normalized.category &&
-      !normalized.fileType &&
-      normalized.start === recent7.start &&
-      normalized.end === recent7.end
-    ) {
-      return 'recent7';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.category &&
-      normalized.fileType === 'image'
-    ) {
-      return 'images';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.category &&
-      normalized.fileType === 'editable'
-    ) {
-      return 'editable';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.fileType &&
-      normalized.category === DEFAULT_NOTE_CATEGORY
-    ) {
-      return 'uncategorized';
-    }
-    return '';
-  }, [filters.query, filters.start, filters.end, filters.tag, filters.category, filters.fileType]);
-  const activeFilterChips = useMemo(() => {
-    const chips = [];
-    const query = String(filters.query || '').trim();
-    if (query) {
-      chips.push({ id: 'query', label: `Keyword: ${query}` });
-    }
-    if (filters.start || filters.end) {
-      chips.push({
-        id: 'date',
-        label: `Date: ${formatDisplayDateValue(filters.start)} - ${formatDisplayDateValue(filters.end)}`,
-      });
-    }
-    if (filters.category) {
-      chips.push({ id: 'category', label: `Category: ${filters.category}` });
-    }
-    if (filters.tag) {
-      chips.push({ id: 'tag', label: `Tag: ${filters.tag}` });
-    }
-    if (filters.fileType) {
-      chips.push({
-        id: 'fileType',
-        label: `Type: ${getFileTypeFilterLabel(filters.fileType)}`,
-      });
-    }
-    return chips;
-  }, [filters.query, filters.start, filters.end, filters.category, filters.tag, filters.fileType]);
-  const uploadQueueSummary = useMemo(() => {
-    const total = uploadQueue.length;
-    let queued = 0;
-    let uploading = 0;
-    let success = 0;
-    let failed = 0;
-    uploadQueue.forEach((item) => {
-      if (item.status === 'uploading') uploading += 1;
-      else if (item.status === 'success') success += 1;
-      else if (item.status === 'failed') failed += 1;
-      else queued += 1;
-    });
-    const done = success + failed;
-    const progress = total ? Math.round((done / total) * 100) : 0;
-    return { total, queued, uploading, success, failed, progress };
-  }, [uploadQueue]);
-  const canRetryFailedUploads = uploadQueueSummary.failed > 0 && !uploadQueueRunning;
-  const canClearUploadQueue = !uploadQueueRunning && (uploadQueueSummary.success > 0 || uploadQueueSummary.failed > 0);
-  useEffect(() => {
-    if (!uploadQueue.length) {
-      setUploadQueueExpanded(true);
-      return;
-    }
-    if (uploadQueueRunning || uploadQueueSummary.failed > 0) {
-      setUploadQueueExpanded(true);
-    }
-  }, [uploadQueue.length, uploadQueueRunning, uploadQueueSummary.failed]);
-  const currentViewSnapshot = useMemo(
-    () => ({
-      filters: {
-        query: String(filters.query || '').trim(),
-        start: String(filters.start || '').trim(),
-        end: String(filters.end || '').trim(),
-        tag: String(filters.tag || '').trim(),
-        category: String(filters.category || '').trim(),
-        fileType: normalizeFileTypeFilter(filters.fileType),
-      },
-      sort: normalizeDocumentsSort(documentsSort),
-      pageSize: normalizeDocumentsPageSize(documentsPageSize),
-      layout: normalizeDocumentsLayout(documentsLayout),
-    }),
-    [
-      filters.query,
-      filters.start,
-      filters.end,
-      filters.tag,
-      filters.category,
-      filters.fileType,
-      documentsSort,
-      documentsPageSize,
-      documentsLayout,
-    ]
-  );
   useEffect(() => {
     if (!savedViews.length) {
       if (activeSavedViewId) setActiveSavedViewId('');
@@ -2497,6 +2437,25 @@ export default function HomePage() {
     setAccountManagerOpen(false);
     setInviteCopied(false);
     setLatestInviteLinks([]);
+    setLatestInviteDelivery(null);
+  };
+
+  const openWorkspaceSettingsPanel = () => {
+    setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
+    setWorkspaceSettingsDraft(normalizeWorkspaceSettings(activeWorkspace?.settings));
+    setWorkspaceSettingsTab('general');
+    setWorkspaceSettingsOpen(true);
+    setWorkspaceInviteOpen(false);
+    setAccountManagerOpen(false);
+    setWorkspaceMenuOpen(false);
+  };
+
+  const openWorkspaceInvitePanel = () => {
+    setWorkspaceInviteOpen(true);
+    setWorkspaceSettingsOpen(false);
+    setAccountManagerOpen(false);
+    setInviteCopied(false);
+    setWorkspaceMenuOpen(false);
   };
 
   const clearActiveDocShareState = () => {
@@ -2537,6 +2496,11 @@ export default function HomePage() {
 
   const applyWorkspaceLandingView = (rawSettings) => {
     const settings = normalizeWorkspaceSettings(rawSettings);
+    setDocumentsLayout(normalizeDocumentsLayout(settings.default_documents_layout));
+    setDocumentsSort(normalizeDocumentsSort(settings.default_documents_sort));
+    setDocumentsPageSize(normalizeDocumentsPageSize(settings.default_documents_page_size));
+    setDocumentsPage(1);
+    setCanvasDomain(normalizeCanvasDomainInput(settings.preferred_canvas_domain) || DEFAULT_CANVAS_DOMAIN);
     if (settings.default_home_tab === 'files') {
       setShowFiles(true);
       setShowAI(false);
@@ -2558,13 +2522,7 @@ export default function HomePage() {
     sessionStorage.removeItem('auth_token');
     sessionStorage.removeItem('loginAt');
     setIsLoggedIn(false);
-    setDocuments([]);
-    setDocumentsTotal(0);
-    setDocumentsPage(1);
-    setDocumentsLoading(false);
-    setDocumentsLoadError('');
-    setAvailableTags([]);
-    setAvailableCategories([]);
+    resetDocumentsData();
     setSidebarRecentIds([]);
     setSidebarRecentMeta({});
     setStarredNotes([]);
@@ -2602,10 +2560,7 @@ export default function HomePage() {
     setCanvasFilesLoading(false);
     setCanvasFilesError('');
     setCanvasImportingFileId('');
-    setDragUploadActive(false);
-    setUploadQueue([]);
-    setUploadQueueRunning(false);
-    uploadDragDepthRef.current = 0;
+    resetUploadState();
     setWorkspaceMenuOpen(false);
     closeWorkspaceDialogs();
 
@@ -2657,13 +2612,7 @@ export default function HomePage() {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to create workspace');
         await refreshWorkspaces({ preferredWorkspaceId: payload.id, preserveActive: false });
-        setDocuments([]);
-        setDocumentsTotal(0);
-        setDocumentsPage(1);
-        setDocumentsLoading(false);
-        setDocumentsLoadError('');
-        setAvailableTags([]);
-        setAvailableCategories([]);
+        resetDocumentsData();
         setSidebarRecentIds([]);
         setSidebarRecentMeta({});
         setStarredNotes([]);
@@ -2679,6 +2628,9 @@ export default function HomePage() {
         setActiveDocDraftHtml('');
         setActiveDocSaveError('');
         clearActiveDocShareState();
+        setLatestInviteLinks([]);
+        setLatestInviteDelivery(null);
+        setInviteCopied(false);
         applyWorkspaceLandingView(DEFAULT_WORKSPACE_SETTINGS);
       } catch (err) {
         showToast(err.message || 'Failed to create workspace', 'error');
@@ -2699,13 +2651,7 @@ export default function HomePage() {
         workspaces: [nextWorkspace, ...current.workspaces],
       };
     });
-    setDocuments([]);
-    setDocumentsTotal(0);
-    setDocumentsPage(1);
-    setDocumentsLoading(false);
-    setDocumentsLoadError('');
-    setAvailableTags([]);
-    setAvailableCategories([]);
+    resetDocumentsData();
     setSidebarRecentIds([]);
     setSidebarRecentMeta({});
     setStarredNotes([]);
@@ -2721,6 +2667,9 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     clearActiveDocShareState();
+    setLatestInviteLinks([]);
+    setLatestInviteDelivery(null);
+    setInviteCopied(false);
     applyWorkspaceLandingView(nextWorkspace.settings || DEFAULT_WORKSPACE_SETTINGS);
   };
 
@@ -2736,13 +2685,7 @@ export default function HomePage() {
         activeWorkspaceId: targetId,
       };
     });
-    setDocuments([]);
-    setDocumentsTotal(0);
-    setDocumentsPage(1);
-    setDocumentsLoading(false);
-    setDocumentsLoadError('');
-    setAvailableTags([]);
-    setAvailableCategories([]);
+    resetDocumentsData();
     setSidebarRecentIds([]);
     setSidebarRecentMeta({});
     setStarredNotes([]);
@@ -2758,6 +2701,9 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     clearActiveDocShareState();
+    setLatestInviteLinks([]);
+    setLatestInviteDelivery(null);
+    setInviteCopied(false);
     applyWorkspaceLandingView(targetWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
   };
 
@@ -2811,6 +2757,33 @@ export default function HomePage() {
     showToast('Workspace settings saved.', 'success');
   };
 
+  const buildWorkspaceInviteMessage = (inviteItem = null) => {
+    const inviteObject = inviteItem && typeof inviteItem === 'object' ? inviteItem : null;
+    const inviteUrl = String(inviteObject?.invite_url || workspaceInviteLink || '').trim();
+    if (!inviteUrl) return '';
+
+    const workspaceLabel =
+      String(activeWorkspace?.name || `${accountName}'s Workspace`).trim() || 'StudyHub Workspace';
+    const inviterLabel =
+      String(username || accountName || 'A StudyHub member').trim() || 'A StudyHub member';
+    const recipientLabel = String(inviteObject?.email || '').trim();
+    const expiryLabel = inviteObject?.expires_at ? formatDateTimeLabel(inviteObject.expires_at) : '';
+
+    return [
+      `Subject: Join ${workspaceLabel} on StudyHub`,
+      '',
+      recipientLabel ? `Hello ${recipientLabel},` : 'Hello,',
+      '',
+      `${inviterLabel} invited you to join "${workspaceLabel}" on StudyHub.`,
+      'Open the invitation link below, sign in with the same invited email address, and request access:',
+      inviteUrl,
+      expiryLabel ? `This invitation link expires at ${expiryLabel}.` : '',
+      'After you request access, the workspace owner still needs to approve it before you can join.',
+    ]
+      .filter(Boolean)
+      .join('\n');
+  };
+
   const handleInviteMembers = async () => {
     if (!activeWorkspace) return;
     const candidates = workspaceInviteDraft
@@ -2826,6 +2799,18 @@ export default function HomePage() {
     if (invalidEmails.length) {
       showToast(`The following emails are invalid: ${invalidEmails.join(', ')}`, 'warning');
       return;
+    }
+    if (activeWorkspaceSettings.restrict_invites_to_domains && trustedInviteDomains.length) {
+      const outsideTrustedDomains = candidates.filter(
+        (email) => !trustedInviteDomains.includes(getEmailDomain(email))
+      );
+      if (outsideTrustedDomains.length) {
+        showToast(
+          `Invite emails must match trusted domains: ${trustedInviteDomains.join(', ')}`,
+          'warning'
+        );
+        return;
+      }
     }
 
     if (isLoggedIn && username) {
@@ -2843,19 +2828,57 @@ export default function HomePage() {
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to create invitations');
 
-        const links = Array.isArray(payload.created)
-          ? payload.created.map((item) => item?.invite_url).filter(Boolean)
+        const createdItems = Array.isArray(payload.created) ? payload.created.filter(Boolean) : [];
+        const links = createdItems.map((item) => item?.invite_url).filter(Boolean);
+        const failedItems = Array.isArray(payload.send_errors)
+          ? payload.send_errors
+              .map((item) => ({
+                email: String(item?.email || '').trim(),
+                error: String(item?.error || '').trim() || 'Failed to send email',
+              }))
+              .filter((item) => item.email || item.error)
           : [];
+        const invalidResultEmails = Array.isArray(payload.invalid_emails)
+          ? payload.invalid_emails.map((item) => String(item || '').trim()).filter(Boolean)
+          : [];
+        const sentCountRaw = Number(payload.email_sent_count);
+        const sentCount = Number.isFinite(sentCountRaw)
+          ? Math.max(0, sentCountRaw)
+          : Math.max(0, createdItems.length - failedItems.length);
+
         setLatestInviteLinks(links);
+        setLatestInviteDelivery({
+          type: 'create',
+          createdCount: createdItems.length || candidates.length,
+          emailSentCount: sentCount,
+          emailFailedCount: failedItems.length,
+          failedItems,
+          invalidEmails: invalidResultEmails,
+          manualShareRecommended: Boolean(payload.manual_share_recommended || failedItems.length),
+        });
         setWorkspaceInviteDraft('');
         setInviteCopied(false);
         await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
 
-        const failedEmails = Array.isArray(payload.send_errors)
-          ? payload.send_errors.map((item) => item?.email).filter(Boolean)
-          : [];
-        if (failedEmails.length) {
-          showToast(`Failed to send invitation emails: ${failedEmails.join(', ')}`, 'warning');
+        if (failedItems.length) {
+          const createdCount = createdItems.length || candidates.length;
+          if (sentCount > 0) {
+            showToast(
+              `Created ${createdCount} invite(s). ${sentCount} email(s) were sent, and ${failedItems.length} need manual sharing.`,
+              'warning'
+            );
+          } else {
+            showToast(
+              `Created ${createdCount} invite(s), but emails were not sent automatically. Use Copy Invite Message.`,
+              'warning'
+            );
+          }
+        } else if (links.length || candidates.length) {
+          showWorkspaceToast(
+            'sharing',
+            `Sent ${sentCount || createdItems.length || candidates.length} invitation email(s).`,
+            'success'
+          );
         }
       } catch (err) {
         showToast(err.message || 'Failed to create invitations', 'error');
@@ -2877,7 +2900,21 @@ export default function HomePage() {
       }),
     }));
     setWorkspaceInviteDraft('');
+    setLatestInviteLinks([]);
+    setLatestInviteDelivery({
+      type: 'local',
+      createdCount: candidates.length,
+      emailSentCount: 0,
+      emailFailedCount: 0,
+      failedItems: [],
+      invalidEmails: [],
+      manualShareRecommended: true,
+    });
     setInviteCopied(false);
+    showToast(
+      `Saved ${candidates.length} invite target(s) locally. Sign in and configure email delivery to send real invite emails.`,
+      'warning'
+    );
   };
 
   const handleRemoveInvite = async (inviteItem) => {
@@ -2962,16 +2999,91 @@ export default function HomePage() {
     }
   };
 
-  const handleCopyInviteLink = async () => {
-    if (!workspaceInviteLink) {
+  const handleResendInvitation = async (inviteItem) => {
+    if (!activeWorkspace || !isLoggedIn || !username) return;
+    const invitationId = Number(inviteItem?.id);
+    if (!Number.isFinite(invitationId) || invitationId <= 0) return;
+
+    setWorkspaceActionLoading(true);
+    try {
+      const res = await fetch(
+        `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${invitationId}/resend`,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username }),
+        }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to resend invitation email');
+
+      const targetEmail = String(payload?.email || inviteItem?.email || '').trim();
+      const emailSent = Boolean(payload?.email_sent);
+      const failedItems = emailSent
+        ? []
+        : [
+            {
+              email: targetEmail,
+              error: String(payload?.email_error || 'Failed to send email').trim(),
+            },
+          ];
+
+      if (payload?.invite_url) {
+        setLatestInviteLinks([payload.invite_url]);
+      }
+      setLatestInviteDelivery({
+        type: 'resend',
+        createdCount: 1,
+        emailSentCount: emailSent ? 1 : 0,
+        emailFailedCount: emailSent ? 0 : 1,
+        failedItems,
+        invalidEmails: [],
+        manualShareRecommended: !emailSent,
+      });
+      setInviteCopied(false);
+      await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+
+      if (emailSent) {
+        showWorkspaceToast('sharing', `Resent invitation email to ${targetEmail || 'recipient'}.`, 'success');
+      } else {
+        showToast('Invitation refreshed, but email was not sent automatically. Use Copy Invite Message.', 'warning');
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to resend invitation email', 'error');
+    } finally {
+      setWorkspaceActionLoading(false);
+    }
+  };
+
+  const handleCopyInviteLink = async (inviteItem = null) => {
+    const inviteUrl =
+      typeof inviteItem === 'object' && inviteItem
+        ? String(inviteItem?.invite_url || '').trim()
+        : String(workspaceInviteLink || '').trim();
+    if (!inviteUrl) {
       showToast('There is no invitation link to copy.', 'warning');
       return;
     }
     try {
-      await navigator.clipboard.writeText(workspaceInviteLink);
-      setInviteCopied(true);
+      await navigator.clipboard.writeText(inviteUrl);
+      if (!inviteItem) setInviteCopied(true);
+      showWorkspaceToast('sharing', 'Invite link copied.', 'success');
     } catch {
       showToast('Copy failed. Please copy the link manually.', 'error');
+    }
+  };
+
+  const handleCopyInviteMessage = async (inviteItem = null) => {
+    const message = buildWorkspaceInviteMessage(inviteItem);
+    if (!message) {
+      showToast('There is no invitation message to copy yet.', 'warning');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(message);
+      showWorkspaceToast('sharing', 'Invite message copied.', 'success');
+    } catch {
+      showToast('Copy failed. Please copy the message manually.', 'error');
     }
   };
 
@@ -3000,23 +3112,6 @@ export default function HomePage() {
     }
     const nextHistory = removeAccountFromHistory(target);
     setSavedAccounts(normalizeAccounts(nextHistory));
-  };
-
-  const describeFiles = (fileList) =>
-    fileList.length
-      ? `Selected: ${fileList
-          .map((file) => {
-            const mb = (file.size / (1024 * 1024)).toFixed(2);
-            return `${file.name} (${mb} MB)`;
-          })
-          .join(', ')}`
-      : '';
-
-  const formatFileSize = (size) => {
-    const bytes = Number(size) || 0;
-    if (bytes <= 0) return '0 KB';
-    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
   };
 
   const toRecentEntry = (docLike) => {
@@ -3159,15 +3254,6 @@ export default function HomePage() {
     setStarredDragId(0);
   };
 
-  const handleFileChange = (event) => {
-    const files = Array.from(event.target.files || []);
-    if (!files.length) {
-      setFileHint('');
-      return;
-    }
-    setFileHint(describeFiles(files));
-  };
-
   const buildAuthenticatedJsonHeaders = () => {
     const headers = { 'Content-Type': 'application/json' };
     if (authToken) {
@@ -3221,7 +3307,7 @@ export default function HomePage() {
       const items = Array.isArray(payload?.files) ? payload.files : [];
       setCanvasFiles(items);
       setCanvasDomain(normalizeCanvasDomainInput(payload?.domain || domain) || DEFAULT_CANVAS_DOMAIN);
-      showToast(`Loaded ${items.length} supported file(s) from Canvas.`, 'success');
+      showWorkspaceToast('upload', `Loaded ${items.length} supported file(s) from Canvas.`, 'success');
     } catch (err) {
       const message = err?.message || 'Failed to fetch Canvas files';
       setCanvasFiles([]);
@@ -3285,245 +3371,11 @@ export default function HomePage() {
       if (!shouldRefetchViaPageReset) {
         await fetchDocuments(1);
       }
-      showToast(payload?.message || `Imported "${fileItem?.filename || 'Canvas file'}".`, 'success');
+      showWorkspaceToast('upload', payload?.message || `Imported "${fileItem?.filename || 'Canvas file'}".`, 'success');
     } catch (err) {
       showToast(err?.message || 'Failed to import Canvas file', 'error');
     } finally {
       setCanvasImportingFileId('');
-    }
-  };
-
-  const uploadSingleFile = async (file, activeUser) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    formData.append('username', activeUser);
-    if (activeWorkspaceId) {
-      formData.append('workspace_id', activeWorkspaceId);
-    }
-    const preferredCategory = uploadCategory.trim()
-      || (!activeWorkspaceSettings.auto_categorize ? activeWorkspaceSettings.default_category : '');
-    if (preferredCategory) {
-      formData.append('category', preferredCategory);
-    }
-    try {
-      const response = await fetch('/api/documents/upload', {
-        method: 'POST',
-        body: formData,
-      });
-      if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}));
-        return {
-          ok: false,
-          message: String(errorData?.error || 'Upload failed'),
-        };
-      }
-      return { ok: true, message: '' };
-    } catch {
-      return {
-        ok: false,
-        message: 'Network error. Is backend running?',
-      };
-    }
-  };
-
-  const processUploadQueueItems = async (items) => {
-    if (!items.length) return { successCount: 0, totalCount: 0, failedCount: 0 };
-    const activeUser = sessionStorage.getItem('username');
-    let successCount = 0;
-
-    setUploadQueueRunning(true);
-    try {
-      for (const item of items) {
-        setUploadQueue((prev) =>
-          prev.map((row) =>
-            row.id === item.id
-              ? {
-                  ...row,
-                  status: 'uploading',
-                  progress: 20,
-                  message: '',
-                }
-              : row
-          )
-        );
-        const result = await uploadSingleFile(item.file, activeUser);
-        if (result.ok) successCount += 1;
-        setUploadQueue((prev) =>
-          prev.map((row) =>
-            row.id === item.id
-              ? {
-                  ...row,
-                  status: result.ok ? 'success' : 'failed',
-                  progress: result.ok ? 100 : 0,
-                  message: result.ok ? 'Uploaded' : result.message,
-                }
-              : row
-          )
-        );
-      }
-    } finally {
-      setUploadQueueRunning(false);
-    }
-
-    const totalCount = items.length;
-    const failedCount = Math.max(0, totalCount - successCount);
-    return { successCount, totalCount, failedCount };
-  };
-
-  const uploadFiles = async (candidateFiles) => {
-    if (!isLoggedIn) {
-      showToast('Please sign in before uploading.', 'warning');
-      return { successCount: 0, totalCount: 0 };
-    }
-    if (!activeWorkspaceSettings.allow_uploads) {
-      showToast('Uploads are disabled in this workspace settings.', 'warning');
-      return { successCount: 0, totalCount: 0 };
-    }
-    if (!activeWorkspaceId) {
-      showToast('Please select a workspace first.', 'warning');
-      return { successCount: 0, totalCount: 0 };
-    }
-    const files = Array.from(candidateFiles || []).filter((file) => file instanceof File);
-    if (!files.length) {
-      showToast('Please choose at least one file first.', 'warning');
-      return { successCount: 0, totalCount: 0 };
-    }
-    if (uploadQueueRunning) {
-      showToast('Uploads are in progress. Please wait for current queue.', 'warning');
-      return { successCount: 0, totalCount: files.length };
-    }
-
-    const availableSlots = Math.max(0, MAX_UPLOAD_QUEUE_ITEMS - uploadQueue.length);
-    if (availableSlots <= 0) {
-      showToast(
-        `Upload queue is full (max ${MAX_UPLOAD_QUEUE_ITEMS}). Clear finished items before adding more.`,
-        'warning'
-      );
-      return { successCount: 0, totalCount: files.length };
-    }
-
-    const acceptedFiles = files.slice(0, availableSlots);
-    if (acceptedFiles.length < files.length) {
-      showToast(
-        `Queue accepts up to ${MAX_UPLOAD_QUEUE_ITEMS} items. Added first ${acceptedFiles.length} file(s).`,
-        'warning'
-      );
-    }
-
-    const queueItems = acceptedFiles.map((file) => ({
-      id: createUploadQueueId(),
-      file,
-      name: file.name,
-      size: file.size,
-      status: 'queued',
-      progress: 0,
-      message: '',
-    }));
-    setUploadQueue((prev) => [...queueItems, ...prev]);
-
-    const { successCount, totalCount, failedCount } = await processUploadQueueItems(queueItems);
-    if (successCount > 0) {
-      const shouldRefetchViaPageReset = documentsPage !== 1;
-      setDocumentsPage(1);
-      if (!shouldRefetchViaPageReset) {
-        await fetchDocuments(1);
-      }
-    }
-    if (failedCount > 0) {
-      showToast(`Upload finished: ${successCount}/${totalCount} success, ${failedCount} failed.`, 'warning');
-    } else {
-      showToast(`Upload complete! (${successCount}/${totalCount} success)`, 'success');
-    }
-    return { successCount, totalCount };
-  };
-
-  const handleRetryFailedUploads = async () => {
-    if (uploadQueueRunning) return;
-    const failedItems = uploadQueue.filter((item) => item.status === 'failed' && item.file instanceof File);
-    if (!failedItems.length) {
-      showToast('No failed uploads to retry.', 'info');
-      return;
-    }
-    setUploadQueue((prev) =>
-      prev.map((item) =>
-        item.status === 'failed'
-          ? {
-              ...item,
-              status: 'queued',
-              progress: 0,
-              message: '',
-            }
-          : item
-      )
-    );
-    const { successCount, totalCount, failedCount } = await processUploadQueueItems(failedItems);
-    if (successCount > 0) {
-      const shouldRefetchViaPageReset = documentsPage !== 1;
-      setDocumentsPage(1);
-      if (!shouldRefetchViaPageReset) {
-        await fetchDocuments(1);
-      }
-    }
-    if (failedCount > 0) {
-      showToast(`Retry finished: ${successCount}/${totalCount} succeeded.`, 'warning');
-    } else {
-      showToast('All failed uploads retried successfully.', 'success');
-    }
-  };
-
-  const handleClearCompletedUploads = () => {
-    if (uploadQueueRunning) return;
-    setUploadQueue((prev) => prev.filter((item) => item.status === 'queued' || item.status === 'uploading'));
-  };
-
-  const handleUpload = async (event) => {
-    event.preventDefault();
-    const files = Array.from(fileInputRef.current?.files || []);
-    const { successCount } = await uploadFiles(files);
-    if (successCount > 0 && fileInputRef.current) {
-      fileInputRef.current.value = '';
-      setFileHint('');
-    }
-  };
-
-  const handleUploadDragEnter = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!activeWorkspaceSettings.allow_uploads) return;
-    uploadDragDepthRef.current += 1;
-    setDragUploadActive(true);
-  };
-
-  const handleUploadDragOver = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!activeWorkspaceSettings.allow_uploads) return;
-    if (!dragUploadActive) setDragUploadActive(true);
-  };
-
-  const handleUploadDragLeave = (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!activeWorkspaceSettings.allow_uploads) return;
-    uploadDragDepthRef.current = Math.max(0, uploadDragDepthRef.current - 1);
-    if (uploadDragDepthRef.current === 0) {
-      setDragUploadActive(false);
-    }
-  };
-
-  const handleUploadDrop = async (event) => {
-    event.preventDefault();
-    event.stopPropagation();
-    if (!activeWorkspaceSettings.allow_uploads) return;
-    uploadDragDepthRef.current = 0;
-    setDragUploadActive(false);
-    const droppedFiles = Array.from(event.dataTransfer?.files || []).filter((file) => file instanceof File);
-    if (!droppedFiles.length) return;
-    setFileHint(describeFiles(droppedFiles));
-    const { successCount } = await uploadFiles(droppedFiles);
-    if (successCount > 0 && fileInputRef.current) {
-      fileInputRef.current.value = '';
-      setFileHint('');
     }
   };
 
@@ -3741,9 +3593,9 @@ export default function HomePage() {
       pushSummaryHistoryEntry(historyEntry);
     }
     if (data.cache_hit) {
-      showToast('Loaded summary from cache.', 'success');
+      showWorkspaceToast('summary', 'Loaded summary from cache.', 'success');
     } else if (forceRefresh) {
-      showToast('Summary regenerated.', 'success');
+      showWorkspaceToast('summary', 'Summary regenerated.', 'success');
     }
   };
 
@@ -3784,7 +3636,7 @@ export default function HomePage() {
     if (!output) return;
     try {
       await navigator.clipboard.writeText(output);
-      showToast('Summary copied to clipboard.', 'success');
+      showWorkspaceToast('summary', 'Summary copied to clipboard.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
     }
@@ -3846,7 +3698,7 @@ export default function HomePage() {
     setShowFiles(false);
     setShowAI(true);
     setSummaryCenterOpen(false);
-    showToast(`Loaded summary for "${entry.title}".`, 'success');
+    showWorkspaceToast('summary', `Loaded summary for "${entry.title}".`, 'success');
   };
 
   const handleClearSummaryHistory = async () => {
@@ -3860,7 +3712,7 @@ export default function HomePage() {
     });
     if (!shouldClear) return;
     setSummaryHistory([]);
-    showToast('Summary history cleared.', 'success');
+    showWorkspaceToast('summary', 'Summary history cleared.', 'success');
   };
 
   const getSummarySourceLabel = (value) => {
@@ -3909,7 +3761,7 @@ export default function HomePage() {
       .join('\n\n----------------------------------------\n\n');
     const stamp = new Date().toISOString().slice(0, 10);
     downloadTextFile(`studyhub-summary-history-${stamp}.txt`, content);
-    showToast('Summary history exported as TXT.', 'success');
+    showWorkspaceToast('summary', 'Summary history exported as TXT.', 'success');
   };
 
   const handleExportSummaryHistoryJson = () => {
@@ -3947,7 +3799,7 @@ export default function HomePage() {
     link.download = `studyhub-summary-history-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
-    showToast('Summary history exported as JSON.', 'success');
+    showWorkspaceToast('summary', 'Summary history exported as JSON.', 'success');
   };
 
   const handleRebuildSummaryHistoryItem = async (entry) => {
@@ -3985,7 +3837,7 @@ export default function HomePage() {
       if (nextEntry) {
         pushSummaryHistoryEntry(nextEntry);
       }
-      showToast('Summary rebuilt successfully.', 'success');
+      showWorkspaceToast('summary', 'Summary rebuilt successfully.', 'success');
     } finally {
       stopSummaryProgress(progressToken);
       setSummaryCenterActionId('');
@@ -4026,11 +3878,11 @@ export default function HomePage() {
       pushSummaryHistoryEntry(historyEntry);
     }
     if (result.cache_hit) {
-      showToast('Loaded document summary from cache.', 'success');
+      showWorkspaceToast('summary', 'Loaded document summary from cache.', 'success');
     } else if (forceRefresh) {
-      showToast('Document summary regenerated.', 'success');
+      showWorkspaceToast('summary', 'Document summary regenerated.', 'success');
     } else {
-      showToast('Document summary is ready.', 'success');
+      showWorkspaceToast('summary', 'Document summary is ready.', 'success');
     }
   };
 
@@ -4103,7 +3955,7 @@ export default function HomePage() {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to revoke all share links');
       setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
-      showToast(`Revoked ${payload.revoked_count || 0} share link(s).`, 'success');
+      showWorkspaceToast('sharing', `Revoked ${payload.revoked_count || 0} share link(s).`, 'success');
     } catch (err) {
       showToast(err.message || 'Failed to revoke all share links', 'error');
     } finally {
@@ -4116,7 +3968,7 @@ export default function HomePage() {
     if (!value) return;
     try {
       await navigator.clipboard.writeText(value);
-      showToast('Share link copied.', 'success');
+      showWorkspaceToast('sharing', 'Share link copied.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
     }
@@ -4163,7 +4015,8 @@ export default function HomePage() {
       if (!shareUrl.trim()) throw new Error('Failed to create share link');
 
       await navigator.clipboard.writeText(shareUrl);
-      showToast(
+      showWorkspaceToast(
+        'sharing',
         `Share link copied. Expires in ${payload.expiry_days || activeWorkspaceSettings.default_share_expiry_days} day(s).`,
         'success'
       );
@@ -4207,13 +4060,7 @@ export default function HomePage() {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to clear workspace notes');
 
-      setDocuments([]);
-      setDocumentsTotal(0);
-      setDocumentsPage(1);
-      setDocumentsLoading(false);
-      setDocumentsLoadError('');
-      setAvailableTags([]);
-      setAvailableCategories([]);
+      resetDocumentsData();
       setSidebarRecentIds([]);
       setSidebarRecentMeta({});
       setStarredNotes([]);
@@ -5742,427 +5589,113 @@ export default function HomePage() {
   ]);
 
   return (
-    <div className="notion-shell">
+    <div className={`notion-shell ${sidebarDensityClass}`.trim()} style={workspaceThemeStyle}>
       <a className="skip-link" href="#main">
         Skip to main content
       </a>
 
-      <aside className="notion-sidebar" aria-label="Left navigation">
-        <div
-          className={`notion-workspace-picker ${workspaceMenuOpen ? 'open' : ''}`}
-          ref={workspaceMenuRef}
-        >
-          <button
-            type="button"
-            className="notion-workspace-trigger"
-            aria-expanded={workspaceMenuOpen ? 'true' : 'false'}
-            aria-controls="workspace-account-menu"
-            onClick={() => setWorkspaceMenuOpen((prev) => !prev)}
-          >
-            <span className="notion-workspace-trigger-main">
-              <span className="notion-avatar" aria-hidden="true">
-                {workspaceIconLabel(activeWorkspace, accountName)}
-              </span>
-              <span className="notion-workspace-trigger-label">
-                {activeWorkspace?.name || `${accountName}'s Workspace`}
-              </span>
-            </span>
-            <span className="notion-workspace-trigger-chevron" aria-hidden="true">
-              ▾
-            </span>
-          </button>
-
-          <section
-            id="workspace-account-menu"
-            className="notion-account-panel"
-            aria-label="Workspace account"
-            hidden={!workspaceMenuOpen}
-          >
-            <div className="notion-space-head">
-              <div className="notion-avatar notion-avatar-large" aria-hidden="true">
-                {workspaceIconLabel(activeWorkspace, accountName)}
-              </div>
-              <div>
-                <strong>{activeWorkspace?.name || `${accountName}'s Workspace`}</strong>
-                <p>
-                  {isLoggedIn
-                    ? `${activeWorkspace?.plan || 'Free'} · ${workspaceMemberCount || 1} member${
-                        workspaceMemberCount === 1 ? '' : 's'
-                      }${
-                        pendingRequestCount ? ` · ${pendingRequestCount} pending` : ''
-                      }`
-                    : 'Guest mode'}
-                </p>
-              </div>
-            </div>
-
-            <div className="notion-account-tools">
-              <button
-                type="button"
-                className="notion-chip-btn"
-                onClick={() => {
-                  setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
-                  setWorkspaceSettingsDraft(normalizeWorkspaceSettings(activeWorkspace?.settings));
-                  setWorkspaceSettingsTab('general');
-                  setWorkspaceSettingsOpen(true);
-                  setWorkspaceInviteOpen(false);
-                  setAccountManagerOpen(false);
-                  setWorkspaceMenuOpen(false);
-                }}
-                disabled={
-                  !activeWorkspace ||
-                  workspaceLoading ||
-                  workspaceActionLoading ||
-                  (isLoggedIn && activeWorkspace?.is_owner === false)
-                }
-              >
-                Settings
-              </button>
-              <button
-                type="button"
-                className="notion-chip-btn"
-                onClick={() => {
-                  setWorkspaceInviteOpen(true);
-                  setWorkspaceSettingsOpen(false);
-                  setAccountManagerOpen(false);
-                  setInviteCopied(false);
-                }}
-                disabled={
-                  !activeWorkspace ||
-                  workspaceLoading ||
-                  workspaceActionLoading ||
-                  (isLoggedIn &&
-                    activeWorkspace?.is_owner === false &&
-                    !activeWorkspaceSettings.allow_member_invites)
-                }
-              >
-                Invite Members
-              </button>
-            </div>
-
-            <div className="notion-account-email-row">
-              <span>{accountEmail || 'No email set'}</span>
-              <button
-                type="button"
-                className="notion-ellipsis-btn"
-                aria-label="More account actions"
-                onClick={() => {
-                  setAccountManagerOpen(true);
-                  setWorkspaceSettingsOpen(false);
-                  setWorkspaceInviteOpen(false);
-                  setWorkspaceMenuOpen(false);
-                }}
-              >
-                ...
-              </button>
-            </div>
-
-            {(workspaceState.workspaces || []).map((workspace) => (
-              <button
-                key={workspace.id}
-                type="button"
-                className={`notion-space-switch ${workspace.id === workspaceState.activeWorkspaceId ? 'active' : ''}`}
-                onClick={() => handleSelectWorkspace(workspace.id)}
-                disabled={workspaceLoading || workspaceActionLoading}
-              >
-                <span className="notion-space-switch-main">
-                  <span className="notion-avatar" aria-hidden="true">
-                    {workspaceIconLabel(workspace, workspace.name || accountName)}
-                  </span>
-                  <span>{workspace.name}</span>
-                </span>
-                <span aria-hidden="true">{workspace.id === workspaceState.activeWorkspaceId ? '✓' : ''}</span>
-              </button>
-            ))}
-
-            <button
-              type="button"
-              className="notion-plus-link"
-              onClick={handleCreateWorkspace}
-              disabled={workspaceLoading || workspaceActionLoading}
-            >
-              + New Workspace
-            </button>
-
-            <div className="notion-account-divider" />
-
-            <button
-              type="button"
-              className="notion-account-link"
-              onClick={() => {
-                setAccountManagerOpen(true);
-                setWorkspaceSettingsOpen(false);
-                setWorkspaceInviteOpen(false);
-                setWorkspaceMenuOpen(false);
-              }}
-            >
-              Add Another Account
-            </button>
-            <button
-              type="button"
-              className="notion-account-link"
-              onClick={() => {
-                if (isLoggedIn) handleSignOut();
-                else navigate('/login');
-              }}
-            >
-              {isLoggedIn ? 'Sign Out' : 'Sign In'}
-            </button>
-
-            {workspaceInviteOpen && (
-              <section className="notion-inline-panel" aria-label="Invite members">
-                <h3>Invite Members</h3>
-                <label htmlFor="invite-email-input" className="sr-only">
-                  Invite email
-                </label>
-                <input
-                  id="invite-email-input"
-                  type="text"
-                  value={workspaceInviteDraft}
-                  onChange={(event) => setWorkspaceInviteDraft(event.target.value)}
-                  placeholder="Enter email(s), separated by commas"
-                  disabled={workspaceActionLoading}
-                />
-                <div className="notion-inline-panel-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={handleInviteMembers}
-                    disabled={workspaceActionLoading}
-                  >
-                    {workspaceActionLoading ? 'Processing...' : 'Create Invite'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={handleCopyInviteLink}
-                    disabled={workspaceActionLoading}
-                  >
-                    {inviteCopied ? 'Link Copied' : 'Copy Invite Link'}
-                  </button>
-                </div>
-                {workspaceInviteLink && (
-                  <p className="notion-inline-panel-hint">{workspaceInviteLink}</p>
-                )}
-                {inviteCount > 0 && (
-                  <ul className="notion-inline-list">
-                    {inviteItems.map((invite) => {
-                      const inviteId = typeof invite === 'object' ? invite?.id || invite?.email : invite;
-                      const inviteEmail = typeof invite === 'string' ? invite : invite?.email;
-                      const inviteStatus = typeof invite === 'object' ? invite?.status || 'pending' : 'pending';
-                      const isRequested = inviteStatus === 'requested';
-
-                      return (
-                        <li key={`${inviteId}`}>
-                          <span>{inviteEmail}</span>
-                          <div className="notion-inline-list-actions">
-                            <span className={`notion-invite-status notion-invite-status-${inviteStatus}`}>
-                              {inviteStatus === 'requested'
-                                ? 'Pending approval'
-                                : inviteStatus === 'pending'
-                                  ? 'Awaiting request'
-                                  : inviteStatus}
-                            </span>
-                            {isRequested && (
-                              <>
-                                <button
-                                  type="button"
-                                  className="notion-inline-list-switch"
-                                  onClick={() => handleReviewInvitation(invite, 'approve')}
-                                  disabled={workspaceActionLoading}
-                                >
-                                  Approve
-                                </button>
-                                <button
-                                  type="button"
-                                  className="notion-inline-list-remove"
-                                  onClick={() => handleReviewInvitation(invite, 'reject')}
-                                  disabled={workspaceActionLoading}
-                                >
-                                  Reject
-                                </button>
-                              </>
-                            )}
-                            {!isRequested && (
-                              <button
-                                type="button"
-                                className="notion-inline-list-remove"
-                                onClick={() => handleRemoveInvite(invite)}
-                                disabled={workspaceActionLoading}
-                              >
-                                Remove
-                              </button>
-                            )}
-                          </div>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                )}
-              </section>
-            )}
-
-          </section>
-        </div>
-
-        <nav className="notion-nav" aria-label="Main menu">
-          <button
-            type="button"
-            className={`notion-nav-item ${!showFiles && !showAI && !docPaneVisible ? 'active' : ''}`}
-            onClick={() => {
-              closeDocumentPane();
-              setShowFiles(false);
-              setShowAI(false);
-            }}
-          >
-            <span aria-hidden="true">⌂</span>
-            <span>Home</span>
-          </button>
-          <button
-            type="button"
-            className={`notion-nav-item ${showFiles && !showAI && !docPaneVisible ? 'active' : ''}`}
-            onClick={() => {
-              closeDocumentPane();
-              setShowFiles(true);
-              setShowAI(false);
-            }}
-          >
-            <span aria-hidden="true">📄</span>
-            <span>My Files</span>
-          </button>
-          <button
-            type="button"
-            className={`notion-nav-item ${showAI && !docPaneVisible ? 'active' : ''}`}
-            onClick={() => {
-              if (!activeWorkspaceSettings.allow_ai_tools) return;
-              closeDocumentPane();
-              setShowFiles(false);
-              setShowAI(true);
-              setAiHideInputText(false);
-            }}
-            disabled={!activeWorkspaceSettings.allow_ai_tools}
-            title={activeWorkspaceSettings.allow_ai_tools ? undefined : 'AI is disabled in workspace settings'}
-          >
-            <span aria-hidden="true">✨</span>
-            <span>AI Assistant</span>
-          </button>
-        </nav>
-
-        <section
-          className="notion-sidebar-group"
-          aria-labelledby="starred-group-title"
-        >
-          <h2 id="starred-group-title">Starred</h2>
-          <div className="notion-sidebar-list">
-            {sidebarStarredDocs.length ? (
-              sidebarStarredDocs.map((entry) => {
-                const entryId = toPositiveDocId(entry.id);
-                const active = toPositiveDocId(activeDoc?.id) === entryId;
-                return (
-                  <div
-                    key={`starred-${entryId}`}
-                    className={`notion-sidebar-doc-row ${active ? 'active' : ''}${
-                      starredDragId === entryId ? ' dragging' : ''
-                    }`}
-                    draggable
-                    onDragStart={() => handleStarredDragStart(entryId)}
-                    onDragOver={(event) => {
-                      event.preventDefault();
-                    }}
-                    onDrop={(event) => {
-                      event.preventDefault();
-                      handleStarredDrop(entryId);
-                    }}
-                    onDragEnd={handleStarredDragEnd}
-                  >
-                    <button
-                      type="button"
-                      className="notion-sidebar-doc"
-                      onClick={() => handleOpenStarredNote(entry)}
-                    >
-                      <span className="notion-sidebar-doc-prefix notion-sidebar-doc-prefix-star" aria-hidden="true">
-                        ★
-                      </span>
-                      <span className="notion-sidebar-doc-label">{entry.title}</span>
-                    </button>
-                    <div className="notion-sidebar-doc-actions">
-                      <button
-                        type="button"
-                        className="notion-sidebar-doc-more notion-sidebar-doc-unstar"
-                        aria-label={`Remove ${entry.title} from Starred`}
-                        title="Remove from Starred"
-                        onClick={() => handleToggleStarredNote(entry)}
-                      >
-                        ×
-                      </button>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <span className="notion-sidebar-empty">No starred notes yet</span>
-            )}
-          </div>
-        </section>
-
-        <section
-          className="notion-sidebar-group"
-          aria-labelledby="recent-group-title"
-          ref={recentMenuRef}
-        >
-          <h2 id="recent-group-title">Recent</h2>
-          <div className="notion-sidebar-list">
-            {sidebarDocs.length ? (
-              sidebarDocs.map((doc) => (
-                <div
-                  key={doc.id}
-                  className={`notion-sidebar-doc-row ${activeDoc?.id === doc.id ? 'active' : ''} ${sidebarMenuDocId === doc.id ? 'menu-open' : ''}`}
-                >
-                  <button
-                    type="button"
-                    className="notion-sidebar-doc"
-                    onClick={() => openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })}
-                  >
-                    <span className="notion-sidebar-doc-prefix" aria-hidden="true">
-                      {activeDoc?.id === doc.id ? '›' : '📄'}
-                    </span>
-                    <span className="notion-sidebar-doc-label">{doc.title}</span>
-                  </button>
-
-                  <div className="notion-sidebar-doc-actions">
-                    <button
-                      type="button"
-                      className="notion-sidebar-doc-more"
-                      aria-label={`${doc.title} more actions`}
-                      aria-expanded={sidebarMenuDocId === doc.id ? 'true' : 'false'}
-                      onClick={() =>
-                        setSidebarMenuDocId((prev) => (prev === doc.id ? null : doc.id))
-                      }
-                    >
-                      ⋯
-                    </button>
-
-                    {sidebarMenuDocId === doc.id && (
-                      <a
-                        className="notion-sidebar-doc-download"
-                        href={`/api/documents/${doc.id}/file${username ? `?username=${encodeURIComponent(username)}` : ''}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={() => setSidebarMenuDocId(null)}
-                      >
-                        Download
-                      </a>
-                    )}
-                  </div>
-                </div>
-              ))
-            ) : (
-              <span className="notion-sidebar-empty">No recent items</span>
-            )}
-          </div>
-        </section>
-
-      </aside>
+      <WorkspaceSidebar
+        workspaceMenuOpen={workspaceMenuOpen}
+        workspaceMenuRef={workspaceMenuRef}
+        onToggleWorkspaceMenu={() => setWorkspaceMenuOpen((prev) => !prev)}
+        activeWorkspace={activeWorkspace}
+        accountName={accountName}
+        getWorkspaceIconLabel={workspaceIconLabel}
+        isLoggedIn={isLoggedIn}
+        workspaceMemberCount={workspaceMemberCount}
+        pendingRequestCount={pendingRequestCount}
+        onOpenWorkspaceSettings={openWorkspaceSettingsPanel}
+        canOpenWorkspaceSettings={
+          Boolean(activeWorkspace) &&
+          !workspaceLoading &&
+          !workspaceActionLoading &&
+          !(isLoggedIn && activeWorkspace?.is_owner === false)
+        }
+        onOpenWorkspaceInvite={openWorkspaceInvitePanel}
+        canOpenWorkspaceInvite={
+          Boolean(activeWorkspace) &&
+          !workspaceLoading &&
+          !workspaceActionLoading &&
+          !(
+            isLoggedIn &&
+            activeWorkspace?.is_owner === false &&
+            !activeWorkspaceSettings.allow_member_invites
+          )
+        }
+        accountEmail={accountEmail}
+        onOpenAccountManager={() => {
+          setAccountManagerOpen(true);
+          setWorkspaceSettingsOpen(false);
+          setWorkspaceInviteOpen(false);
+          setWorkspaceMenuOpen(false);
+        }}
+        workspaces={workspaceState.workspaces || []}
+        activeWorkspaceId={workspaceState.activeWorkspaceId}
+        onSelectWorkspace={handleSelectWorkspace}
+        onCreateWorkspace={handleCreateWorkspace}
+        workspaceBusy={workspaceLoading || workspaceActionLoading}
+        onAuthAction={() => {
+          if (isLoggedIn) handleSignOut();
+          else navigate('/login');
+        }}
+        workspaceInviteOpen={workspaceInviteOpen}
+        workspaceInviteDraft={workspaceInviteDraft}
+        onChangeWorkspaceInviteDraft={setWorkspaceInviteDraft}
+        workspaceActionLoading={workspaceActionLoading}
+        onInviteMembers={handleInviteMembers}
+        inviteCopied={inviteCopied}
+        onCopyInviteLink={handleCopyInviteLink}
+        onCopyInviteMessage={handleCopyInviteMessage}
+        workspaceInviteLink={workspaceInviteLink}
+        latestInviteDelivery={latestInviteDelivery}
+        trustedInviteDomains={trustedInviteDomains}
+        defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
+        inviteItems={inviteItems}
+        onResendInvitation={handleResendInvitation}
+        onReviewInvitation={handleReviewInvitation}
+        onRemoveInvite={handleRemoveInvite}
+        homeActive={!showFiles && !showAI && !docPaneVisible}
+        filesActive={showFiles && !showAI && !docPaneVisible}
+        aiActive={showAI && !docPaneVisible}
+        aiDisabled={!activeWorkspaceSettings.allow_ai_tools}
+        onGoHome={() => {
+          closeDocumentPane();
+          setShowFiles(false);
+          setShowAI(false);
+        }}
+        onGoFiles={() => {
+          closeDocumentPane();
+          setShowFiles(true);
+          setShowAI(false);
+        }}
+        onGoAI={() => {
+          if (!activeWorkspaceSettings.allow_ai_tools) return;
+          closeDocumentPane();
+          setShowFiles(false);
+          setShowAI(true);
+          setAiHideInputText(false);
+        }}
+        showStarredSection={activeWorkspaceSettings.show_starred_section}
+        starredDocs={sidebarStarredDocs}
+        activeDocId={activeDoc?.id}
+        starredDragId={starredDragId}
+        onStarredDragStart={handleStarredDragStart}
+        onStarredDrop={handleStarredDrop}
+        onStarredDragEnd={handleStarredDragEnd}
+        onOpenStarredNote={handleOpenStarredNote}
+        onToggleStarredNote={handleToggleStarredNote}
+        showRecentSection={activeWorkspaceSettings.show_recent_section}
+        recentMenuRef={recentMenuRef}
+        recentDocs={sidebarDocs}
+        sidebarMenuDocId={sidebarMenuDocId}
+        onToggleSidebarMenu={(docId) =>
+          setSidebarMenuDocId((prev) => (prev === docId ? null : docId))
+        }
+        onOpenRecentDocument={(doc) =>
+          openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })
+        }
+        username={username}
+      />
 
       <div className="notion-main">
         <header className="notion-topbar" role="banner">
@@ -6487,20 +6020,143 @@ export default function HomePage() {
           )}
 
           {!showFiles && !showAI && !docPaneVisible && (
-            <section className="notion-focus-card" aria-label="Quick entry">
-              <div>
-                <h2>Study Workspace</h2>
-                <p>Upload, categorize, search, and summarize your lecture notes in one place.</p>
+            <section className="notion-overview-hero" aria-label="Workspace overview">
+              <div className="notion-overview-hero-main">
+                <div className="notion-overview-eyebrow">
+                  <span className="notion-avatar notion-avatar-large" aria-hidden="true">
+                    {workspaceIconLabel(activeWorkspace, accountName)}
+                  </span>
+                  <span>{isLoggedIn ? 'Workspace overview' : 'Guest workspace'}</span>
+                </div>
+                <h2>{activeWorkspace?.name || `${accountName}'s Workspace`}</h2>
+                <p>
+                  {activeWorkspaceSettings.description ||
+                    'Keep lecture files, summaries, and collaboration rules in one workspace that feels closer to modern study tools.'}
+                </p>
+                <div className="notion-overview-chip-row" aria-label="Workspace highlights">
+                  <span className="notion-summary-chip">Notes {dashboardStats.total}</span>
+                  <span className="notion-summary-chip">Members {workspaceMemberCount || 1}</span>
+                  <span className="notion-summary-chip">
+                    Share {activeWorkspaceSettings.link_sharing_mode}
+                  </span>
+                  <span className="notion-summary-chip">
+                    Canvas {activeWorkspaceSettings.preferred_canvas_domain}
+                  </span>
+                  <span className="notion-summary-chip">
+                    Alerts {enabledWorkspaceNotificationCount}/3
+                  </span>
+                </div>
+                <div className="notion-overview-hero-actions">
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => {
+                      closeDocumentPane();
+                      setShowFiles(true);
+                      setShowAI(false);
+                    }}
+                  >
+                    Open Files
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => {
+                      if (!activeWorkspaceSettings.allow_ai_tools) return;
+                      closeDocumentPane();
+                      setShowFiles(false);
+                      setShowAI(true);
+                      setAiHideInputText(false);
+                    }}
+                    disabled={!activeWorkspaceSettings.allow_ai_tools}
+                  >
+                    Ask AI
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={handleOpenSummaryCenter}
+                    disabled={!activeWorkspaceSettings.allow_ai_tools}
+                  >
+                    Summary Center
+                  </button>
+                </div>
               </div>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={() => setShowFiles((prev) => !prev)}
-                aria-controls="files-section"
-                aria-expanded={showFiles ? 'true' : 'false'}
-              >
-                {showFiles ? 'Back to Overview' : 'Go to Files'}
-              </button>
+              {activeWorkspaceSettings.show_quick_actions && (
+                <aside className="notion-overview-command-panel" aria-label="Quick actions">
+                  <div className="notion-overview-command-head">
+                    <h3>Quick actions</h3>
+                    <span>{nowLabel}</span>
+                  </div>
+                  <div className="notion-overview-command-list">
+                    <button
+                      type="button"
+                      className="notion-overview-command-btn"
+                      onClick={() => {
+                        closeDocumentPane();
+                        setShowFiles(true);
+                        setShowAI(false);
+                        window.requestAnimationFrame(() => {
+                          fileInputRef.current?.click();
+                        });
+                      }}
+                      disabled={!activeWorkspaceSettings.allow_uploads}
+                    >
+                      <strong>Upload note</strong>
+                      <span>Jump into Files and open the picker immediately.</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="notion-overview-command-btn"
+                      onClick={openWorkspaceSettingsPanel}
+                      disabled={
+                        !activeWorkspace ||
+                        workspaceLoading ||
+                        workspaceActionLoading ||
+                        (isLoggedIn && activeWorkspace?.is_owner === false)
+                      }
+                    >
+                      <strong>Workspace settings</strong>
+                      <span>Adjust defaults, layout, sharing, and notifications.</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="notion-overview-command-btn"
+                      onClick={openWorkspaceInvitePanel}
+                      disabled={
+                        !activeWorkspace ||
+                        workspaceLoading ||
+                        workspaceActionLoading ||
+                        (isLoggedIn &&
+                          activeWorkspace?.is_owner === false &&
+                          !activeWorkspaceSettings.allow_member_invites)
+                      }
+                    >
+                      <strong>Invite members</strong>
+                      <span>
+                        {trustedInviteDomains.length
+                          ? `Restricted to ${trustedInviteDomains.join(', ')}`
+                          : 'Share collaboration access with your study group.'}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      className="notion-overview-command-btn"
+                      onClick={() => {
+                        if (!activeWorkspaceSettings.allow_ai_tools) return;
+                        setShowFiles(false);
+                        setShowAI(true);
+                        setAiHideInputText(false);
+                        setExtractedText('');
+                      }}
+                      disabled={!activeWorkspaceSettings.allow_ai_tools}
+                    >
+                      <strong>Start AI session</strong>
+                      <span>Paste text, summarize documents, or extract from images.</span>
+                    </button>
+                  </div>
+                </aside>
+              )}
             </section>
           )}
 
@@ -6535,10 +6191,78 @@ export default function HomePage() {
                 </strong>
                 <span>Distribution of your note formats</span>
               </article>
+              {overviewPreferenceCards.map((item) => (
+                <article key={item.id} className="notion-dashboard-card">
+                  <h3>{item.label}</h3>
+                  <strong>{item.value}</strong>
+                  <span>{item.detail}</span>
+                </article>
+              ))}
             </section>
           )}
 
-          {!showFiles && !showAI && !docPaneVisible && (
+          {!showFiles && !showAI && !docPaneVisible && activeWorkspaceSettings.show_recent_activity && (
+            <section className="notion-overview-activity-grid" aria-label="Recent activity">
+              <article className="notion-panel-block notion-overview-activity-panel">
+                <div className="notion-panel-head">
+                  <h2 className="section-title">Recent uploads</h2>
+                  <p>Quickly reopen the latest notes added to this workspace.</p>
+                </div>
+                {recentDocumentActivity.length ? (
+                  <ul className="notion-overview-activity-list">
+                    {recentDocumentActivity.map((doc) => (
+                      <li key={`overview-doc-${doc.id}`}>
+                        <button
+                          type="button"
+                          className="notion-overview-activity-item"
+                          onClick={() => openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })}
+                        >
+                          <strong>{doc.title}</strong>
+                          <span>
+                            {normalizeCategory(doc.category)} · {formatDateTimeLabel(doc.uploadedAt)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="notion-settings-help">
+                    No uploads yet. Add your first note to populate the workspace activity feed.
+                  </p>
+                )}
+              </article>
+              <article className="notion-panel-block notion-overview-activity-panel">
+                <div className="notion-panel-head">
+                  <h2 className="section-title">Summary activity</h2>
+                  <p>Recent AI outputs and the models or sources behind them.</p>
+                </div>
+                {recentSummaryActivity.length ? (
+                  <ul className="notion-overview-activity-list">
+                    {recentSummaryActivity.map((entry) => (
+                      <li key={`overview-summary-${entry.id}`}>
+                        <button
+                          type="button"
+                          className="notion-overview-activity-item"
+                          onClick={() => handleApplySummaryHistoryItem(entry)}
+                        >
+                          <strong>{entry.title}</strong>
+                          <span>
+                            {getSummarySourceLabel(entry.summarySource)} · {formatDateTimeLabel(entry.generatedAt)}
+                          </span>
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="notion-settings-help">
+                    No summary history yet. Use AI Assistant or summarize a document to build this feed.
+                  </p>
+                )}
+              </article>
+            </section>
+          )}
+
+          {!showFiles && !showAI && !docPaneVisible && activeWorkspaceSettings.show_usage_chart && (
             <>
               <Suspense fallback={<p className="muted tiny">Loading usage chart...</p>}>
                 <UsageChart usageMap={usageMap} />
@@ -6937,218 +6661,41 @@ export default function HomePage() {
                   </section>
                 </aside>
 
-                  <section className="uploader notion-panel-block notion-upload-panel" aria-labelledby="uploader-title">
-                    <div className="notion-panel-head">
-                      <h2 id="uploader-title" className="section-title">Upload Files</h2>
-                      <p>Add new notes to this workspace and auto-index them for search.</p>
-                    </div>
-                    <div
-                      className={`notion-upload-dropzone${dragUploadActive ? ' is-active' : ''}${
-                        !activeWorkspaceSettings.allow_uploads ? ' is-disabled' : ''
-                      }`}
-                      onDragEnter={handleUploadDragEnter}
-                      onDragOver={handleUploadDragOver}
-                      onDragLeave={handleUploadDragLeave}
-                      onDrop={handleUploadDrop}
-                    >
-                      <form id="upload-form" onSubmit={handleUpload} noValidate>
-                        <input
-                          id="file-input"
-                          type="file"
-                          accept=".pdf,.docx,.txt,image/*"
-                          ref={fileInputRef}
-                          onChange={handleFileChange}
-                          className="sr-only"
-                          disabled={!activeWorkspaceSettings.allow_uploads}
-                        />
-                        <label htmlFor="upload-category-input">Category (optional)</label>
-                        <input
-                          id="upload-category-input"
-                          type="text"
-                          list="upload-category-options"
-                          placeholder="e.g. Computer Science"
-                          value={uploadCategory}
-                          onChange={(event) => setUploadCategory(event.target.value)}
-                          disabled={!activeWorkspaceSettings.allow_uploads}
-                        />
-                        <datalist id="upload-category-options">
-                          {categorySuggestions.map((category) => (
-                            <option key={category} value={category} />
-                          ))}
-                        </datalist>
-                        <div className="uploader-actions">
-                          <label
-                            htmlFor="file-input"
-                            className={`btn file-btn${!activeWorkspaceSettings.allow_uploads ? ' disabled' : ''}`}
-                            aria-disabled={!activeWorkspaceSettings.allow_uploads}
-                          >
-                            Choose Files
-                          </label>
-                          <button
-                            id="upload-btn"
-                            className="btn btn-primary"
-                            type="submit"
-                            disabled={!activeWorkspaceSettings.allow_uploads || uploadQueueRunning}
-                          >
-                            {uploadQueueRunning ? 'Uploading...' : 'Upload'}
-                          </button>
-                        </div>
-                        <span id="file-hint" className="muted file-picker-text" aria-live="polite">
-                          {fileHint || 'No file selected yet'}
-                        </span>
-                        {uploadQueueSummary.total > 0 && (
-                          <section className="notion-upload-queue" aria-label="Upload queue">
-                            <div className="notion-upload-queue-head">
-                              <div className="notion-upload-queue-stats">
-                                <span>Total {uploadQueueSummary.total}</span>
-                                <span className="is-success">Success {uploadQueueSummary.success}</span>
-                                <span className="is-failed">Failed {uploadQueueSummary.failed}</span>
-                                <span>Running {uploadQueueSummary.uploading}</span>
-                              </div>
-                              <div className="notion-upload-queue-actions">
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={() => setUploadQueueExpanded((prev) => !prev)}
-                                >
-                                  {uploadQueueExpanded ? 'Collapse' : 'Expand'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={handleRetryFailedUploads}
-                                  disabled={!canRetryFailedUploads}
-                                >
-                                  Retry Failed
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={handleClearCompletedUploads}
-                                  disabled={!canClearUploadQueue}
-                                >
-                                  Clear Finished
-                                </button>
-                              </div>
-                            </div>
-                            {uploadQueueExpanded && (
-                              <>
-                                <div className="notion-upload-queue-progress" role="presentation">
-                                  <span style={{ width: `${uploadQueueSummary.progress}%` }} />
-                                </div>
-                                <ul className="notion-upload-queue-list">
-                                  {uploadQueue.slice(0, 8).map((item) => (
-                                    <li key={item.id}>
-                                      <div>
-                                        <strong>{item.name}</strong>
-                                        <span>{item.message || formatFileSize(item.size)}</span>
-                                      </div>
-                                      <span className={`notion-upload-status notion-upload-status-${item.status}`}>
-                                        {item.status}
-                                      </span>
-                                    </li>
-                                  ))}
-                                </ul>
-                                {uploadQueue.length > 8 && (
-                                  <p className="muted tiny">
-                                    +{uploadQueue.length - 8} more item(s) in queue
-                                  </p>
-                                )}
-                              </>
-                            )}
-                          </section>
-                        )}
-                      </form>
-                      <section className="notion-canvas-import" aria-label="Canvas import">
-                        <div className="notion-canvas-import-head">
-                          <h3>Import from Canvas (PAT)</h3>
-                          <p className="muted tiny">
-                            For MVP testing. Token is used only for requests and is not saved on server.
-                          </p>
-                        </div>
-                        <div className="notion-canvas-import-controls">
-                          <label className="notion-results-control" htmlFor="canvas-domain-input">
-                            <span>Canvas Domain</span>
-                            <input
-                              id="canvas-domain-input"
-                              type="text"
-                              value={canvasDomain}
-                              onChange={(event) => setCanvasDomain(event.target.value)}
-                              placeholder="canvas.yourschool.edu"
-                              autoComplete="off"
-                              disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
-                            />
-                          </label>
-                          <label className="notion-results-control notion-canvas-token-control" htmlFor="canvas-token-input">
-                            <span>Personal Access Token</span>
-                            <input
-                              id="canvas-token-input"
-                              type="password"
-                              value={canvasToken}
-                              onChange={(event) => setCanvasToken(event.target.value)}
-                              placeholder="Paste Canvas token"
-                              autoComplete="off"
-                              disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
-                            />
-                          </label>
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={handleFetchCanvasFiles}
-                            disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
-                          >
-                            {canvasFilesLoading ? 'Loading...' : 'Get Files'}
-                          </button>
-                        </div>
-                        {canvasFilesError && <p className="muted tiny">Canvas: {canvasFilesError}</p>}
-                        {!!canvasFiles.length && (
-                          <>
-                            <p className="muted tiny">
-                              {canvasFiles.length} supported file(s) ready to import.
-                            </p>
-                            <ul className="notion-canvas-file-list">
-                              {canvasFiles.slice(0, 24).map((item) => {
-                                const fileId = Number(item?.id) || 0;
-                                const importing = canvasImportingFileId === String(fileId);
-                                return (
-                                  <li key={`canvas-file-${fileId}`}>
-                                    <div>
-                                      <strong>{item?.filename || `File ${fileId}`}</strong>
-                                      <span>
-                                        {(item?.file_type || '').toUpperCase() || 'FILE'} ·{' '}
-                                        {formatFileSize(item?.size)}
-                                      </span>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      className="btn btn-primary"
-                                      onClick={() => void handleImportCanvasFile(item)}
-                                      disabled={!activeWorkspaceSettings.allow_uploads || canvasFilesLoading || !!canvasImportingFileId}
-                                    >
-                                      {importing ? 'Importing...' : 'Import'}
-                                    </button>
-                                  </li>
-                                );
-                              })}
-                            </ul>
-                            {canvasFiles.length > 24 && (
-                              <p className="muted tiny">
-                                Showing first 24 files. Refine in Canvas or import in batches.
-                              </p>
-                            )}
-                          </>
-                        )}
-                      </section>
-                      <p className="notion-upload-drop-hint">
-                        Drag & drop files here for quick upload.
-                      </p>
-                    </div>
-                    <p className="muted tiny">
-                      {activeWorkspaceSettings.allow_uploads
-                        ? 'Supports PDF / DOCX / TXT / images, up to 20MB per file. Empty category will be auto-assigned.'
-                        : 'Uploads are currently disabled by workspace settings.'}
-                    </p>
-                  </section>
+                <UploadPanel
+                  allowUploads={activeWorkspaceSettings.allow_uploads}
+                  showCanvasImport={activeWorkspaceSettings.show_canvas_import}
+                  dragUploadActive={dragUploadActive}
+                  onDragEnter={handleUploadDragEnter}
+                  onDragOver={handleUploadDragOver}
+                  onDragLeave={handleUploadDragLeave}
+                  onDrop={handleUploadDrop}
+                  onSubmit={handleUpload}
+                  fileInputRef={fileInputRef}
+                  onFileChange={handleFileChange}
+                  uploadCategory={uploadCategory}
+                  onUploadCategoryChange={setUploadCategory}
+                  categorySuggestions={categorySuggestions}
+                  uploadQueueRunning={uploadQueueRunning}
+                  fileHint={fileHint}
+                  uploadQueueSummary={uploadQueueSummary}
+                  uploadQueueExpanded={uploadQueueExpanded}
+                  onToggleUploadQueueExpanded={() => setUploadQueueExpanded((prev) => !prev)}
+                  onRetryFailedUploads={handleRetryFailedUploads}
+                  canRetryFailedUploads={canRetryFailedUploads}
+                  onClearCompletedUploads={handleClearCompletedUploads}
+                  canClearUploadQueue={canClearUploadQueue}
+                  uploadQueue={uploadQueue}
+                  canvasDomain={canvasDomain}
+                  onCanvasDomainChange={setCanvasDomain}
+                  canvasToken={canvasToken}
+                  onCanvasTokenChange={setCanvasToken}
+                  canvasFilesLoading={canvasFilesLoading}
+                  canvasImportingFileId={canvasImportingFileId}
+                  onFetchCanvasFiles={handleFetchCanvasFiles}
+                  canvasFilesError={canvasFilesError}
+                  canvasFiles={canvasFiles}
+                  onImportCanvasFile={(item) => void handleImportCanvasFile(item)}
+                />
 
                 <section className="notion-files-results notion-panel-block notion-results-panel" aria-labelledby="docs-title">
                   <div className="notion-files-results-head">
@@ -7551,509 +7098,96 @@ export default function HomePage() {
         </div>
       )}
 
-      {summaryCenterOpen && (
-        <div
-          className="notion-modal-backdrop"
-          role="presentation"
-          onClick={() => setSummaryCenterOpen(false)}
-        >
-          <section
-            className="notion-modal-card notion-summary-center-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="summary-center-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="notion-summary-center-head">
-              <div>
-                <h3 id="summary-center-title">Document Summary Center</h3>
-                <p className="notion-settings-help">
-                  Summaries generated from uploaded PDF / DOCX / TXT content in this workspace.
-                </p>
-              </div>
-              <span className="notion-top-pill">{summaryHistory.length} saved</span>
-            </div>
-            <div className="notion-summary-center-stats" aria-label="Summary statistics">
-              <span className="notion-summary-center-stat">
-                <strong>{summaryHistoryStats.total}</strong>
-                <small>Total</small>
-              </span>
-              <span className="notion-summary-center-stat is-cache">
-                <strong>{summaryHistoryStats.cache}</strong>
-                <small>Cache Hits</small>
-              </span>
-              <span className="notion-summary-center-stat is-ai">
-                <strong>{summaryHistoryStats.huggingface}</strong>
-                <small>AI Generated</small>
-              </span>
-              <span className="notion-summary-center-stat is-fallback">
-                <strong>{summaryHistoryStats.fallback}</strong>
-                <small>Fallback</small>
-              </span>
-            </div>
-            {summaryProgress.active && (
-              <section className="notion-summary-progress" aria-live="polite">
-                <div className="notion-summary-progress-head">
-                  <strong>{summaryProgressLabel}</strong>
-                  {summaryProgress.docTitle && (
-                    <span className="muted tiny">Document: {summaryProgress.docTitle}</span>
-                  )}
-                </div>
-                {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
-                  <div className="notion-summary-progress-steps" role="status">
-                    <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
-                      1. Refresh full PDF text
-                    </span>
-                    <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
-                      2. Chunk and summarize
-                    </span>
-                  </div>
-                )}
-              </section>
-            )}
-            <div className="notion-summary-center-toolbar">
-              <div className="notion-summary-center-search">
-                <input
-                  type="text"
-                  placeholder="Search summaries by title, keyword, or content"
-                  value={summaryCenterQuery}
-                  onChange={(event) => setSummaryCenterQuery(event.target.value)}
-                  autoFocus
-                />
-              </div>
-              <div className="notion-summary-center-filters">
-                <label htmlFor="summary-center-source-select">
-                  <span>Source</span>
-                  <select
-                    id="summary-center-source-select"
-                    value={summaryCenterSource}
-                    onChange={(event) => setSummaryCenterSource(normalizeSummaryCenterSource(event.target.value))}
-                  >
-                    {SUMMARY_CENTER_SOURCE_OPTIONS.map((item) => (
-                      <option key={`summary-source-${item.value}`} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label htmlFor="summary-center-sort-select">
-                  <span>Sort</span>
-                  <select
-                    id="summary-center-sort-select"
-                    value={summaryCenterSort}
-                    onChange={(event) => setSummaryCenterSort(normalizeSummaryCenterSort(event.target.value))}
-                  >
-                    {SUMMARY_CENTER_SORT_OPTIONS.map((item) => (
-                      <option key={`summary-sort-${item.value}`} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label htmlFor="summary-center-model-select">
-                  <span>Model</span>
-                  <select
-                    id="summary-center-model-select"
-                    value={summaryCenterModel}
-                    onChange={(event) => setSummaryCenterModel(String(event.target.value || 'all').trim() || 'all')}
-                  >
-                    {summaryCenterModelOptions.map((item) => (
-                      <option key={`summary-model-${item}`} value={item}>
-                        {item === 'all' ? 'All models' : item}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label htmlFor="summary-center-chunk-select">
-                  <span>Chunking</span>
-                  <select
-                    id="summary-center-chunk-select"
-                    value={summaryCenterChunk}
-                    onChange={(event) => setSummaryCenterChunk(normalizeSummaryCenterChunkFilter(event.target.value))}
-                  >
-                    {SUMMARY_CENTER_CHUNK_OPTIONS.map((item) => (
-                      <option key={`summary-chunk-${item.value}`} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-            <div className="notion-summary-center-actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={handleExportSummaryHistoryTxt}
-                disabled={!summaryHistoryItems.length}
-              >
-                Export TXT
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={handleExportSummaryHistoryJson}
-                disabled={!summaryHistoryItems.length}
-              >
-                Export JSON
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={handleClearSummaryHistory}
-                disabled={!summaryHistory.length}
-              >
-                Clear All
-              </button>
-            </div>
-            <p className="muted tiny">
-              Showing {summaryHistoryItems.length} of {summaryHistory.length} summaries
-            </p>
-            {summaryHistoryItems.length ? (
-              <ul className="notion-summary-history-list">
-                {summaryHistoryItems.map((entry) => (
-                  <li
-                    key={entry.id}
-                    className={`notion-summary-history-item is-source-${normalizeSummarySource(entry.summarySource)}`}
-                  >
-                    <div className="notion-summary-history-meta">
-                      <strong>{entry.title}</strong>
-                      <span>
-                        {(entry.fileType || 'text').toUpperCase()} · {formatDateTimeLabel(entry.generatedAt)} ·{' '}
-                        {getSummarySourceLabel(entry.summarySource)} · {entry.chunkCount || 1} chunk
-                        {(entry.chunkCount || 1) > 1 ? 's' : ''}
-                        {entry.mergeRounds ? ` · merge ${entry.mergeRounds}` : ''}
-                        {entry.refreshedFromFile ? ' · refreshed text' : ''}
-                      </span>
-                    </div>
-                    <p
-                      className={`notion-summary-history-text ${
-                        summaryCenterExpandedIds.includes(String(entry.id)) ? 'is-expanded' : ''
-                      }`}
-                    >
-                      {entry.summary}
-                    </p>
-                    {entry.summaryNote && (
-                      <p className="muted tiny">{entry.summaryNote}</p>
-                    )}
-                    {entry.keywords.length > 0 && (
-                      <div className="notion-summary-history-tags">
-                        {entry.keywords.slice(0, 10).map((keyword) => (
-                          <span key={`${entry.id}-${keyword}`}>{keyword}</span>
-                        ))}
-                      </div>
-                    )}
-                    <div className="notion-summary-history-actions">
-                      <button
-                        type="button"
-                        className="btn btn-primary"
-                        onClick={() => handleApplySummaryHistoryItem(entry)}
-                      >
-                        Use in AI Panel
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => {
-                          const targetId = toPositiveDocId(entry.docId);
-                          if (!targetId) return;
-                          setSummaryCenterOpen(false);
-                          void openDocumentInPane(targetId, { fromSidebar: true });
-                        }}
-                        disabled={!toPositiveDocId(entry.docId)}
-                      >
-                        Open Note
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => handleRebuildSummaryHistoryItem(entry)}
-                        disabled={summaryCenterActionId === String(entry.id)}
-                        title="Bypass cache and refresh document text before summarizing"
-                      >
-                        {summaryCenterActionId === String(entry.id) ? 'Rebuilding...' : 'Rebuild + Refresh'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => toggleSummaryHistoryExpanded(entry.id)}
-                      >
-                        {summaryCenterExpandedIds.includes(String(entry.id)) ? 'Collapse' : 'Expand'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => removeSummaryHistoryEntry(entry.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="muted">No summary history yet. Use "Summarize Document" on any note to generate one.</p>
-            )}
-            <div className="notion-modal-actions">
-              <button type="button" className="btn" onClick={() => setSummaryCenterOpen(false)}>
-                Close
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <SummaryCenterModal
+        open={summaryCenterOpen}
+        onClose={() => setSummaryCenterOpen(false)}
+        summaryHistory={summaryHistory}
+        summaryHistoryStats={summaryHistoryStats}
+        summaryProgress={summaryProgress}
+        summaryProgressLabel={summaryProgressLabel}
+        query={summaryCenterQuery}
+        onQueryChange={setSummaryCenterQuery}
+        source={summaryCenterSource}
+        onSourceChange={(value) => setSummaryCenterSource(normalizeSummaryCenterSource(value))}
+        sort={summaryCenterSort}
+        onSortChange={(value) => setSummaryCenterSort(normalizeSummaryCenterSort(value))}
+        model={summaryCenterModel}
+        onModelChange={(value) => setSummaryCenterModel(String(value || 'all').trim() || 'all')}
+        chunk={summaryCenterChunk}
+        onChunkChange={(value) => setSummaryCenterChunk(normalizeSummaryCenterChunkFilter(value))}
+        sourceOptions={SUMMARY_CENTER_SOURCE_OPTIONS}
+        sortOptions={SUMMARY_CENTER_SORT_OPTIONS}
+        chunkOptions={SUMMARY_CENTER_CHUNK_OPTIONS}
+        modelOptions={summaryCenterModelOptions}
+        items={summaryHistoryItems}
+        expandedIds={summaryCenterExpandedIds}
+        actionId={summaryCenterActionId}
+        onExportTxt={handleExportSummaryHistoryTxt}
+        onExportJson={handleExportSummaryHistoryJson}
+        onClearAll={handleClearSummaryHistory}
+        onApplyItem={handleApplySummaryHistoryItem}
+        onOpenItemDocument={(entry) => {
+          const targetId = toPositiveDocId(entry?.docId);
+          if (!targetId) return;
+          setSummaryCenterOpen(false);
+          void openDocumentInPane(targetId, { fromSidebar: true });
+        }}
+        onRebuildItem={handleRebuildSummaryHistoryItem}
+        onToggleExpanded={toggleSummaryHistoryExpanded}
+        onDeleteItem={removeSummaryHistoryEntry}
+        getSummarySourceLabel={getSummarySourceLabel}
+        formatDateTimeLabel={formatDateTimeLabel}
+      />
 
-      {trashModalOpen && (
-        <div
-          className="notion-modal-backdrop"
-          role="presentation"
-          onClick={() => setTrashModalOpen(false)}
-        >
-          <section
-            className="notion-modal-card notion-trash-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="trash-modal-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="notion-trash-head">
-              <div>
-                <h3 id="trash-modal-title">Trash</h3>
-                <p className="notion-settings-help">
-                  Notes in Trash are auto-deleted after {trashRetentionDays} day(s).
-                </p>
-              </div>
-              <div className="notion-trash-head-actions">
-                <span className="notion-summary-chip">Items {trashTotal}</span>
-                {!!selectedTrashCount && (
-                  <span className="notion-summary-chip is-selected">
-                    Selected {selectedTrashCount}
-                  </span>
-                )}
-              </div>
-            </div>
-
-            <div className="notion-trash-toolbar">
-              <label className="notion-results-control notion-trash-search-control" htmlFor="trash-search-input">
-                <span>Search Trash</span>
-                <input
-                  id="trash-search-input"
-                  type="text"
-                  placeholder="Search title, tags, category..."
-                  value={trashQuery}
-                  onChange={(event) => {
-                    setTrashQuery(event.target.value);
-                    setTrashPage(1);
-                  }}
-                />
-              </label>
-              <label className="notion-results-control" htmlFor="trash-sort-select">
-                <span>Sort</span>
-                <select
-                  id="trash-sort-select"
-                  value={trashSort}
-                  onChange={(event) => {
-                    setTrashSort(normalizeTrashSort(event.target.value));
-                    setTrashPage(1);
-                  }}
-                >
-                  {TRASH_SORT_OPTIONS.map((item) => (
-                    <option key={`trash-sort-${item.value}`} value={item.value}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="notion-results-control" htmlFor="trash-page-size-select">
-                <span>Per page</span>
-                <select
-                  id="trash-page-size-select"
-                  value={trashPageSize}
-                  onChange={(event) => {
-                    setTrashPageSize(normalizeTrashPageSize(Number(event.target.value) || TRASH_PAGE_SIZE_OPTIONS[1]));
-                    setTrashPage(1);
-                  }}
-                >
-                  {TRASH_PAGE_SIZE_OPTIONS.map((size) => (
-                    <option key={`trash-page-size-${size}`} value={size}>
-                      {size}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => fetchTrashDocuments()}
-                disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-              >
-                {trashLoading ? 'Refreshing...' : 'Refresh'}
-              </button>
-            </div>
-
-            <p className="muted tiny">
-              Showing {trashRangeStart}-{trashRangeEnd} of {trashTotal} item(s)
-              {trashQuery.trim() ? ` for "${trashQuery.trim()}"` : ''}.
-            </p>
-
-            {!!trashItems.length && (
-              <div className="notion-trash-bulk-actions">
-                <div className="notion-trash-bulk-buttons">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={toggleSelectAllTrashOnPage}
-                    disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-                  >
-                    {allTrashItemsSelectedOnPage ? 'Unselect Page' : 'Select Page'}
-                  </button>
-                  {!!selectedTrashCount && (
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={clearSelectedTrashDocuments}
-                      disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-                    >
-                      Clear Selection
-                    </button>
-                  )}
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={handleBulkRestoreFromTrash}
-                    disabled={
-                      !selectedTrashCount ||
-                      trashLoading ||
-                      Boolean(trashActionLoadingId) ||
-                      trashBulkActionLoading
-                    }
-                  >
-                    {trashBulkActionLoading ? 'Processing...' : 'Restore Selected'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-delete"
-                    onClick={handleBulkDeleteForeverFromTrash}
-                    disabled={
-                      !selectedTrashCount ||
-                      trashLoading ||
-                      Boolean(trashActionLoadingId) ||
-                      trashBulkActionLoading
-                    }
-                  >
-                    {trashBulkActionLoading ? 'Processing...' : 'Delete Forever Selected'}
-                  </button>
-                </div>
-              </div>
-            )}
-
-            {trashPurgedCount > 0 && (
-              <p className="muted tiny">Auto-purged {trashPurgedCount} expired item(s) in this refresh.</p>
-            )}
-            {trashLoadError && <p className="muted tiny">Load failed: {trashLoadError}</p>}
-            {trashLoading && !trashLoadError && <p className="muted tiny">Loading Trash...</p>}
-
-            {!trashLoading && !trashLoadError && !trashItems.length && (
-              <p className="muted">
-                {trashQuery.trim() ? 'No Trash items match your search.' : 'Trash is empty.'}
-              </p>
-            )}
-
-            {!!trashItems.length && (
-              <ul className="notion-trash-list" aria-label="Trashed documents">
-                {trashItems.map((item) => {
-                  const docId = toPositiveDocId(item?.id);
-                  const checked = trashSelectedIdSet.has(docId);
-                  const busy =
-                    trashBulkActionLoading ||
-                    trashActionLoadingId === `restore-${docId}` ||
-                    trashActionLoadingId === `delete-${docId}`;
-                  const tags = Array.isArray(item?.tags) ? item.tags.filter(Boolean).slice(0, 5) : [];
-                  return (
-                    <li key={`trash-item-${docId}`}>
-                      <div className="notion-trash-item-head">
-                        <div className="notion-trash-item-title">
-                          <label className="notion-trash-item-select">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleTrashDocumentSelection(docId)}
-                              disabled={trashLoading || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-                              aria-label={`Select ${item?.title || `Note ${docId}`}`}
-                            />
-                          </label>
-                          <strong>{item?.title || `Note ${docId}`}</strong>
-                        </div>
-                        <span>{String(getDocExt(item) || 'file').toUpperCase()}</span>
-                      </div>
-                      <p className="muted tiny">
-                        Deleted: {formatDateTimeLabel(item?.deletedAt || item?.deleted_at)} · Uploaded:{' '}
-                        {formatDateTimeLabel(item?.uploadedAt || item?.uploaded_at)}
-                      </p>
-                      <p className="muted tiny">
-                        Category: {normalizeCategory(item?.category)}
-                        {tags.length ? ` · Tags: ${tags.join(', ')}` : ''}
-                      </p>
-                      <div className="notion-trash-item-actions">
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          onClick={() => void handleRestoreFromTrash(item)}
-                          disabled={busy || Boolean(trashActionLoadingId)}
-                        >
-                          {busy && trashActionLoadingId.startsWith('restore-') ? 'Restoring...' : 'Restore'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn btn-delete"
-                          onClick={() => void handleDeleteForeverFromTrash(item)}
-                          disabled={busy || Boolean(trashActionLoadingId)}
-                        >
-                          {busy && trashActionLoadingId.startsWith('delete-')
-                            ? 'Deleting...'
-                            : 'Delete Forever'}
-                        </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-
-            {!!trashItems.length && trashPageCount > 1 && (
-              <div className="notion-trash-pagination">
-                <span className="muted tiny">
-                  Page {trashPage} / {trashPageCount}
-                </span>
-                <div className="notion-trash-pagination-actions">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => setTrashPage((prev) => Math.max(1, prev - 1))}
-                    disabled={trashLoading || trashPage <= 1 || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-                  >
-                    Previous
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => setTrashPage((prev) => Math.min(trashPageCount, prev + 1))}
-                    disabled={trashLoading || trashPage >= trashPageCount || Boolean(trashActionLoadingId) || trashBulkActionLoading}
-                  >
-                    Next
-                  </button>
-                </div>
-              </div>
-            )}
-
-            <div className="notion-modal-actions">
-              <button type="button" className="btn" onClick={() => setTrashModalOpen(false)}>
-                Close
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
+      <TrashModal
+        open={trashModalOpen}
+        onClose={() => setTrashModalOpen(false)}
+        trashRetentionDays={trashRetentionDays}
+        trashTotal={trashTotal}
+        selectedTrashCount={selectedTrashCount}
+        trashQuery={trashQuery}
+        onTrashQueryChange={(value) => {
+          setTrashQuery(value);
+          setTrashPage(1);
+        }}
+        trashSort={trashSort}
+        onTrashSortChange={(value) => {
+          setTrashSort(normalizeTrashSort(value));
+          setTrashPage(1);
+        }}
+        trashSortOptions={TRASH_SORT_OPTIONS}
+        trashPageSize={trashPageSize}
+        onTrashPageSizeChange={(value) => {
+          setTrashPageSize(normalizeTrashPageSize(Number(value) || TRASH_PAGE_SIZE_OPTIONS[1]));
+          setTrashPage(1);
+        }}
+        trashPageSizeOptions={TRASH_PAGE_SIZE_OPTIONS}
+        onRefresh={() => fetchTrashDocuments()}
+        trashLoading={trashLoading}
+        trashActionLoadingId={trashActionLoadingId}
+        trashBulkActionLoading={trashBulkActionLoading}
+        trashRangeStart={trashRangeStart}
+        trashRangeEnd={trashRangeEnd}
+        trashItems={trashItems}
+        allTrashItemsSelectedOnPage={allTrashItemsSelectedOnPage}
+        onToggleSelectAllOnPage={toggleSelectAllTrashOnPage}
+        onClearSelection={clearSelectedTrashDocuments}
+        onBulkRestore={handleBulkRestoreFromTrash}
+        onBulkDeleteForever={handleBulkDeleteForeverFromTrash}
+        trashPurgedCount={trashPurgedCount}
+        trashLoadError={trashLoadError}
+        selectedIdSet={trashSelectedIdSet}
+        onToggleTrashDocumentSelection={toggleTrashDocumentSelection}
+        onRestoreFromTrash={(item) => void handleRestoreFromTrash(item)}
+        onDeleteForeverFromTrash={(item) => void handleDeleteForeverFromTrash(item)}
+        trashPage={trashPage}
+        trashPageCount={trashPageCount}
+        onPreviousPage={() => setTrashPage((prev) => Math.max(1, prev - 1))}
+        onNextPage={() => setTrashPage((prev) => Math.min(trashPageCount, prev + 1))}
+        getDocExt={getDocExt}
+        normalizeCategory={normalizeCategory}
+        formatDateTimeLabel={formatDateTimeLabel}
+      />
 
       {inputDialogState.open && (
         <div
@@ -8267,6 +7401,11 @@ export default function HomePage() {
             minSidebarRecentLimit={MIN_SIDEBAR_RECENT_LIMIT}
             maxSidebarRecentLimit={MAX_SIDEBAR_RECENT_LIMIT}
             defaultSidebarRecentLimit={DEFAULT_SIDEBAR_RECENT_LIMIT}
+            documentsLayoutOptions={DOCUMENTS_LAYOUT_OPTIONS}
+            documentsSortOptions={DOCUMENTS_SORT_OPTIONS}
+            documentsPageSizeOptions={DOCUMENTS_PAGE_SIZE_OPTIONS}
+            sidebarDensityOptions={SIDEBAR_DENSITY_OPTIONS}
+            accentColorPresets={WORKSPACE_ACCENT_PRESETS}
             sharePolicyPresets={SHARE_POLICY_PRESETS}
             activeSharePolicyPresetId={activeSharePolicyPresetId}
             onClearWorkspaceDocuments={handleClearWorkspaceDocuments}
