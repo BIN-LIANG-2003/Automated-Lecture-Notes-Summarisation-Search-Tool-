@@ -1438,6 +1438,7 @@ export default function HomePage() {
     activeQuickFilterPresetId,
     activeFilterChips,
     currentViewSnapshot,
+    resetDocumentsData,
   } = useDocumentsList({
     username,
     authToken,
