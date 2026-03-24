@@ -20,6 +20,11 @@ def update_workspace(workspace_id):
     return workspace_service.update_workspace(workspace_id)
 
 
+@workspaces_bp.route('/api/workspaces/<workspace_id>', methods=['DELETE'])
+def delete_workspace(workspace_id):
+    return workspace_service.delete_workspace(workspace_id)
+
+
 @workspaces_bp.route('/api/workspaces/<workspace_id>/invitations', methods=['GET'])
 def list_workspace_invitations(workspace_id):
     return workspace_service.list_workspace_invitations(workspace_id)

@@ -27,7 +27,10 @@ export default function WorkspaceSettingsModal({
   sharePolicyPresets = [],
   activeSharePolicyPresetId = '',
   onClearWorkspaceDocuments,
+  onDeleteWorkspace,
   isLoggedIn = false,
+  activeWorkspace = null,
+  workspaceInsights = null,
 }) {
   if (!open) return null;
 
@@ -39,6 +42,8 @@ export default function WorkspaceSettingsModal({
     workspaceSettingsDraft.notify_summary_events,
     workspaceSettingsDraft.notify_sharing_events,
   ].filter(Boolean).length;
+  const totalNotes = Number(workspaceInsights?.totalNotes) || 0;
+  const ownerOnlyDisabled = workspaceActionLoading || !isLoggedIn || activeWorkspace?.is_owner === false;
 
   return (
     <div
@@ -717,20 +722,31 @@ export default function WorkspaceSettingsModal({
               <section className="notion-settings-block notion-settings-danger">
                 <h4>Danger Zone</h4>
                 <p className="muted tiny">
-                  Delete all notes in this workspace. This action cannot be undone.
+                  Permanently delete notes or remove this entire workspace. These actions cannot be undone.
                 </p>
-                <button
-                  type="button"
-                  className="btn btn-delete"
-                  onClick={onClearWorkspaceDocuments}
-                  disabled={
-                    workspaceActionLoading ||
-                    !isLoggedIn ||
-                    (isLoggedIn && activeWorkspace?.is_owner === false)
-                  }
-                >
-                  Clear Workspace Notes
-                </button>
+                <div className="notion-settings-danger-actions">
+                  <button
+                    type="button"
+                    className="btn btn-delete"
+                    onClick={onClearWorkspaceDocuments}
+                    disabled={ownerOnlyDisabled}
+                  >
+                    Clear Workspace Notes
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-delete"
+                    onClick={onDeleteWorkspace}
+                    disabled={ownerOnlyDisabled}
+                  >
+                    Delete Workspace
+                  </button>
+                </div>
+                <p className="muted tiny notion-settings-danger-note">
+                  {activeWorkspace?.is_owner === false
+                    ? 'Only the workspace owner can use these actions.'
+                    : `${totalNotes} note${totalNotes === 1 ? '' : 's'} will be removed if you delete this workspace.`}
+                </p>
               </section>
             )}
           </div>

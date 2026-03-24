@@ -5,7 +5,8 @@ from flask import jsonify, request
 
 from .config import DEFAULT_WORKSPACE_SETTINGS, INVITE_EXPIRY_DAYS
 from .db import get_db_connection
-from .utils import invitation_is_expired, normalize_email, row_to_dict, utcnow_iso
+from .storage import remove_document_file_from_storage
+from .utils import invitation_is_expired, normalize_email, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import (
     create_invite_token,
     ensure_owner_membership,
@@ -208,6 +209,67 @@ def update_workspace(workspace_id):
         return jsonify(get_workspace_details(conn, updated, username)), 200
     finally:
         conn.close()
+
+
+def delete_workspace(workspace_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    doc_rows = []
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can delete this workspace'}), 403
+
+        docs_cursor = conn.execute(
+            'SELECT id, filename FROM documents WHERE workspace_id = ?',
+            (workspace_id,),
+        )
+        doc_rows = [row_to_dict(item) for item in docs_cursor.fetchall()]
+        doc_ids = [
+            parse_int(item.get('id'), 0, 0)
+            for item in doc_rows
+            if parse_int(item.get('id'), 0, 0) > 0
+        ]
+
+        if doc_ids:
+            placeholders = ','.join(['?'] * len(doc_ids))
+            conn.execute(
+                f'DELETE FROM document_share_links WHERE document_id IN ({placeholders})',
+                tuple(doc_ids),
+            )
+            conn.execute(
+                f'DELETE FROM document_summary_cache WHERE document_id IN ({placeholders})',
+                tuple(doc_ids),
+            )
+
+        conn.execute('DELETE FROM documents WHERE workspace_id = ?', (workspace_id,))
+        conn.execute('DELETE FROM workspace_members WHERE workspace_id = ?', (workspace_id,))
+        conn.execute('DELETE FROM workspace_invitations WHERE workspace_id = ?', (workspace_id,))
+        conn.execute('DELETE FROM workspaces WHERE id = ?', (workspace_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+    warnings = []
+    for doc in doc_rows:
+        warning = remove_document_file_from_storage(str(doc.get('filename') or '').strip())
+        if warning:
+            warnings.append(f"{str(doc.get('filename') or '').strip()}: {warning}")
+
+    return jsonify({
+        'workspace_id': workspace_id,
+        'deleted_document_count': len(doc_rows),
+        'warnings': warnings,
+    }), 200
 
 
 def list_workspace_invitations(workspace_id):

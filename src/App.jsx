@@ -1,5 +1,10 @@
-import React, { Suspense, lazy, useEffect } from 'react';
-import { HashRouter, Routes, Route, Navigate } from 'react-router-dom';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
+import {
+  clearStoredAuthSession,
+  fetchCurrentSession,
+  readStoredAuthSession,
+} from './lib/authSession.js';
 
 const loadHomePage = () => import('./pages/Home.jsx');
 const loadAuthPage = () => import('./pages/Auth.jsx');
@@ -91,6 +96,66 @@ const toPathFromHashHref = (href) => {
   return hashValue.startsWith('/') ? hashValue : `/${hashValue}`;
 };
 
+function RouteSessionGate({ requireAuth = false, children }) {
+  const location = useLocation();
+  const [sessionState, setSessionState] = useState(() => {
+    const session = readStoredAuthSession();
+    return {
+      checking: Boolean(session.authToken),
+      authenticated: Boolean(session.isAuthenticated),
+    };
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    const session = readStoredAuthSession();
+    if (!session.authToken) {
+      setSessionState({ checking: false, authenticated: false });
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setSessionState((prev) => ({ ...prev, checking: true }));
+    fetchCurrentSession(session.authToken).then((result) => {
+      if (cancelled) return;
+      if (result.ok) {
+        sessionStorage.setItem('username', result.user.username);
+        sessionStorage.setItem('email', result.user.email || '');
+        setSessionState({ checking: false, authenticated: true });
+        return;
+      }
+      if (result.networkError) {
+        setSessionState({ checking: false, authenticated: Boolean(session.isAuthenticated) });
+        return;
+      }
+      clearStoredAuthSession();
+      setSessionState({ checking: false, authenticated: false });
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [location.pathname, location.search]);
+
+  if (sessionState.checking) {
+    return <div className="auth-page">Checking session...</div>;
+  }
+  if (requireAuth && !sessionState.authenticated) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: `${location.pathname}${location.search || ''}` }}
+      />
+    );
+  }
+  if (!requireAuth && sessionState.authenticated) {
+    return <Navigate to="/" replace />;
+  }
+  return children;
+}
+
 export default function App() {
   useEffect(() => {
     const nativeFetch = window.fetch.bind(window);
@@ -115,10 +180,7 @@ export default function App() {
     const clearAuthSession = (message) => {
       if (authFailureHandling) return;
       authFailureHandling = true;
-      sessionStorage.removeItem('username');
-      sessionStorage.removeItem('email');
-      sessionStorage.removeItem('auth_token');
-      sessionStorage.removeItem('loginAt');
+      clearStoredAuthSession();
       window.dispatchEvent(
         new CustomEvent('studyhub-auth-expired', {
           detail: { message: message || 'Session expired. Please sign in again.' },
@@ -235,8 +297,22 @@ export default function App() {
         <Suspense fallback={<div className="auth-page">Loading...</div>}>
           <Routes>
             <Route path="/" element={<HomePage />} />
-            <Route path="/login" element={<AuthPage />} />
-            <Route path="/document/:docId" element={<DocumentDetail />} />
+            <Route
+              path="/login"
+              element={
+                <RouteSessionGate>
+                  <AuthPage />
+                </RouteSessionGate>
+              }
+            />
+            <Route
+              path="/document/:docId"
+              element={
+                <RouteSessionGate requireAuth>
+                  <DocumentDetail />
+                </RouteSessionGate>
+              }
+            />
             <Route path="/shared/:shareToken" element={<DocumentDetail />} />
             <Route path="/invite/:token" element={<InviteJoinPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />

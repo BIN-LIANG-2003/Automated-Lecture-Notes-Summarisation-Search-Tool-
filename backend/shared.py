@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
 import requests
 from datetime import datetime, timedelta
 from flask import request, jsonify, send_from_directory, redirect
@@ -34,7 +35,7 @@ from .config import (
 )
 from .db import get_db_connection
 from .document_domain import extract_text_from_pdf_bytes_with_meta, normalize_newlines
-from .security import create_auth_token
+from .security import create_auth_token, decode_auth_token, get_bearer_token
 from .share_domain import (
     check_document_access,
     is_document_soft_deleted,
@@ -244,6 +245,45 @@ def login():
         }), 200
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
+
+
+def me():
+    bearer_token = get_bearer_token()
+    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+    if not token_ok:
+        return jsonify({'error': token_error or 'Invalid auth token'}), 401
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute(
+            'SELECT username, email FROM users WHERE username = ?',
+            (token_username,),
+        )
+        user = cursor.fetchone()
+        if not user:
+            return jsonify({'error': 'User account not found for this session'}), 404
+        return jsonify({
+            'username': user['username'],
+            'email': user.get('email') if hasattr(user, 'get') else user['email'],
+            'authenticated': True,
+        }), 200
+    finally:
+        conn.close()
+
+
+def logout():
+    bearer_token = get_bearer_token()
+    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+    if not token_ok:
+        return jsonify({'error': token_error or 'Invalid auth token'}), 401
+    return jsonify({
+        'message': 'Signed out successfully',
+        'username': token_username,
+        'stateless': True,
+    }), 200
+
 
 def google_login():
     try:

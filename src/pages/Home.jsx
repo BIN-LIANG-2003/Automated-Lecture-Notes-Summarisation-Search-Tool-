@@ -15,6 +15,7 @@ import {
   saveAccountToHistory,
   removeAccountFromHistory,
 } from '../lib/accountHistory.js';
+import { clearStoredAuthSession, logoutCurrentSession } from '../lib/authSession.js';
 import {
   createWorkspace,
   loadWorkspaceState,
@@ -2486,10 +2487,9 @@ export default function HomePage() {
 
   const handleSignOut = ({ forgetCurrent = false } = {}) => {
     const currentUsername = sessionStorage.getItem('username') || '';
-    sessionStorage.removeItem('username');
-    sessionStorage.removeItem('email');
-    sessionStorage.removeItem('auth_token');
-    sessionStorage.removeItem('loginAt');
+    const currentAuthToken = sessionStorage.getItem('auth_token') || '';
+    clearStoredAuthSession();
+    void logoutCurrentSession(currentAuthToken);
     setIsLoggedIn(false);
     resetDocumentsData();
     setSidebarRecentIds([]);
@@ -3948,6 +3948,99 @@ export default function HomePage() {
       setWorkspaceSettingsOpen(false);
     } catch (err) {
       showToast(err.message || 'Failed to clear workspace notes', 'error');
+    } finally {
+      setWorkspaceActionLoading(false);
+    }
+  };
+
+  const handleDeleteWorkspace = async () => {
+    if (!activeWorkspaceId || !username || !isLoggedIn) {
+      showToast('Please sign in first.', 'warning');
+      return;
+    }
+    if (activeWorkspace?.is_owner === false) {
+      showToast('Only the workspace owner can delete this workspace.', 'warning');
+      return;
+    }
+
+    const workspaceLabel = String(activeWorkspace?.name || '').trim();
+    const confirmation = await requestTextInput({
+      title: 'Delete Workspace',
+      description: `Type ${workspaceLabel || 'the workspace name'} to permanently delete this workspace and all notes inside it.`,
+      placeholder: workspaceLabel || 'Workspace name',
+      initialValue: '',
+      confirmLabel: 'Delete Workspace',
+      cancelLabel: 'Cancel',
+      danger: true,
+      required: true,
+      trimResult: true,
+    });
+    if (confirmation === null) return;
+    if (!workspaceLabel || confirmation !== workspaceLabel) {
+      showToast('Confirmation text mismatch. Workspace was not deleted.', 'warning');
+      return;
+    }
+
+    setWorkspaceActionLoading(true);
+    try {
+      const res = await fetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to delete workspace');
+
+      resetDocumentsData();
+      setSidebarRecentIds([]);
+      setSidebarRecentMeta({});
+      setStarredNotes([]);
+      setSummaryHistory([]);
+      setSummaryCenterOpen(false);
+      setSummaryCenterQuery('');
+      setSidebarMenuDocId(null);
+      setTrashModalOpen(false);
+      setTrashItems([]);
+      setTrashTotal(0);
+      setTrashPurgedCount(0);
+      setTrashLoadError('');
+      setTrashLoading(false);
+      setTrashActionLoadingId('');
+      setSelectedTrashDocumentIds([]);
+      setTrashBulkActionLoading(false);
+      setTrashPage(1);
+      setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+      setTrashSort('deleted_newest');
+      setTrashQuery('');
+      setActiveDoc(null);
+      setActiveDocError('');
+      setActiveDocLoading(false);
+      setActiveDocFileVersion(0);
+      setActiveDocEditMode(false);
+      setActiveDocDraftHtml('');
+      setActiveDocSaveError('');
+      clearActiveDocShareState();
+      closeWorkspaceDialogs();
+
+      const nextWorkspaceState = await refreshWorkspaces({ preserveActive: false });
+      const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
+      if (warnings.length) {
+        showToast(
+          `Deleted workspace "${workspaceLabel}". Some files could not be removed from storage.`,
+          'warning'
+        );
+      } else {
+        const nextWorkspace =
+          (nextWorkspaceState?.workspaces || []).find(
+            (item) => item.id === nextWorkspaceState?.activeWorkspaceId
+          ) ||
+          nextWorkspaceState?.workspaces?.[0] ||
+          null;
+        const followup = nextWorkspace?.name ? ` Switched to "${nextWorkspace.name}".` : '';
+        showToast(`Deleted workspace "${workspaceLabel}".${followup}`, 'success');
+      }
+    } catch (err) {
+      showToast(err.message || 'Failed to delete workspace', 'error');
     } finally {
       setWorkspaceActionLoading(false);
     }
@@ -7277,6 +7370,7 @@ export default function HomePage() {
             sharePolicyPresets={SHARE_POLICY_PRESETS}
             activeSharePolicyPresetId={activeSharePolicyPresetId}
             onClearWorkspaceDocuments={handleClearWorkspaceDocuments}
+            onDeleteWorkspace={handleDeleteWorkspace}
             isLoggedIn={isLoggedIn}
             activeWorkspace={activeWorkspace}
             workspaceInsights={{

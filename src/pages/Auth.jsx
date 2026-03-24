@@ -10,6 +10,7 @@ import {
   removeAccountFromHistory,
   saveAccountToHistory,
 } from '../lib/accountHistory.js';
+import { storeAuthSession } from '../lib/authSession.js';
 
 export default function AuthPage() {
   const navigate = useNavigate();
@@ -39,6 +40,7 @@ export default function AuthPage() {
 
   const existingUser = sessionStorage.getItem('username');
   const existingToken = sessionStorage.getItem('auth_token');
+  const postAuthRedirect = String(location.state?.from || '/').trim() || '/';
 
   const subtitle =
     mode === 'signup'
@@ -159,17 +161,17 @@ export default function AuthPage() {
       const data = await res.json();
 
       if (res.ok) {
-        sessionStorage.setItem('username', data.username);
-        sessionStorage.setItem('email', data.email || decoded.email || '');
-        if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
-        else sessionStorage.removeItem('auth_token');
-        sessionStorage.setItem('loginAt', new Date().toISOString());
+        storeAuthSession({
+          username: data.username,
+          email: data.email || decoded.email || '',
+          authToken: data.auth_token,
+        });
         rememberAccount({
           username: data.username,
           email: data.email || decoded.email || '',
           avatar: decoded.picture || '',
         });
-        navigate('/');
+        navigate(postAuthRedirect, { replace: true });
       } else {
         showToast(data.error || 'Google login failed', 'error');
       }
@@ -200,16 +202,16 @@ export default function AuthPage() {
       const data = await response.json();
 
       if (response.ok) {
-        sessionStorage.setItem('username', data.username);
-        sessionStorage.setItem('email', data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''));
-        if (data.auth_token) sessionStorage.setItem('auth_token', data.auth_token);
-        else sessionStorage.removeItem('auth_token');
-        sessionStorage.setItem('loginAt', new Date().toISOString());
+        storeAuthSession({
+          username: data.username,
+          email: data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''),
+          authToken: data.auth_token,
+        });
         rememberAccount({
           username: data.username,
           email: data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''),
         });
-        navigate('/');
+        navigate(postAuthRedirect, { replace: true });
       } else {
         showToast(data.error || 'Login failed', 'error');
       }

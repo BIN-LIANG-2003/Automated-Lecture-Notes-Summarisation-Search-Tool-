@@ -1877,6 +1877,16 @@ body.notion-home-body .skip-link:focus-visible{
   justify-self:flex-start;
 }
 
+.notion-settings-danger-actions{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+}
+
+.notion-settings-danger-note{
+  margin:0;
+}
+
 .notion-modal-actions{
   display:flex;
   gap:12px;
@@ -3343,6 +3353,12 @@ body.notion-home-body .skip-link:focus-visible{
   background:#f8fbff;
 }
 
+.notion-pdf-btn.active{
+  background:#eaf2ff;
+  border-color:#b9cdf5;
+  color:#2253a3;
+}
+
 .notion-pdf-btn:disabled{
   opacity:0.45;
   cursor:not-allowed;
@@ -3434,6 +3450,10 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-pdf-edit-hint{
   margin:0;
+}
+
+.notion-pdf-shortcuts{
+  margin:-4px 2px 0;
 }
 
 .notion-pdf-edit-error{
@@ -5365,6 +5385,13 @@ body.notion-home-body .skip-link:focus-visible{
   text-align:right;
 }
 
+.notion-confirm-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+
 .notion-confirm-modal h3{
   margin:0;
   font-size:22px;
@@ -6135,6 +6162,36 @@ body.notion-home-body .skip-link:focus-visible{
     width:100%;
   }
 
+  .notion-pdf-toolbar,
+  .notion-pdf-editbar{
+    padding:12px;
+  }
+
+  .notion-pdf-toolbar{
+    flex-direction:column;
+  }
+
+  .notion-pdf-toolbar-actions{
+    width:100%;
+    justify-content:flex-start;
+  }
+
+  .notion-pdf-toolbar-actions .notion-pdf-btn,
+  .notion-pdf-toolbar-actions .notion-pdf-btn-link{
+    flex:1 1 calc(50% - 6px);
+    justify-content:center;
+  }
+
+  .notion-pdf-page-indicator,
+  .notion-pdf-zoom-indicator{
+    flex:1 1 calc(50% - 6px);
+  }
+
+  .notion-pdf-edit-meta{
+    width:100%;
+    margin-left:0;
+  }
+
   .notion-doc-share-actions .btn,
   .notion-inline-doc-actions .btn,
   .notion-inline-doc-actions .edit-tags,
@@ -6186,12 +6243,32 @@ body.notion-home-body .skip-link:focus-visible{
     width:100%;
   }
 
+  .notion-pdf-toolbar-actions .notion-pdf-btn,
+  .notion-pdf-toolbar-actions .notion-pdf-btn-link,
+  .notion-pdf-editbar .notion-pdf-btn,
+  .notion-pdf-config{
+    width:100%;
+  }
+
+  .notion-pdf-canvas-wrap{
+    padding:10px;
+  }
+
+  .notion-pdf-thumb-grid{
+    grid-template-columns:repeat(auto-fill, minmax(96px, 1fr));
+  }
+
   .notion-panel-block{
     padding:14px;
   }
 
   .notion-upload-dropzone{
     padding:12px;
+  }
+
+  .notion-settings-danger-actions{
+    display:grid;
+    grid-template-columns:1fr;
   }
 
   .notion-ai-output{

@@ -19,7 +19,17 @@ export default function UiFeedbackLayer({
             aria-labelledby="confirm-dialog-title"
             onClick={(event) => event.stopPropagation()}
           >
-            <h3 id="confirm-dialog-title">{confirmDialogState.title}</h3>
+            <div className="notion-confirm-head">
+              <h3 id="confirm-dialog-title">{confirmDialogState.title}</h3>
+              <button
+                type="button"
+                className="notion-modal-close"
+                onClick={() => onCloseConfirmDialog?.(false)}
+                aria-label="Close confirmation dialog"
+              >
+                ×
+              </button>
+            </div>
             {confirmDialogState.description && (
               <p className="notion-confirm-description">{confirmDialogState.description}</p>
             )}
@@ -61,4 +71,3 @@ export default function UiFeedbackLayer({
     </>
   );
 }
-

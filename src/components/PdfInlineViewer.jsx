@@ -12,6 +12,8 @@ const SCALE_STEP = 0.2;
 const THUMB_SCALE = 0.2;
 const MIN_FONT_SIZE = 8;
 const MAX_FONT_SIZE = 48;
+const DEFAULT_SCALE = 1.2;
+const SMALL_SCREEN_BREAKPOINT = 720;
 
 const clamp = (value, min, max) => Math.min(Math.max(value, min), max);
 
@@ -54,6 +56,7 @@ export default function PdfInlineViewer({
   requestTextInput,
 }) {
   const canvasRef = useRef(null);
+  const canvasWrapRef = useRef(null);
   const renderTaskRef = useRef(null);
   const {
     toastState,
@@ -65,7 +68,11 @@ export default function PdfInlineViewer({
 
   const [pdfDoc, setPdfDoc] = useState(null);
   const [pageNum, setPageNum] = useState(1);
-  const [scale, setScale] = useState(1.2);
+  const [scale, setScale] = useState(DEFAULT_SCALE);
+  const [renderScale, setRenderScale] = useState(DEFAULT_SCALE);
+  const [fitWidth, setFitWidth] = useState(
+    () => typeof window !== 'undefined' && window.innerWidth <= SMALL_SCREEN_BREAKPOINT
+  );
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [thumbnails, setThumbnails] = useState({});
   const [thumbsLoading, setThumbsLoading] = useState(false);
@@ -74,6 +81,7 @@ export default function PdfInlineViewer({
   const [error, setError] = useState('');
   const [editorError, setEditorError] = useState('');
   const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+  const [canvasWrapWidth, setCanvasWrapWidth] = useState(0);
 
   const [editMode, setEditMode] = useState(false);
   const [annotationColor, setAnnotationColor] = useState('#c62828');
@@ -92,13 +100,16 @@ export default function PdfInlineViewer({
 
     setPdfDoc(null);
     setPageNum(1);
-    setScale(1.2);
+    setScale(DEFAULT_SCALE);
+    setRenderScale(DEFAULT_SCALE);
+    setFitWidth(typeof window !== 'undefined' && window.innerWidth <= SMALL_SCREEN_BREAKPOINT);
     setOverviewOpen(false);
     setThumbnails({});
     setThumbsLoading(false);
     setError('');
     setLoadingDoc(true);
     setCanvasSize({ width: 0, height: 0 });
+    setCanvasWrapWidth(0);
     setEditorError('');
     setEditMode(false);
     setAnnotations([]);
@@ -135,6 +146,33 @@ export default function PdfInlineViewer({
       if (loadingTask) loadingTask.destroy();
     };
   }, [src]);
+
+  useEffect(() => {
+    const node = canvasWrapRef.current;
+    if (!node) return undefined;
+
+    const updateWidth = () => {
+      const nextWidth = Math.max(0, node.clientWidth || 0);
+      setCanvasWrapWidth((prev) => (Math.abs(prev - nextWidth) < 1 ? prev : nextWidth));
+    };
+
+    updateWidth();
+    let resizeObserver = null;
+    if (typeof ResizeObserver === 'function') {
+      resizeObserver = new ResizeObserver(() => updateWidth());
+      resizeObserver.observe(node);
+    } else {
+      window.addEventListener('resize', updateWidth);
+    }
+
+    return () => {
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+        return;
+      }
+      window.removeEventListener('resize', updateWidth);
+    };
+  }, []);
 
   useEffect(() => {
     if (!overviewOpen || !pdfDoc || !totalPages) return;
@@ -197,7 +235,17 @@ export default function PdfInlineViewer({
         const page = await pdfDoc.getPage(pageNum);
         if (cancelled) return;
 
-        const viewport = page.getViewport({ scale });
+        const baseViewport = page.getViewport({ scale: 1 });
+        const availableWidth = Math.max(
+          220,
+          (canvasWrapWidth || canvasWrapRef.current?.clientWidth || baseViewport.width) - 28
+        );
+        const nextScale = fitWidth
+          ? clamp(availableWidth / Math.max(baseViewport.width, 1), MIN_SCALE, MAX_SCALE)
+          : scale;
+        setRenderScale(nextScale);
+
+        const viewport = page.getViewport({ scale: nextScale });
         const canvas = canvasRef.current;
         if (!canvas) return;
         const context = canvas.getContext('2d', { alpha: false });
@@ -240,7 +288,7 @@ export default function PdfInlineViewer({
         renderTaskRef.current = null;
       }
     };
-  }, [pdfDoc, pageNum, scale]);
+  }, [pdfDoc, pageNum, scale, fitWidth, canvasWrapWidth]);
 
   const canPrev = pageNum > 1;
   const canNext = pageNum < totalPages;
@@ -248,6 +296,77 @@ export default function PdfInlineViewer({
   const hasPendingAnnotations = annotations.length > 0;
   const uploadedLabel = uploadedAt ? new Date(uploadedAt).toLocaleString() : '';
   const tagsLabel = Array.isArray(tags) && tags.length ? tags.join(', ') : 'None';
+  const zoomLabel = fitWidth ? `Fit · ${Math.round(renderScale * 100)}%` : `${Math.round(renderScale * 100)}%`;
+
+  const applyManualScale = (delta) => {
+    const baseScale = fitWidth ? renderScale : scale;
+    setFitWidth(false);
+    setScale(clamp(baseScale + delta, MIN_SCALE, MAX_SCALE));
+  };
+
+  const toggleFitWidth = () => {
+    if (fitWidth) {
+      setFitWidth(false);
+      setScale(clamp(renderScale || scale, MIN_SCALE, MAX_SCALE));
+      return;
+    }
+    setFitWidth(true);
+  };
+
+  useEffect(() => {
+    if (!pdfDoc) return undefined;
+
+    const isTypingTarget = (target) => {
+      if (!(target instanceof HTMLElement)) return false;
+      if (target.isContentEditable) return true;
+      return Boolean(target.closest('input, textarea, select, [contenteditable="true"]'));
+    };
+
+    const handleKeyDown = (event) => {
+      if (isTypingTarget(event.target)) return;
+
+      if (event.key === 'ArrowLeft' && canPrev) {
+        event.preventDefault();
+        setPageNum((prev) => Math.max(1, prev - 1));
+        return;
+      }
+      if (event.key === 'ArrowRight' && canNext) {
+        event.preventDefault();
+        setPageNum((prev) => Math.min(totalPages, prev + 1));
+        return;
+      }
+      if ((event.key === '+' || event.key === '=') && !loadingDoc) {
+        event.preventDefault();
+        applyManualScale(SCALE_STEP);
+        return;
+      }
+      if ((event.key === '-' || event.key === '_') && !loadingDoc) {
+        event.preventDefault();
+        applyManualScale(-SCALE_STEP);
+        return;
+      }
+      if ((event.key === 'f' || event.key === 'F') && !loadingDoc) {
+        event.preventDefault();
+        toggleFitWidth();
+        return;
+      }
+      if (event.key === 'Escape') {
+        if (overviewOpen) {
+          event.preventDefault();
+          setOverviewOpen(false);
+          return;
+        }
+        if (editMode) {
+          event.preventDefault();
+          setEditMode(false);
+          setEditorError('');
+        }
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [pdfDoc, canPrev, canNext, totalPages, loadingDoc, fitWidth, overviewOpen, editMode, renderScale, scale]);
 
   const handleLayerClick = async (event) => {
     if (!editable || !editMode || loadingDoc || loadingPage || saveLoading) return;
@@ -437,19 +556,28 @@ export default function PdfInlineViewer({
           <button
             type="button"
             className="notion-pdf-btn"
-            onClick={() => setScale((prev) => Math.max(MIN_SCALE, prev - SCALE_STEP))}
-            disabled={scale <= MIN_SCALE || loadingDoc}
+            onClick={() => applyManualScale(-SCALE_STEP)}
+            disabled={(!fitWidth && scale <= MIN_SCALE) || loadingDoc}
           >
             Zoom Out
           </button>
-          <span className="notion-pdf-zoom-indicator">{Math.round(scale * 100)}%</span>
+          <span className="notion-pdf-zoom-indicator">{zoomLabel}</span>
           <button
             type="button"
             className="notion-pdf-btn"
-            onClick={() => setScale((prev) => Math.min(MAX_SCALE, prev + SCALE_STEP))}
-            disabled={scale >= MAX_SCALE || loadingDoc}
+            onClick={() => applyManualScale(SCALE_STEP)}
+            disabled={(!fitWidth && scale >= MAX_SCALE) || loadingDoc}
           >
             Zoom In
+          </button>
+          <button
+            type="button"
+            className={`notion-pdf-btn${fitWidth ? ' active' : ''}`}
+            onClick={toggleFitWidth}
+            disabled={loadingDoc}
+            aria-pressed={fitWidth}
+          >
+            Fit Width
           </button>
           <button
             type="button"
@@ -461,6 +589,10 @@ export default function PdfInlineViewer({
           </button>
         </div>
       </div>
+
+      <p className="notion-pdf-shortcuts muted tiny">
+        Shortcuts: left/right arrows switch pages, +/- adjust zoom, F toggles fit width, Esc closes overview or annotation mode.
+      </p>
 
       {editable && (
         <div className="notion-pdf-editbar">
@@ -561,7 +693,7 @@ export default function PdfInlineViewer({
         </div>
       )}
 
-      <div className="notion-pdf-canvas-wrap">
+      <div ref={canvasWrapRef} className="notion-pdf-canvas-wrap">
         {(loadingDoc || loadingPage) && (
           <p className="notion-pdf-status" aria-live="polite">
             Rendering PDF...
