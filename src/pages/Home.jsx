@@ -39,7 +39,6 @@ const DOCUMENTS_SORT_OPTIONS = [
   { value: 'title_asc', label: 'Title A-Z' },
   { value: 'title_desc', label: 'Title Z-A' },
 ];
-const DEFAULT_CANVAS_DOMAIN = 'canvas.instructure.com';
 const TRASH_PAGE_SIZE_OPTIONS = [10, 20, 50];
 const TRASH_SORT_OPTIONS = [
   { value: 'deleted_newest', label: 'Recently deleted' },
@@ -96,7 +95,7 @@ const SUMMARY_CENTER_CHUNK_OPTIONS = [
 ];
 const WORKSPACE_SETTINGS_TABS = [
   { id: 'general', label: 'General', description: 'Name, icon, accent color, workspace identity.' },
-  { id: 'defaults', label: 'Defaults', description: 'File views, category rules, Canvas domain.' },
+  { id: 'defaults', label: 'Defaults', description: 'File views, category rules, and landing behavior.' },
   { id: 'experience', label: 'Experience', description: 'Sidebar density and overview widgets.' },
   { id: 'notifications', label: 'Notifications', description: 'Control in-app upload, AI, and sharing toasts.' },
   { id: 'permissions', label: 'Permissions', description: 'What members can upload, edit, and export.' },
@@ -160,7 +159,6 @@ const DEFAULT_WORKSPACE_SETTINGS = {
   default_documents_layout: DEFAULT_DOCUMENTS_LAYOUT,
   default_documents_sort: DEFAULT_DOCUMENTS_SORT,
   default_documents_page_size: DEFAULT_DOCUMENTS_PAGE_SIZE,
-  preferred_canvas_domain: DEFAULT_CANVAS_DOMAIN,
   recent_items_limit: DEFAULT_SIDEBAR_RECENT_LIMIT,
   sidebar_density: 'comfortable',
   show_starred_section: true,
@@ -168,7 +166,6 @@ const DEFAULT_WORKSPACE_SETTINGS = {
   show_quick_actions: true,
   show_usage_chart: true,
   show_recent_activity: true,
-  show_canvas_import: true,
   allow_uploads: true,
   allow_note_editing: true,
   allow_ai_tools: true,
@@ -356,9 +353,9 @@ const normalizeTrashSort = (value) => {
   return 'deleted_newest';
 };
 
-const normalizeCanvasDomainInput = (value) => {
+const normalizeDomainInput = (value) => {
   let next = String(value || '').trim();
-  if (!next) return DEFAULT_CANVAS_DOMAIN;
+  if (!next) return '';
   if (next.startsWith('http://') || next.startsWith('https://')) {
     next = next.split('://', 1)[1] || '';
   }
@@ -382,7 +379,7 @@ const normalizeSidebarDensity = (value) => {
 const normalizeWorkspaceDomainToken = (value) => {
   const raw = String(value || '').trim().replace(/^@+/, '');
   if (!raw) return '';
-  const next = normalizeCanvasDomainInput(raw);
+  const next = normalizeDomainInput(raw);
   return next || '';
 };
 
@@ -812,9 +809,6 @@ const normalizeWorkspaceSettings = (raw) => {
   const defaultDocumentsPageSize = normalizeDocumentsPageSize(
     Number(source.default_documents_page_size) || DEFAULT_WORKSPACE_SETTINGS.default_documents_page_size
   );
-  const preferredCanvasDomain = normalizeCanvasDomainInput(
-    source.preferred_canvas_domain || DEFAULT_WORKSPACE_SETTINGS.preferred_canvas_domain
-  ) || DEFAULT_CANVAS_DOMAIN;
   const sidebarDensity = normalizeSidebarDensity(source.sidebar_density);
   const allowedEmailDomains = normalizeWorkspaceDomainList(source.allowed_email_domains);
 
@@ -828,7 +822,6 @@ const normalizeWorkspaceSettings = (raw) => {
     default_documents_layout: defaultDocumentsLayout,
     default_documents_sort: defaultDocumentsSort,
     default_documents_page_size: defaultDocumentsPageSize,
-    preferred_canvas_domain: preferredCanvasDomain,
     recent_items_limit: clamp(
       Number(source.recent_items_limit) || DEFAULT_WORKSPACE_SETTINGS.recent_items_limit,
       MIN_SIDEBAR_RECENT_LIMIT,
@@ -849,9 +842,6 @@ const normalizeWorkspaceSettings = (raw) => {
     ),
     show_recent_activity: Boolean(
       source.show_recent_activity ?? DEFAULT_WORKSPACE_SETTINGS.show_recent_activity
-    ),
-    show_canvas_import: Boolean(
-      source.show_canvas_import ?? DEFAULT_WORKSPACE_SETTINGS.show_canvas_import
     ),
     allow_uploads: Boolean(source.allow_uploads ?? DEFAULT_WORKSPACE_SETTINGS.allow_uploads),
     allow_note_editing: Boolean(
@@ -1139,6 +1129,7 @@ export default function HomePage() {
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
   const [showAI, setShowAI] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
@@ -1196,12 +1187,6 @@ export default function HomePage() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [uploadCategory, setUploadCategory] = useState('');
-  const [canvasDomain, setCanvasDomain] = useState(DEFAULT_CANVAS_DOMAIN);
-  const [canvasToken, setCanvasToken] = useState('');
-  const [canvasFiles, setCanvasFiles] = useState([]);
-  const [canvasFilesLoading, setCanvasFilesLoading] = useState(false);
-  const [canvasFilesError, setCanvasFilesError] = useState('');
-  const [canvasImportingFileId, setCanvasImportingFileId] = useState('');
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
   const [now, setNow] = useState(() => new Date());
@@ -1768,14 +1753,6 @@ export default function HomePage() {
     setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
     setTrashSort('deleted_newest');
     setTrashQuery('');
-    setCanvasDomain(
-      normalizeCanvasDomainInput(activeWorkspaceSettings.preferred_canvas_domain) || DEFAULT_CANVAS_DOMAIN
-    );
-    setCanvasToken('');
-    setCanvasFiles([]);
-    setCanvasFilesLoading(false);
-    setCanvasFilesError('');
-    setCanvasImportingFileId('');
     resetUploadState();
   }, [activeWorkspaceId, username, authToken]);
 
@@ -1783,6 +1760,10 @@ export default function HomePage() {
     if (!activeWorkspaceId) return;
     applyWorkspaceLandingView(activeWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
   }, [activeWorkspaceId]);
+
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [activeWorkspaceId, showFiles, showAI, docPaneVisible, isLoggedIn]);
 
   useEffect(() => {
     if (location.state?.showFiles) {
@@ -1838,12 +1819,6 @@ export default function HomePage() {
       setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
       setTrashSort('deleted_newest');
       setTrashQuery('');
-      setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
-      setCanvasToken('');
-      setCanvasFiles([]);
-      setCanvasFilesLoading(false);
-      setCanvasFilesError('');
-      setCanvasImportingFileId('');
       resetUploadState();
       if (summaryProgressTimerRef.current) {
         window.clearTimeout(summaryProgressTimerRef.current);
@@ -1893,12 +1868,6 @@ export default function HomePage() {
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
     setTrashModalOpen(false);
-    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
-    setCanvasToken('');
-    setCanvasFiles([]);
-    setCanvasFilesLoading(false);
-    setCanvasFilesError('');
-    setCanvasImportingFileId('');
   }, [accountName, isLoggedIn, username]);
 
   useEffect(() => {
@@ -2501,7 +2470,6 @@ export default function HomePage() {
     setDocumentsSort(normalizeDocumentsSort(settings.default_documents_sort));
     setDocumentsPageSize(normalizeDocumentsPageSize(settings.default_documents_page_size));
     setDocumentsPage(1);
-    setCanvasDomain(normalizeCanvasDomainInput(settings.preferred_canvas_domain) || DEFAULT_CANVAS_DOMAIN);
     if (settings.default_home_tab === 'files') {
       setShowFiles(true);
       setShowAI(false);
@@ -2555,12 +2523,6 @@ export default function HomePage() {
     setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
     setTrashSort('deleted_newest');
     setTrashQuery('');
-    setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
-    setCanvasToken('');
-    setCanvasFiles([]);
-    setCanvasFilesLoading(false);
-    setCanvasFilesError('');
-    setCanvasImportingFileId('');
     resetUploadState();
     setWorkspaceMenuOpen(false);
     closeWorkspaceDialogs();
@@ -3261,123 +3223,6 @@ export default function HomePage() {
       headers.Authorization = `Bearer ${authToken}`;
     }
     return headers;
-  };
-
-  const handleFetchCanvasFiles = async () => {
-    if (!isLoggedIn || !username) {
-      showToast('Please sign in first.', 'warning');
-      return;
-    }
-    if (!activeWorkspaceSettings.allow_uploads) {
-      showToast('Uploads are disabled in this workspace settings.', 'warning');
-      return;
-    }
-    if (!activeWorkspaceId) {
-      showToast('Please select a workspace first.', 'warning');
-      return;
-    }
-    const token = String(canvasToken || '').trim();
-    if (!token) {
-      showToast('Please paste a Canvas token first.', 'warning');
-      return;
-    }
-    const domain = normalizeCanvasDomainInput(canvasDomain);
-    if (!domain) {
-      showToast('Please enter a valid Canvas domain.', 'warning');
-      return;
-    }
-
-    setCanvasFilesLoading(true);
-    setCanvasFilesError('');
-    try {
-      const response = await fetch('/api/canvas/files', {
-        method: 'POST',
-        headers: buildAuthenticatedJsonHeaders(),
-        body: JSON.stringify({
-          token,
-          domain,
-          username,
-          workspace_id: activeWorkspaceId,
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error || 'Failed to fetch Canvas files');
-      }
-
-      const items = Array.isArray(payload?.files) ? payload.files : [];
-      setCanvasFiles(items);
-      setCanvasDomain(normalizeCanvasDomainInput(payload?.domain || domain) || DEFAULT_CANVAS_DOMAIN);
-      showWorkspaceToast('upload', `Loaded ${items.length} supported file(s) from Canvas.`, 'success');
-    } catch (err) {
-      const message = err?.message || 'Failed to fetch Canvas files';
-      setCanvasFiles([]);
-      setCanvasFilesError(message);
-      showToast(message, 'error');
-    } finally {
-      setCanvasFilesLoading(false);
-    }
-  };
-
-  const handleImportCanvasFile = async (fileItem) => {
-    const fileId = Number(fileItem?.id);
-    if (!Number.isFinite(fileId) || fileId <= 0) {
-      showToast('Invalid Canvas file id.', 'warning');
-      return;
-    }
-    if (!isLoggedIn || !username) {
-      showToast('Please sign in first.', 'warning');
-      return;
-    }
-    if (!activeWorkspaceSettings.allow_uploads) {
-      showToast('Uploads are disabled in this workspace settings.', 'warning');
-      return;
-    }
-    if (!activeWorkspaceId) {
-      showToast('Please select a workspace first.', 'warning');
-      return;
-    }
-    const token = String(canvasToken || '').trim();
-    if (!token) {
-      showToast('Please paste a Canvas token first.', 'warning');
-      return;
-    }
-    const domain = normalizeCanvasDomainInput(canvasDomain);
-    if (!domain) {
-      showToast('Please enter a valid Canvas domain.', 'warning');
-      return;
-    }
-
-    setCanvasImportingFileId(String(fileId));
-    try {
-      const response = await fetch('/api/canvas/import', {
-        method: 'POST',
-        headers: buildAuthenticatedJsonHeaders(),
-        body: JSON.stringify({
-          token,
-          domain,
-          file_id: fileId,
-          username,
-          workspace_id: activeWorkspaceId,
-          category: String(uploadCategory || '').trim(),
-        }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(payload?.error || 'Failed to import Canvas file');
-      }
-
-      const shouldRefetchViaPageReset = documentsPage !== 1;
-      setDocumentsPage(1);
-      if (!shouldRefetchViaPageReset) {
-        await fetchDocuments(1);
-      }
-      showWorkspaceToast('upload', payload?.message || `Imported "${fileItem?.filename || 'Canvas file'}".`, 'success');
-    } catch (err) {
-      showToast(err?.message || 'Failed to import Canvas file', 'error');
-    } finally {
-      setCanvasImportingFileId('');
-    }
   };
 
   const handleExtractText = async (imageFile) => {
@@ -4082,12 +3927,6 @@ export default function HomePage() {
       setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
       setTrashSort('deleted_newest');
       setTrashQuery('');
-      setCanvasDomain(DEFAULT_CANVAS_DOMAIN);
-      setCanvasToken('');
-      setCanvasFiles([]);
-      setCanvasFilesLoading(false);
-      setCanvasFilesError('');
-      setCanvasImportingFileId('');
       setActiveDoc(null);
       setActiveDocError('');
       setActiveDocLoading(false);
@@ -5590,12 +5429,25 @@ export default function HomePage() {
   ]);
 
   return (
-    <div className={`notion-shell ${sidebarDensityClass}`.trim()} style={workspaceThemeStyle}>
+    <div
+      className={`notion-shell ${sidebarDensityClass}${mobileSidebarOpen ? ' is-mobile-sidebar-open' : ''}`.trim()}
+      style={workspaceThemeStyle}
+    >
       <a className="skip-link" href="#main">
         Skip to main content
       </a>
+      {mobileSidebarOpen && (
+        <button
+          type="button"
+          className="notion-mobile-sidebar-backdrop"
+          aria-label="Close navigation overlay"
+          onClick={() => setMobileSidebarOpen(false)}
+        />
+      )}
 
       <WorkspaceSidebar
+        mobileSidebarOpen={mobileSidebarOpen}
+        onCloseMobileSidebar={() => setMobileSidebarOpen(false)}
         workspaceMenuOpen={workspaceMenuOpen}
         workspaceMenuRef={workspaceMenuRef}
         onToggleWorkspaceMenu={() => setWorkspaceMenuOpen((prev) => !prev)}
@@ -5605,14 +5457,20 @@ export default function HomePage() {
         isLoggedIn={isLoggedIn}
         workspaceMemberCount={workspaceMemberCount}
         pendingRequestCount={pendingRequestCount}
-        onOpenWorkspaceSettings={openWorkspaceSettingsPanel}
+        onOpenWorkspaceSettings={() => {
+          setMobileSidebarOpen(false);
+          openWorkspaceSettingsPanel();
+        }}
         canOpenWorkspaceSettings={
           Boolean(activeWorkspace) &&
           !workspaceLoading &&
           !workspaceActionLoading &&
           !(isLoggedIn && activeWorkspace?.is_owner === false)
         }
-        onOpenWorkspaceInvite={openWorkspaceInvitePanel}
+        onOpenWorkspaceInvite={() => {
+          setMobileSidebarOpen(false);
+          openWorkspaceInvitePanel();
+        }}
         canOpenWorkspaceInvite={
           Boolean(activeWorkspace) &&
           !workspaceLoading &&
@@ -5625,6 +5483,7 @@ export default function HomePage() {
         }
         accountEmail={accountEmail}
         onOpenAccountManager={() => {
+          setMobileSidebarOpen(false);
           setAccountManagerOpen(true);
           setWorkspaceSettingsOpen(false);
           setWorkspaceInviteOpen(false);
@@ -5632,10 +5491,17 @@ export default function HomePage() {
         }}
         workspaces={workspaceState.workspaces || []}
         activeWorkspaceId={workspaceState.activeWorkspaceId}
-        onSelectWorkspace={handleSelectWorkspace}
-        onCreateWorkspace={handleCreateWorkspace}
+        onSelectWorkspace={(workspaceId) => {
+          setMobileSidebarOpen(false);
+          handleSelectWorkspace(workspaceId);
+        }}
+        onCreateWorkspace={() => {
+          setMobileSidebarOpen(false);
+          handleCreateWorkspace();
+        }}
         workspaceBusy={workspaceLoading || workspaceActionLoading}
         onAuthAction={() => {
+          setMobileSidebarOpen(false);
           if (isLoggedIn) handleSignOut();
           else navigate('/login');
         }}
@@ -5660,17 +5526,20 @@ export default function HomePage() {
         aiActive={showAI && !docPaneVisible}
         aiDisabled={!activeWorkspaceSettings.allow_ai_tools}
         onGoHome={() => {
+          setMobileSidebarOpen(false);
           closeDocumentPane();
           setShowFiles(false);
           setShowAI(false);
         }}
         onGoFiles={() => {
+          setMobileSidebarOpen(false);
           closeDocumentPane();
           setShowFiles(true);
           setShowAI(false);
         }}
         onGoAI={() => {
           if (!activeWorkspaceSettings.allow_ai_tools) return;
+          setMobileSidebarOpen(false);
           closeDocumentPane();
           setShowFiles(false);
           setShowAI(true);
@@ -5683,7 +5552,10 @@ export default function HomePage() {
         onStarredDragStart={handleStarredDragStart}
         onStarredDrop={handleStarredDrop}
         onStarredDragEnd={handleStarredDragEnd}
-        onOpenStarredNote={handleOpenStarredNote}
+        onOpenStarredNote={(doc) => {
+          setMobileSidebarOpen(false);
+          handleOpenStarredNote(doc);
+        }}
         onToggleStarredNote={handleToggleStarredNote}
         showRecentSection={activeWorkspaceSettings.show_recent_section}
         recentMenuRef={recentMenuRef}
@@ -5692,15 +5564,24 @@ export default function HomePage() {
         onToggleSidebarMenu={(docId) =>
           setSidebarMenuDocId((prev) => (prev === docId ? null : docId))
         }
-        onOpenRecentDocument={(doc) =>
-          openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })
-        }
+        onOpenRecentDocument={(doc) => {
+          setMobileSidebarOpen(false);
+          openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc });
+        }}
         username={username}
       />
 
       <div className="notion-main">
         <header className="notion-topbar" role="banner">
           <div className="notion-top-left">
+            <button
+              type="button"
+              className="notion-mobile-nav-btn"
+              onClick={() => setMobileSidebarOpen(true)}
+              aria-label="Open navigation"
+            >
+              ☰
+            </button>
             <div className="notion-top-title-group">
               <strong>{activeWorkspace?.name || `${accountName}'s Workspace`}</strong>
               <span className="notion-top-muted">{isLoggedIn ? 'Private workspace' : 'Guest mode'}</span>
@@ -6039,9 +5920,6 @@ export default function HomePage() {
                   <span className="notion-summary-chip">Members {workspaceMemberCount || 1}</span>
                   <span className="notion-summary-chip">
                     Share {activeWorkspaceSettings.link_sharing_mode}
-                  </span>
-                  <span className="notion-summary-chip">
-                    Canvas {activeWorkspaceSettings.preferred_canvas_domain}
                   </span>
                   <span className="notion-summary-chip">
                     Alerts {enabledWorkspaceNotificationCount}/3
@@ -6664,7 +6542,6 @@ export default function HomePage() {
 
                 <UploadPanel
                   allowUploads={activeWorkspaceSettings.allow_uploads}
-                  showCanvasImport={activeWorkspaceSettings.show_canvas_import}
                   dragUploadActive={dragUploadActive}
                   onDragEnter={handleUploadDragEnter}
                   onDragOver={handleUploadDragOver}
@@ -6686,16 +6563,6 @@ export default function HomePage() {
                   onClearCompletedUploads={handleClearCompletedUploads}
                   canClearUploadQueue={canClearUploadQueue}
                   uploadQueue={uploadQueue}
-                  canvasDomain={canvasDomain}
-                  onCanvasDomainChange={setCanvasDomain}
-                  canvasToken={canvasToken}
-                  onCanvasTokenChange={setCanvasToken}
-                  canvasFilesLoading={canvasFilesLoading}
-                  canvasImportingFileId={canvasImportingFileId}
-                  onFetchCanvasFiles={handleFetchCanvasFiles}
-                  canvasFilesError={canvasFilesError}
-                  canvasFiles={canvasFiles}
-                  onImportCanvasFile={(item) => void handleImportCanvasFile(item)}
                 />
 
                 <section className="notion-files-results notion-panel-block notion-results-panel" aria-labelledby="docs-title">

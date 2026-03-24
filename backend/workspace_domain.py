@@ -8,7 +8,6 @@ import requests
 
 from .config import (
     CATEGORY_KEYWORDS,
-    DEFAULT_CANVAS_DOMAIN,
     DEFAULT_DOCUMENT_CATEGORY,
     DEFAULT_WORKSPACE_SETTINGS,
     INVITE_BASE_URL,
@@ -129,11 +128,6 @@ def normalize_workspace_settings(raw_settings):
     if base['default_documents_page_size'] not in WORKSPACE_DOCUMENT_PAGE_SIZES:
         base['default_documents_page_size'] = DEFAULT_WORKSPACE_SETTINGS['default_documents_page_size']
 
-    preferred_canvas_domain = normalize_workspace_domain_token(
-        source.get('preferred_canvas_domain', base['preferred_canvas_domain'])
-    )
-    base['preferred_canvas_domain'] = preferred_canvas_domain or DEFAULT_CANVAS_DOMAIN
-
     base['recent_items_limit'] = parse_int(
         source.get('recent_items_limit', base['recent_items_limit']),
         10,
@@ -152,7 +146,6 @@ def normalize_workspace_settings(raw_settings):
         source.get('show_recent_activity', base['show_recent_activity']),
         True,
     )
-    base['show_canvas_import'] = parse_bool(source.get('show_canvas_import', base['show_canvas_import']), True)
     base['allow_uploads'] = parse_bool(source.get('allow_uploads', base['allow_uploads']), True)
     base['allow_note_editing'] = parse_bool(source.get('allow_note_editing', base['allow_note_editing']), True)
     base['allow_ai_tools'] = parse_bool(source.get('allow_ai_tools', base['allow_ai_tools']), True)

@@ -16,11 +16,6 @@ UPLOAD_FOLDER = 'uploads'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
-CANVAS_DEFAULT_DOMAIN = (os.environ.get('CANVAS_DEFAULT_DOMAIN') or 'canvas.instructure.com').strip().lower()
-try:
-    CANVAS_MAX_LIST_PAGES = max(1, min(20, int((os.environ.get('CANVAS_MAX_LIST_PAGES') or '5').strip())))
-except Exception:
-    CANVAS_MAX_LIST_PAGES = 5
 
 GOOGLE_CLIENT_ID = '1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com'
 AUTH_TOKEN_SECRET = (
@@ -83,7 +78,6 @@ WORKSPACE_DOCUMENT_SORTS = {'newest', 'oldest', 'title_asc', 'title_desc'}
 WORKSPACE_DOCUMENT_PAGE_SIZES = {12, 20, 40}
 WORKSPACE_SIDEBAR_DENSITIES = {'comfortable', 'compact'}
 DEFAULT_WORKSPACE_ACCENT_COLOR = '#2f76e8'
-DEFAULT_CANVAS_DOMAIN = 'canvas.instructure.com'
 DEFAULT_WORKSPACE_SETTINGS = {
     'workspace_icon': '📚',
     'description': '',
@@ -94,7 +88,6 @@ DEFAULT_WORKSPACE_SETTINGS = {
     'default_documents_layout': 'grid',
     'default_documents_sort': 'newest',
     'default_documents_page_size': 20,
-    'preferred_canvas_domain': DEFAULT_CANVAS_DOMAIN,
     'recent_items_limit': 10,
     'sidebar_density': 'comfortable',
     'show_starred_section': True,
@@ -102,7 +95,6 @@ DEFAULT_WORKSPACE_SETTINGS = {
     'show_quick_actions': True,
     'show_usage_chart': True,
     'show_recent_activity': True,
-    'show_canvas_import': True,
     'allow_uploads': True,
     'allow_note_editing': True,
     'allow_ai_tools': True,

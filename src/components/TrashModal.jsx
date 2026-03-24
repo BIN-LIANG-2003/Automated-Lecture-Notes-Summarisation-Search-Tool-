@@ -67,6 +67,9 @@ export default function TrashModal({
             {!!selectedTrashCount && (
               <span className="notion-summary-chip is-selected">Selected {selectedTrashCount}</span>
             )}
+            <button type="button" className="notion-modal-close" onClick={onClose} aria-label="Close Trash">
+              ×
+            </button>
           </div>
         </div>
 

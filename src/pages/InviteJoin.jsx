@@ -78,12 +78,17 @@ export default function InviteJoinPage() {
 
   return (
     <main className="container document-detail" role="main">
-      <button className="btn" type="button" onClick={() => navigate('/')}>
+      <button className="btn document-detail-back" type="button" onClick={() => navigate('/')}>
         ← Back to Home
       </button>
 
-      <article className="document-detail-card" style={{ marginTop: '16px' }}>
-        <h1 style={{ marginTop: 0 }}>Workspace Invitation</h1>
+      <article className="document-detail-card invite-join-card">
+        <header className="invite-join-head">
+          <div>
+            <p className="auth-kicker">StudyHub Invite</p>
+            <h1>Workspace Invitation</h1>
+          </div>
+        </header>
         {loading && <p className="muted">Loading invitation details...</p>}
         {!loading && error && (
           <p className="muted" role="alert">
@@ -105,11 +110,11 @@ export default function InviteJoinPage() {
             <p className="muted">This invitation requires owner approval before it becomes active.</p>
 
             {!username && (
-              <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+              <div className="invite-join-actions">
                 <Link className="btn btn-primary" to="/login">
                   Sign in
                 </Link>
-                <p className="muted" style={{ margin: 0 }}>
+                <p className="muted invite-join-inline-note">
                   Sign in first, then return to this invitation link to submit your join request.
                 </p>
               </div>

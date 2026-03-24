@@ -7,7 +7,6 @@ const formatFileSize = (size) => {
 
 export default function UploadPanel({
   allowUploads,
-  showCanvasImport,
   dragUploadActive,
   onDragEnter,
   onDragOver,
@@ -29,16 +28,6 @@ export default function UploadPanel({
   onClearCompletedUploads,
   canClearUploadQueue,
   uploadQueue,
-  canvasDomain,
-  onCanvasDomainChange,
-  canvasToken,
-  onCanvasTokenChange,
-  canvasFilesLoading,
-  canvasImportingFileId,
-  onFetchCanvasFiles,
-  canvasFilesError,
-  canvasFiles,
-  onImportCanvasFile,
 }) {
   return (
     <section className="uploader notion-panel-block notion-upload-panel" aria-labelledby="uploader-title">
@@ -157,85 +146,6 @@ export default function UploadPanel({
             </section>
           )}
         </form>
-        {showCanvasImport && (
-          <section className="notion-canvas-import" aria-label="Canvas import">
-            <div className="notion-canvas-import-head">
-              <h3>Import from Canvas (PAT)</h3>
-              <p className="muted tiny">
-                For MVP testing. Token is used only for requests and is not saved on server.
-              </p>
-            </div>
-            <div className="notion-canvas-import-controls">
-              <label className="notion-results-control" htmlFor="canvas-domain-input">
-                <span>Canvas Domain</span>
-                <input
-                  id="canvas-domain-input"
-                  type="text"
-                  value={canvasDomain}
-                  onChange={(event) => onCanvasDomainChange(event.target.value)}
-                  placeholder="canvas.yourschool.edu"
-                  autoComplete="off"
-                  disabled={!allowUploads || canvasFilesLoading || !!canvasImportingFileId}
-                />
-              </label>
-              <label className="notion-results-control notion-canvas-token-control" htmlFor="canvas-token-input">
-                <span>Personal Access Token</span>
-                <input
-                  id="canvas-token-input"
-                  type="password"
-                  value={canvasToken}
-                  onChange={(event) => onCanvasTokenChange(event.target.value)}
-                  placeholder="Paste Canvas token"
-                  autoComplete="off"
-                  disabled={!allowUploads || canvasFilesLoading || !!canvasImportingFileId}
-                />
-              </label>
-              <button
-                type="button"
-                className="btn"
-                onClick={onFetchCanvasFiles}
-                disabled={!allowUploads || canvasFilesLoading || !!canvasImportingFileId}
-              >
-                {canvasFilesLoading ? 'Loading...' : 'Get Files'}
-              </button>
-            </div>
-            {canvasFilesError && <p className="muted tiny">Canvas: {canvasFilesError}</p>}
-            {!!canvasFiles.length && (
-              <>
-                <p className="muted tiny">{canvasFiles.length} supported file(s) ready to import.</p>
-                <ul className="notion-canvas-file-list">
-                  {canvasFiles.slice(0, 24).map((item) => {
-                    const fileId = Number(item?.id) || 0;
-                    const importing = canvasImportingFileId === String(fileId);
-                    return (
-                      <li key={`canvas-file-${fileId}`}>
-                        <div>
-                          <strong>{item?.filename || `File ${fileId}`}</strong>
-                          <span>
-                            {(item?.file_type || '').toUpperCase() || 'FILE'} · {formatFileSize(item?.size)}
-                          </span>
-                        </div>
-                        <button
-                          type="button"
-                          className="btn btn-primary"
-                          onClick={() => onImportCanvasFile(item)}
-                          disabled={!allowUploads || canvasFilesLoading || !!canvasImportingFileId}
-                        >
-                          {importing ? 'Importing...' : 'Import'}
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-                {canvasFiles.length > 24 && (
-                  <p className="muted tiny">
-                    Showing first 24 files. Refine in Canvas or import in batches.
-                  </p>
-                )}
-              </>
-            )}
-          </section>
-        )}
         <p className="notion-upload-drop-hint">Drag & drop files here for quick upload.</p>
       </div>
       <p className="muted tiny">

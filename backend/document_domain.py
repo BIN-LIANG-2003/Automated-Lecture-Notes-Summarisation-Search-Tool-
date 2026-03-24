@@ -10,7 +10,6 @@ from html import escape as html_escape
 
 import docx
 import PyPDF2
-import requests
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.shared import Pt, RGBColor
 from lxml import etree, html as lxml_html
@@ -23,7 +22,6 @@ except Exception as e:
 
 from .config import (
     BLOCK_TAGS,
-    CANVAS_DEFAULT_DOMAIN,
     CATEGORY_KEYWORDS,
     DEFAULT_DOCUMENT_CATEGORY,
     EDITOR_ALLOWED_STYLE_PROPS,
@@ -37,7 +35,7 @@ from .config import (
     OCRMYPDF_TIMEOUT_SECONDS,
     TRASH_RETENTION_DAYS,
 )
-from .storage import allowed_file, remove_document_file_from_storage
+from .storage import remove_document_file_from_storage
 from .utils import parse_int, row_to_dict
 from .workspace_domain import workspace_belongs_to_user
 
@@ -121,88 +119,6 @@ def user_can_edit_document(conn, doc_row, username=''):
     if owner_username:
         return owner_username == editor
     return False
-
-
-def normalize_canvas_domain(value):
-    raw = str(value or '').strip()
-    if not raw:
-        raw = CANVAS_DEFAULT_DOMAIN
-    if raw.startswith('http://') or raw.startswith('https://'):
-        raw = raw.split('://', 1)[1]
-    raw = raw.split('/', 1)[0].strip().lower()
-    if ':' in raw:
-        host, port = raw.split(':', 1)
-        if port.isdigit():
-            raw = host
-    if not raw or '.' not in raw:
-        return ''
-    if not re.fullmatch(r'[a-z0-9.-]{3,255}', raw):
-        return ''
-    return raw
-
-
-def canvas_headers(token):
-    safe_token = str(token or '').strip()
-    if not safe_token:
-        return {}
-    return {'Authorization': f'Bearer {safe_token}'}
-
-
-def list_canvas_user_files(domain, headers, max_pages=5, per_page=100):
-    safe_domain = normalize_canvas_domain(domain)
-    if not safe_domain:
-        raise ValueError('Invalid Canvas domain')
-
-    safe_pages = max(1, min(20, int(max_pages or 5)))
-    safe_per_page = max(1, min(100, int(per_page or 100)))
-    next_url = f'https://{safe_domain}/api/v1/users/self/files?per_page={safe_per_page}'
-    files = []
-    page_count = 0
-
-    while next_url and page_count < safe_pages:
-        response = requests.get(next_url, headers=headers, timeout=20)
-        response.raise_for_status()
-        payload = response.json()
-        if isinstance(payload, list):
-            files.extend(payload)
-        page_count += 1
-        links = response.links if isinstance(response.links, dict) else {}
-        next_url = str((links.get('next') or {}).get('url') or '').strip()
-
-    return files
-
-
-def build_canvas_file_item(raw):
-    item = raw if isinstance(raw, dict) else {}
-    file_id = item.get('id')
-    filename = str(
-        item.get('filename')
-        or item.get('display_name')
-        or item.get('name')
-        or ''
-    ).strip()
-    if not filename or not allowed_file(filename):
-        return None
-
-    safe_size = 0
-    try:
-        safe_size = max(0, int(item.get('size') or 0))
-    except Exception:
-        safe_size = 0
-
-    file_type = ''
-    if '.' in filename:
-        file_type = filename.rsplit('.', 1)[1].lower().strip('.')
-
-    return {
-        'id': file_id,
-        'filename': filename,
-        'size': safe_size,
-        'url': str(item.get('url') or '').strip(),
-        'updated_at': str(item.get('updated_at') or '').strip(),
-        'content_type': str(item.get('content-type') or item.get('content_type') or '').strip(),
-        'file_type': file_type,
-    }
 
 
 def normalize_newlines(value):
@@ -1333,17 +1249,13 @@ def build_editable_file_bytes(file_ext, content, content_html=''):
 
 
 __all__ = [
-    'build_canvas_file_item',
     'build_editable_file_bytes',
-    'canvas_headers',
     'extract_document_content',
     'extract_text_from_pdf_bytes',
     'extract_text_from_pdf_bytes_with_meta',
     'hard_delete_document_record',
     'html_to_plaintext',
     'infer_document_category',
-    'list_canvas_user_files',
-    'normalize_canvas_domain',
     'normalize_newlines',
     'plaintext_to_html',
     'purge_expired_trashed_documents',

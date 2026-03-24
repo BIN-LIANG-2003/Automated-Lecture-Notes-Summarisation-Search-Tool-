@@ -61,7 +61,17 @@ export default function SummaryCenterModal({
               Summaries generated from uploaded PDF / DOCX / TXT content in this workspace.
             </p>
           </div>
-          <span className="notion-top-pill">{summaryHistory.length} saved</span>
+          <div className="notion-summary-center-head-actions">
+            <span className="notion-top-pill">{summaryHistory.length} saved</span>
+            <button
+              type="button"
+              className="notion-modal-close"
+              onClick={onClose}
+              aria-label="Close Summary Center"
+            >
+              ×
+            </button>
+          </div>
         </div>
         <div className="notion-summary-center-stats" aria-label="Summary statistics">
           <span className="notion-summary-center-stat">

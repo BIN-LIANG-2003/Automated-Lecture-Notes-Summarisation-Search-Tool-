@@ -276,12 +276,14 @@ export default function AuthPage() {
         <Link to="/" className="back-home-btn" aria-label="Back to home">
           ⌂ Home
         </Link>
-        <img src="/logo.png" alt="StudyHub Logo" className="login-logo" width="84" height="84" />
-
-        <h1 id="auth-title">{mode === 'signup' ? 'Create account' : 'Sign in'}</h1>
-        <p id="auth-subtitle" className="muted">
-          {subtitle}
-        </p>
+        <header className="auth-card-header">
+          <p className="auth-kicker">StudyHub Workspace</p>
+          <img src="/logo.png" alt="StudyHub Logo" className="login-logo" width="84" height="84" />
+          <h1 id="auth-title">{mode === 'signup' ? 'Create account' : 'Sign in'}</h1>
+          <p id="auth-subtitle" className="muted">
+            {subtitle}
+          </p>
+        </header>
 
         <div id="auth-forms" className="auth-forms" aria-live="polite" ref={wrapperRef}>
           {/* ----- 登录表单 ----- */}
@@ -292,19 +294,21 @@ export default function AuthPage() {
             onSubmit={handleLogin}
             noValidate
           >
-            <label htmlFor="login-username">Username or email</label>
-            <input
-              type="text"
-              id="login-username"
-              placeholder="Username or email"
-              required
-              autoComplete="username"
-              value={loginUsername}
-              onChange={(event) => {
-                setLoginUsername(event.target.value);
-                if (showAccountSelector) setShowAccountSelector(false);
-              }}
-            />
+            <div className="auth-form-field">
+              <label htmlFor="login-username">Username or email</label>
+              <input
+                type="text"
+                id="login-username"
+                placeholder="Username or email"
+                required
+                autoComplete="username"
+                value={loginUsername}
+                onChange={(event) => {
+                  setLoginUsername(event.target.value);
+                  if (showAccountSelector) setShowAccountSelector(false);
+                }}
+              />
+            </div>
 
             <PasswordField
               id="login-password"
@@ -333,13 +337,13 @@ export default function AuthPage() {
                   }}
                   theme="outline"
                   shape="pill"
-                  width="260"
+                  width="100%"
                 />
               </div>
             </div>
             {/* ================================== */}
 
-            <p className="muted tiny" style={{ marginTop: '15px' }}>
+            <p className="auth-form-footer muted tiny">
               No account yet?{' '}
               <button type="button" id="goto-signup" className="linklike" onClick={() => setMode('signup')}>
                 Create one
@@ -370,26 +374,30 @@ export default function AuthPage() {
             onSubmit={handleSignup}
             noValidate
           >
-            <label htmlFor="su-username">Username</label>
-            <input
-              type="text"
-              id="su-username"
-              placeholder="e.g. alice"
-              required
-              value={signupData.username}
-              onChange={(event) => setSignupData((prev) => ({ ...prev, username: event.target.value }))}
-            />
+            <div className="auth-form-field">
+              <label htmlFor="su-username">Username</label>
+              <input
+                type="text"
+                id="su-username"
+                placeholder="e.g. alice"
+                required
+                value={signupData.username}
+                onChange={(event) => setSignupData((prev) => ({ ...prev, username: event.target.value }))}
+              />
+            </div>
 
-            <label htmlFor="su-email">Email</label>
-            <input
-              type="email"
-              id="su-email"
-              placeholder="name@example.com"
-              required
-              autoComplete="email"
-              value={signupData.email}
-              onChange={(event) => setSignupData((prev) => ({ ...prev, email: event.target.value }))}
-            />
+            <div className="auth-form-field">
+              <label htmlFor="su-email">Email</label>
+              <input
+                type="email"
+                id="su-email"
+                placeholder="name@example.com"
+                required
+                autoComplete="email"
+                value={signupData.email}
+                onChange={(event) => setSignupData((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </div>
 
             <PasswordField
               id="su-password"
@@ -413,7 +421,7 @@ export default function AuthPage() {
             <button type="submit" className="btn btn-primary">
               Create account
             </button>
-            <p className="muted tiny">
+            <p className="auth-form-footer muted tiny">
               Already have an account?{' '}
               <button type="button" id="goto-login" className="linklike" onClick={() => setMode('login')}>
                 Back to sign in
@@ -460,7 +468,7 @@ function PasswordField({ id, label, placeholder, value, onChange, autoComplete, 
   };
 
   return (
-    <>
+    <div className="auth-form-field">
       <label htmlFor={id}>{label}</label>
       <div className="field-with-toggle">
         <input
@@ -476,6 +484,7 @@ function PasswordField({ id, label, placeholder, value, onChange, autoComplete, 
         <button
           type="button"
           className="toggle-visibility"
+          data-visible={visible ? 'true' : 'false'}
           aria-label={
             visible
               ? confirm
@@ -499,6 +508,6 @@ function PasswordField({ id, label, placeholder, value, onChange, autoComplete, 
           </svg>
         </button>
       </div>
-    </>
+    </div>
   );
 }

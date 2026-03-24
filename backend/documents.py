@@ -25,16 +25,6 @@ def upload_file():
     return document_service.upload_file()
 
 
-@documents_bp.route('/api/canvas/files', methods=['POST'])
-def get_canvas_files():
-    return document_service.get_canvas_files()
-
-
-@documents_bp.route('/api/canvas/import', methods=['POST'])
-def import_canvas_file():
-    return document_service.import_canvas_file()
-
-
 @documents_bp.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
     return document_service.get_document(doc_id)

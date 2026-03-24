@@ -20,8 +20,20 @@ export default function AccountSelectorModal({
         aria-labelledby="auth-account-selector-title"
         onClick={(event) => event.stopPropagation()}
       >
-        <h3 id="auth-account-selector-title">Choose account</h3>
-        <p className="muted tiny">Select a previous account to prefill username.</p>
+        <div className="auth-account-selector-head">
+          <div>
+            <h3 id="auth-account-selector-title">Choose account</h3>
+            <p className="muted tiny">Select a previous account to prefill username.</p>
+          </div>
+          <button
+            type="button"
+            className="notion-modal-close"
+            onClick={onClose}
+            aria-label="Close account chooser"
+          >
+            ×
+          </button>
+        </div>
 
         <ul className="auth-account-selector-list">
           {accounts.map((account) => {

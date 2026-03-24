@@ -469,8 +469,13 @@ export default function DocumentsList({
           })}
         </div>
       ) : (
-        <div id="empty-state" className="empty">
-          No matching documents. Try different filters, or click "Clear".
+        <div id="empty-state" className="empty notion-empty-state">
+          <strong>{hasActiveFilters ? 'No matching documents' : 'No documents yet'}</strong>
+          <p>
+            {hasActiveFilters
+              ? 'Try adjusting your search, date range, category, or tag filters.'
+              : 'Upload your first note to start building this workspace library.'}
+          </p>
           {hasActiveFilters && (
             <div className="notion-empty-actions">
               <button type="button" className="btn" onClick={onClearFilters}>

@@ -52,6 +52,8 @@ const summarizeInviteDelivery = (delivery) => {
 };
 
 export default function WorkspaceSidebar({
+  mobileSidebarOpen,
+  onCloseMobileSidebar,
   workspaceMenuOpen,
   workspaceMenuRef,
   onToggleWorkspaceMenu,
@@ -119,7 +121,24 @@ export default function WorkspaceSidebar({
   const inviteOpenCount = Array.isArray(inviteItems) ? inviteItems.length : 0;
 
   return (
-    <aside className="notion-sidebar" aria-label="Left navigation">
+    <aside
+      className={`notion-sidebar${mobileSidebarOpen ? ' is-open' : ''}`}
+      aria-label="Left navigation"
+    >
+      <div className="notion-sidebar-mobile-head">
+        <div>
+          <strong>{activeWorkspaceLabel}</strong>
+          <p>{isLoggedIn ? 'Workspace navigation' : 'Guest navigation'}</p>
+        </div>
+        <button
+          type="button"
+          className="notion-mobile-close-btn"
+          onClick={onCloseMobileSidebar}
+          aria-label="Close navigation"
+        >
+          ×
+        </button>
+      </div>
       <div className={`notion-workspace-picker ${workspaceMenuOpen ? 'open' : ''}`} ref={workspaceMenuRef}>
         <button
           type="button"

@@ -147,14 +147,6 @@ export default function DocumentDetail() {
   const fileUrl = `/api/documents/${document.id}/file${fileParams.toString() ? `?${fileParams.toString()}` : ''}`;
   const isImage = isImageFileType(document.fileType);
   
-  const headerStyle = {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    gap: '20px',
-    marginBottom: '16px'
-  };
-
   const formatDateTimeLabel = (value) => {
     if (!value) return 'Unknown';
     const dt = new Date(value);
@@ -503,23 +495,22 @@ export default function DocumentDetail() {
     <>
       <main className="container document-detail" role="main">
       <button 
-        className="btn" 
+        className="btn document-detail-back" 
         type="button" 
         onClick={() => navigate('/', { state: { showFiles: true } })} 
-        style={{marginBottom: '20px'}}
       >
         ← Back
       </button>
 
       <article className="document-detail-card">
-        <header style={headerStyle}>
+        <header className="document-detail-head">
           <div>
-            <h1 style={{margin: '0 0 8px'}}>{document.title}</h1>
-            <div className="document-meta">Uploaded: {new Date(document.uploadedAt).toLocaleString()}</div>
-            <div className="document-meta">Category: {document.category}</div>
-            <div className="document-meta">Tags: {document.tags?.length ? document.tags.join(', ') : 'None'}</div>
+            <h1>{document.title}</h1>
+            <div className="document-meta document-detail-meta">Uploaded: {new Date(document.uploadedAt).toLocaleString()}</div>
+            <div className="document-meta document-detail-meta">Category: {document.category}</div>
+            <div className="document-meta document-detail-meta">Tags: {document.tags?.length ? document.tags.join(', ') : 'None'}</div>
           </div>
-          <div style={{display: 'flex', gap: '8px', flexShrink: 0}}>
+          <div className="document-detail-head-actions">
             <button
               type="button"
               className="btn"
@@ -528,7 +519,7 @@ export default function DocumentDetail() {
             >
               Share Link
             </button>
-            <a href={fileUrl} target="_blank" rel="noreferrer" className="btn btn-primary" style={{flexShrink: 0}}>
+            <a href={fileUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
               Download 
             </a>
           </div>
@@ -606,17 +597,17 @@ export default function DocumentDetail() {
 
         <section className="document-body">
           {isImage ? (
-            <img src={fileUrl} alt="Preview" style={{maxWidth: '100%', borderRadius: '8px', marginBottom: '16px'}} />
+            <img src={fileUrl} alt="Preview" className="document-detail-preview-image" />
           ) : (
             <>
-              <h3 style={{marginTop:0}}>Document Content:</h3>
-              <pre style={{whiteSpace: 'pre-wrap', color: '#e9ecf1', fontFamily: 'inherit'}}>
+              <h3 className="document-detail-section-title">Document Content:</h3>
+              <pre className="document-detail-pre">
                 {document.content || "No text content extracted."}
               </pre>
             </>
           )}
 
-          <section className="notion-ai-section" style={{ marginTop: '20px' }}>
+          <section className="notion-ai-section document-detail-ai-section">
             <article className="notion-ai-shell">
               {!canUseAiTools && (
                 <p className="muted tiny">AI tools are disabled in this workspace settings.</p>

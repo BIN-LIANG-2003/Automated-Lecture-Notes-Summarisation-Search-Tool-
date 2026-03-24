@@ -63,6 +63,17 @@ export default function WorkspaceSettingsModal({
               Manage how this workspace looks, who can collaborate, and what defaults new study flows start with.
             </p>
           </div>
+          <button
+            type="button"
+            className="notion-modal-close"
+            onClick={() => {
+              if (workspaceActionLoading) return;
+              onClose?.();
+            }}
+            aria-label="Close workspace settings"
+          >
+            ×
+          </button>
         </header>
 
         <div className="notion-settings-layout">
@@ -198,19 +209,6 @@ export default function WorkspaceSettingsModal({
                     />
                     <span>Auto-categorize uploads when category is empty</span>
                   </label>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-canvas-domain-input">Preferred Canvas Domain</label>
-                    <input
-                      id="workspace-canvas-domain-input"
-                      type="text"
-                      value={workspaceSettingsDraft.preferred_canvas_domain}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ preferred_canvas_domain: event.target.value })
-                      }
-                      placeholder="canvas.instructure.com"
-                      disabled={workspaceActionLoading}
-                    />
-                  </div>
                 </section>
 
                 <section className="notion-settings-block">
@@ -383,17 +381,6 @@ export default function WorkspaceSettingsModal({
                     />
                     <span>Show recent uploads and summary activity blocks</span>
                   </label>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.show_canvas_import}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ show_canvas_import: event.target.checked })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                    <span>Show Canvas import panel in Files</span>
-                  </label>
                 </section>
               </>
             )}
@@ -411,7 +398,7 @@ export default function WorkspaceSettingsModal({
                       }
                       disabled={workspaceActionLoading}
                     />
-                    <span>Show success toasts for uploads and Canvas imports</span>
+                    <span>Show success toasts for uploads</span>
                   </label>
                   <label className="notion-checkbox-row">
                     <input
