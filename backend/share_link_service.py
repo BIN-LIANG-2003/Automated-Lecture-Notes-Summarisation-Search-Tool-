@@ -261,6 +261,108 @@ def revoke_document_share_link(doc_id, share_link_id):
         conn.close()
 
 
+def delete_document_share_link(doc_id, share_link_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+
+        link_cursor = conn.execute(
+            'SELECT * FROM document_share_links WHERE id = ? AND document_id = ?',
+            (share_link_id, doc_id),
+        )
+        link_row = row_to_dict(link_cursor.fetchone())
+        if not link_row:
+            return jsonify({'error': 'Share link not found'}), 404
+
+        payload = to_document_share_link_payload(link_row)
+        if payload.get('is_accessible'):
+            return jsonify({'error': 'Active share links must be revoked before deletion'}), 409
+
+        conn.execute(
+            'DELETE FROM document_share_links WHERE id = ? AND document_id = ?',
+            (share_link_id, doc_id),
+        )
+        conn.commit()
+        payload['message'] = 'Share link deleted'
+        payload['deleted'] = True
+        return jsonify(payload), 200
+    finally:
+        conn.close()
+
+
+def delete_inactive_document_share_links(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or request.args.get('username') or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        if not user_can_manage_document_share_links(conn, doc, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+
+        link_cursor = conn.execute(
+            '''
+            SELECT *
+            FROM document_share_links
+            WHERE document_id = ?
+            ORDER BY created_at DESC, id DESC
+            ''',
+            (doc_id,),
+        )
+        rows = [row_to_dict(item) for item in link_cursor.fetchall()]
+        delete_ids = []
+        for row in rows:
+            payload = to_document_share_link_payload(row)
+            if not payload.get('is_accessible'):
+                link_id = parse_int(payload.get('id'), 0, 0)
+                if link_id > 0:
+                    delete_ids.append(link_id)
+
+        if not delete_ids:
+            return jsonify({
+                'message': 'No inactive share links to delete',
+                'document_id': doc_id,
+                'deleted_count': 0,
+                'items': list_document_share_link_payloads(conn, doc_id, limit=30),
+            }), 200
+
+        placeholders = ','.join('?' for _ in delete_ids)
+        conn.execute(
+            f'DELETE FROM document_share_links WHERE document_id = ? AND id IN ({placeholders})',
+            (doc_id, *delete_ids),
+        )
+        conn.commit()
+        return jsonify({
+            'message': 'Inactive share links deleted',
+            'document_id': doc_id,
+            'deleted_count': len(delete_ids),
+            'items': list_document_share_link_payloads(conn, doc_id, limit=30),
+        }), 200
+    finally:
+        conn.close()
+
+
 def get_document_by_share_token(token):
     safe_token = str(token or '').strip()
     username = (request.args.get('username') or '').strip()
@@ -327,7 +429,7 @@ def get_document_by_share_token(token):
         workspace_settings = get_workspace_settings(conn, workspace_id)
         doc_data['link_sharing_mode'] = get_document_link_sharing_mode(conn, doc)
         doc_data['can_manage_share_links'] = user_can_manage_document_share_links(conn, doc, username)
-        doc_data['share'] = serialize_document_share_link_row(refreshed_share_row)
+        doc_data['share'] = to_document_share_link_payload(refreshed_share_row)
         doc_data['allow_ai_tools'] = parse_bool(workspace_settings.get('allow_ai_tools', True), True)
         doc_data['allow_ocr'] = parse_bool(workspace_settings.get('allow_ocr', True), True)
         doc_data['allow_export'] = parse_bool(workspace_settings.get('allow_export', True), True)

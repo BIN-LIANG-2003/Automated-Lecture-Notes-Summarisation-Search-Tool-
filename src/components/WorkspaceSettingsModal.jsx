@@ -4,6 +4,17 @@ const formatDomains = (value) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
+const getLinkSharingModeHelp = (mode) => {
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (safeMode === 'restricted') {
+    return 'Restricted blocks document share links. People must already be inside the workspace to open files.';
+  }
+  if (safeMode === 'public') {
+    return 'Anyone With Link makes document access public. Shared links still work, and direct document access is no longer limited to workspace members.';
+  }
+  return 'Workspace Members keeps documents private by default, but valid share links still open the document while workspace members keep their normal access.';
+};
+
 export default function WorkspaceSettingsModal({
   open = false,
   workspaceActionLoading = false,
@@ -656,6 +667,9 @@ export default function WorkspaceSettingsModal({
                       <option value="public">Anyone With Link</option>
                     </select>
                   </div>
+                  <p className="notion-settings-help">
+                    {getLinkSharingModeHelp(workspaceSettingsDraft.link_sharing_mode)}
+                  </p>
                   <div className="notion-settings-row">
                     <label htmlFor="workspace-share-expiry-input">Document Share Link Expiry (days)</label>
                     <input

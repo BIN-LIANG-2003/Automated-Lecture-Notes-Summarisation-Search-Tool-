@@ -25,6 +25,16 @@ def revoke_document_share_link(doc_id, share_link_id):
     return share_link_service.revoke_document_share_link(doc_id, share_link_id)
 
 
+@share_links_bp.route('/api/documents/<int:doc_id>/share-links/<int:share_link_id>/delete', methods=['DELETE'])
+def delete_document_share_link(doc_id, share_link_id):
+    return share_link_service.delete_document_share_link(doc_id, share_link_id)
+
+
+@share_links_bp.route('/api/documents/<int:doc_id>/share-links/inactive', methods=['DELETE'])
+def delete_inactive_document_share_links(doc_id):
+    return share_link_service.delete_inactive_document_share_links(doc_id)
+
+
 @share_links_bp.route('/api/share-links/<token>', methods=['GET'])
 def get_document_by_share_token(token):
     return share_link_service.get_document_by_share_token(token)

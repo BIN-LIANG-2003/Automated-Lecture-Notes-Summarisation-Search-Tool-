@@ -55,6 +55,11 @@ def update_document_content(doc_id):
     return document_service.update_document_content(doc_id)
 
 
+@documents_bp.route('/api/documents/<int:doc_id>/import-text', methods=['POST'])
+def import_document_text(doc_id):
+    return document_service.import_document_text(doc_id)
+
+
 @documents_bp.route('/api/documents/<int:doc_id>/pdf', methods=['PUT'])
 def update_document_pdf_file(doc_id):
     return document_service.update_document_pdf_file(doc_id)

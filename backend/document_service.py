@@ -728,6 +728,98 @@ def update_document_content(doc_id):
         conn.close()
 
 
+def import_document_text(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = (data.get('username') or '').strip()
+    share_token = (data.get('share_token') or '').strip()
+    text = str(data.get('text') or '')
+    text = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+    custom_title = str(data.get('title') or '').strip()
+
+    if not username:
+        return jsonify({'error': 'Please sign in to save OCR text as a note'}), 401
+    if not text:
+        return jsonify({'error': 'No text provided'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    unique_filename = ''
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username, share_token)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can save OCR results as notes'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        source_title = str((doc.get('title') if hasattr(doc, 'get') else doc['title']) or 'Untitled').strip()
+        source_category = normalize_document_category(
+            (doc.get('category') if hasattr(doc, 'get') else doc['category']) or ''
+        )
+        note_title = custom_title or f'{source_title} OCR Note'
+        content_html = sanitize_editor_html(plaintext_to_html(text))
+        file_bytes, mimetype = build_editable_file_bytes('txt', text, content_html)
+
+        unique_filename = f'{uuid.uuid4().hex}.txt'
+        write_file_bytes_to_storage(unique_filename, file_bytes, mimetype)
+
+        insert_cursor = conn.execute(
+            '''
+            INSERT INTO documents (
+                filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                unique_filename,
+                note_title,
+                datetime.utcnow().isoformat(),
+                'txt',
+                text,
+                content_html,
+                username,
+                '',
+                source_category or DEFAULT_DOCUMENT_CATEGORY,
+                workspace_id,
+            ),
+        )
+        conn.commit()
+
+        new_doc_id = insert_cursor.lastrowid
+        new_doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (new_doc_id,))
+        new_doc = new_doc_cursor.fetchone()
+        return jsonify({
+            'message': 'OCR note saved successfully',
+            'new_doc_id': new_doc_id,
+            'document': row_to_dict(new_doc) or {},
+        }), 201
+    except ValueError as e:
+        if unique_filename:
+            remove_document_file_from_storage(unique_filename)
+        return jsonify({'error': str(e)}), 400
+    except RuntimeError as e:
+        if unique_filename:
+            remove_document_file_from_storage(unique_filename)
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        if unique_filename:
+            remove_document_file_from_storage(unique_filename)
+        print(f"OCR text import failed: {e}")
+        return jsonify({'error': 'Failed to save OCR note'}), 500
+    finally:
+        conn.close()
+
+
 def update_document_pdf_file(doc_id):
     username = ((request.args.get('username') or request.form.get('username') or '').strip())
     if request.files and 'file' in request.files:

@@ -34,7 +34,13 @@ from .config import (
     s3_client,
 )
 from .db import get_db_connection
-from .document_domain import extract_text_from_pdf_bytes_with_meta, normalize_newlines
+from .document_domain import (
+    extract_document_content,
+    extract_text_from_pdf_bytes_with_meta,
+    normalize_newlines,
+    plaintext_to_html,
+    user_can_edit_document,
+)
 from .security import create_auth_token, decode_auth_token, get_bearer_token
 from .share_domain import (
     check_document_access,
@@ -775,6 +781,35 @@ def ocr_health():
         status['hints'].append('No OCR provider is ready. Configure HF_API_TOKEN to enable Hugging Face OCR.')
     return jsonify(status), (200 if ok else 503)
 
+
+def extract_document_text_from_storage(filename, file_type):
+    safe_filename = str(filename or '').strip()
+    safe_file_type = str(file_type or '').strip().lower().lstrip('.')
+    if not safe_filename or not safe_file_type:
+        return '', {}
+
+    source_bytes = read_file_bytes_from_storage(safe_filename)
+    if safe_file_type == 'pdf':
+        extracted_text, meta = extract_text_from_pdf_bytes_with_meta(source_bytes)
+        return str(extracted_text or '').strip(), meta if isinstance(meta, dict) else {}
+
+    if safe_file_type in ('docx', 'txt'):
+        temp_path = ''
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{safe_file_type}') as temp_file:
+                temp_file.write(source_bytes)
+                temp_path = temp_file.name
+            extracted_text, _ = extract_document_content(temp_path, safe_file_type)
+            return str(extracted_text or '').strip(), {}
+        finally:
+            if temp_path and os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except OSError:
+                    pass
+
+    return '', {}
+
 # ==========================================
 # 专家 1 号：视觉专家 (负责看图识字)
 # 对应前端的【按钮 1】
@@ -934,6 +969,10 @@ def analyze_text():
     text_source = 'request_text'
     refreshed_from_file = False
     pdf_refresh_meta = {}
+    doc_file_type = ''
+    doc_filename = ''
+    attempted_doc_text_extraction = False
+    doc_text_extraction_error = ''
 
     if requested_doc_id > 0:
         conn = get_db_connection()
@@ -959,32 +998,62 @@ def analyze_text():
             document_owner_username = str(
                 (doc.get('username') if hasattr(doc, 'get') else doc['username']) or ''
             ).strip()
-
-            # On explicit rebuild, refresh PDF text from source file so summary
-            # uses latest/full extraction quality instead of stale db content.
             doc_file_type = str(
                 (doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']) or ''
             ).strip().lower()
             doc_filename = str(
                 (doc.get('filename') if hasattr(doc, 'get') else doc['filename']) or ''
             ).strip()
-            if force_refresh and doc_file_type == 'pdf' and doc_filename:
+            can_persist_doc_text = bool(
+                username
+                and user_can_edit_document(conn, doc, username)
+                and workspace_settings.get('allow_note_editing', True)
+            )
+
+            # On explicit rebuild, refresh file text from source file so summary
+            # uses latest/full extraction quality instead of stale db content.
+            if force_refresh and doc_file_type in ('pdf', 'docx', 'txt') and doc_filename:
                 try:
-                    source_bytes = read_file_bytes_from_storage(doc_filename)
-                    refreshed_text, refresh_meta = extract_text_from_pdf_bytes_with_meta(source_bytes)
+                    refreshed_text, refresh_meta = extract_document_text_from_storage(doc_filename, doc_file_type)
                     pdf_refresh_meta = refresh_meta if isinstance(refresh_meta, dict) else {}
                     refreshed_text = str(refreshed_text or '').strip()
                     if refreshed_text:
-                        if refreshed_text != doc_text_content:
+                        if refreshed_text != doc_text_content and can_persist_doc_text:
+                            next_content_html = ''
+                            if doc_file_type in ('docx', 'txt'):
+                                next_content_html = plaintext_to_html(refreshed_text)
                             conn.execute(
                                 'UPDATE documents SET content = ?, content_html = ? WHERE id = ?',
-                                (refreshed_text, '', requested_doc_id)
+                                (refreshed_text, next_content_html, requested_doc_id)
                             )
                             conn.commit()
                         doc_text_content = refreshed_text
                         refreshed_from_file = True
                 except Exception as e:
-                    print(f"PDF re-extraction on summary refresh failed: {e}")
+                    print(f"Document re-extraction on summary refresh failed: {e}")
+
+            if not doc_text_content and doc_file_type in ('pdf', 'docx', 'txt') and doc_filename:
+                attempted_doc_text_extraction = True
+                try:
+                    extracted_text, refresh_meta = extract_document_text_from_storage(doc_filename, doc_file_type)
+                    extracted_text = str(extracted_text or '').strip()
+                    if doc_file_type == 'pdf':
+                        pdf_refresh_meta = refresh_meta if isinstance(refresh_meta, dict) else {}
+                    if extracted_text:
+                        if can_persist_doc_text:
+                            next_content_html = ''
+                            if doc_file_type in ('docx', 'txt'):
+                                next_content_html = plaintext_to_html(extracted_text)
+                            conn.execute(
+                                'UPDATE documents SET content = ?, content_html = ? WHERE id = ?',
+                                (extracted_text, next_content_html, requested_doc_id)
+                            )
+                            conn.commit()
+                        doc_text_content = extracted_text
+                        refreshed_from_file = True
+                except Exception as e:
+                    doc_text_extraction_error = str(e)
+                    print(f"Document text extraction on summarize failed: {e}")
         finally:
             conn.close()
 
@@ -1021,7 +1090,7 @@ def analyze_text():
     text_content = (data.get('text') or '').strip()
     if not text_content and doc_text_content:
         text_content = doc_text_content
-        text_source = 'document_content'
+        text_source = 'document_file' if refreshed_from_file else 'document_content'
     elif not text_content:
         text_source = 'empty'
     summary_length = str(
@@ -1047,9 +1116,22 @@ def analyze_text():
 
     if not text_content:
         if requested_doc_id > 0:
+            error_message = "No text is available for this document yet."
+            if doc_file_type in ('png', 'jpg', 'jpeg', 'webp', 'gif'):
+                error_message = "No text is available for this image yet. Run OCR first, then summarize the extracted text."
+            elif doc_file_type == 'pdf':
+                error_message = "No text could be extracted from this PDF. Try Rebuild, or use a clearer PDF with selectable text."
+            elif doc_file_type in ('docx', 'txt'):
+                error_message = "No text could be extracted from this file. Open the note and add or edit content first."
             return jsonify({
-                "error": "No text available in this document. Open the note and add/edit content first.",
-                "details": {"doc_id": requested_doc_id}
+                "error": error_message,
+                "details": {
+                    "doc_id": requested_doc_id,
+                    "file_type": doc_file_type,
+                    "text_source": text_source,
+                    "attempted_file_extraction": attempted_doc_text_extraction,
+                    "file_extraction_error": doc_text_extraction_error,
+                }
             }), 400
         return jsonify({"error": "No text provided"}), 400
 

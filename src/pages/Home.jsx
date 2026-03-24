@@ -63,6 +63,8 @@ const SUGGESTED_CATEGORIES = [
 ];
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
+const isActiveShareLink = (item) =>
+  String(item?.status || '').trim().toLowerCase() === 'active' && !Boolean(item?.is_expired ?? item?.isExpired);
 const HOME_TAB_OPTIONS = ['home', 'files', 'ai'];
 const SIDEBAR_DENSITY_OPTIONS = [
   { value: 'comfortable', label: 'Comfortable' },
@@ -1181,6 +1183,7 @@ export default function HomePage() {
   const [activeDocShareLinksLoading, setActiveDocShareLinksLoading] = useState(false);
   const [activeDocShareLinksError, setActiveDocShareLinksError] = useState('');
   const [activeDocShareActionLoadingId, setActiveDocShareActionLoadingId] = useState(0);
+  const [activeDocShareActionLoadingType, setActiveDocShareActionLoadingType] = useState('');
   const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
   const [extractedText, setExtractedText] = useState('');
   const [aiHideInputText, setAiHideInputText] = useState(false);
@@ -2435,6 +2438,7 @@ export default function HomePage() {
     setActiveDocShareLinksLoading(false);
     setActiveDocShareLinksError('');
     setActiveDocShareActionLoadingId(0);
+    setActiveDocShareActionLoadingType('');
   };
 
   const removeDocumentFromClientState = (docId) => {
@@ -3766,6 +3770,7 @@ export default function HomePage() {
     const shareLinkId = Number(shareLink?.id);
     if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
     setActiveDocShareActionLoadingId(shareLinkId);
+    setActiveDocShareActionLoadingType('revoke');
     try {
       const res = await fetch(`/api/documents/${activeDoc.id}/share-links/${shareLinkId}`, {
         method: 'DELETE',
@@ -3779,6 +3784,71 @@ export default function HomePage() {
       showToast(err.message || 'Failed to revoke share link', 'error');
     } finally {
       setActiveDocShareActionLoadingId(0);
+      setActiveDocShareActionLoadingType('');
+    }
+  };
+
+  const handleDeleteActiveDocShareLink = async (shareLink) => {
+    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    const shareLinkId = Number(shareLink?.id);
+    if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
+    const shouldDelete = await requestConfirmation({
+      title: 'Delete share link record?',
+      description: 'This removes the inactive share link from the list permanently.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldDelete) return;
+
+    setActiveDocShareActionLoadingId(shareLinkId);
+    setActiveDocShareActionLoadingType('delete');
+    try {
+      const res = await fetch(`/api/documents/${activeDoc.id}/share-links/${shareLinkId}/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to delete share link');
+      await refreshActiveDocShareLinks(activeDoc.id);
+      showWorkspaceToast('sharing', 'Share link deleted.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to delete share link', 'error');
+    } finally {
+      setActiveDocShareActionLoadingId(0);
+      setActiveDocShareActionLoadingType('');
+    }
+  };
+
+  const handleDeleteInactiveActiveDocShareLinks = async () => {
+    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    const shouldDelete = await requestConfirmation({
+      title: 'Delete all inactive share links?',
+      description: 'This permanently removes all expired and revoked share links from the list.',
+      confirmLabel: 'Delete All Inactive',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldDelete) return;
+
+    setActiveDocShareActionLoadingId(-2);
+    setActiveDocShareActionLoadingType('delete-inactive');
+    try {
+      const res = await fetch(`/api/documents/${activeDoc.id}/share-links/inactive`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to delete inactive share links');
+      setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
+      showWorkspaceToast('sharing', `Deleted ${payload.deleted_count || 0} inactive share link(s).`, 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to delete inactive share links', 'error');
+    } finally {
+      setActiveDocShareActionLoadingId(0);
+      setActiveDocShareActionLoadingType('');
     }
   };
 
@@ -3793,6 +3863,7 @@ export default function HomePage() {
     });
     if (!shouldRevokeAll) return;
     setActiveDocShareActionLoadingId(-1);
+    setActiveDocShareActionLoadingType('revoke-all');
     try {
       const res = await fetch(`/api/documents/${activeDoc.id}/share-links`, {
         method: 'DELETE',
@@ -3807,6 +3878,7 @@ export default function HomePage() {
       showToast(err.message || 'Failed to revoke all share links', 'error');
     } finally {
       setActiveDocShareActionLoadingId(0);
+      setActiveDocShareActionLoadingType('');
     }
   };
 
@@ -5862,7 +5934,19 @@ export default function HomePage() {
                               !activeDocShareLinks.length
                             }
                           >
-                            Revoke All
+                            {activeDocShareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-delete"
+                            onClick={handleDeleteInactiveActiveDocShareLinks}
+                            disabled={
+                              activeDocShareLinksLoading ||
+                              activeDocShareActionLoadingId !== 0 ||
+                              !activeDocShareLinks.some((item) => !isActiveShareLink(item))
+                            }
+                          >
+                            {activeDocShareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
                           </button>
                           <button
                             type="button"
@@ -5887,7 +5971,7 @@ export default function HomePage() {
                         <ul className="notion-doc-share-list">
                           {activeDocShareLinks.map((item, index) => {
                             const status = String(item?.status || 'unknown').toLowerCase();
-                            const isActive = status === 'active' && !item?.is_expired;
+                            const isActive = isActiveShareLink(item);
                             const loading = Number(item?.id) === activeDocShareActionLoadingId;
                             return (
                               <li key={`doc-share-${item?.id || item?.token || index}`}>
@@ -5908,14 +5992,16 @@ export default function HomePage() {
                                   <button
                                     type="button"
                                     className="btn btn-delete"
-                                    onClick={() => handleRevokeActiveDocShareLink(item)}
-                                    disabled={
-                                      !isActive ||
-                                      loading ||
-                                      activeDocShareActionLoadingId === -1
+                                    onClick={() =>
+                                      isActive
+                                        ? handleRevokeActiveDocShareLink(item)
+                                        : handleDeleteActiveDocShareLink(item)
                                     }
+                                    disabled={loading || activeDocShareActionLoadingId < 0}
                                   >
-                                    {loading ? 'Revoking...' : 'Revoke'}
+                                    {loading
+                                      ? (activeDocShareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
+                                      : (isActive ? 'Revoke' : 'Delete')}
                                   </button>
                                 </div>
                               </li>

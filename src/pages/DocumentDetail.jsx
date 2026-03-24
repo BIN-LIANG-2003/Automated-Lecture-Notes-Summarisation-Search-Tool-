@@ -17,6 +17,14 @@ const DEFAULT_SUMMARY_PROGRESS = {
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
 const isImageFileType = (value) => IMAGE_FILE_TYPE_SET.has(String(value || '').toLowerCase());
+const getLinkSharingModeLabel = (mode) => {
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (safeMode === 'public') return 'Anyone With Link';
+  if (safeMode === 'workspace') return 'Workspace Members';
+  return 'Restricted';
+};
+const isActiveShareLink = (item) =>
+  String(item?.status || '').trim().toLowerCase() === 'active' && !Boolean(item?.is_expired ?? item?.isExpired);
 
 const normalizeDocument = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
@@ -50,6 +58,20 @@ const normalizeDocument = (raw) => {
       : 'medium',
     keywordLimit: clamp(Number(raw.keyword_limit ?? raw.keywordLimit) || 5, 3, 12),
     defaultShareExpiryDays: clamp(Number(raw.default_share_expiry_days ?? raw.defaultShareExpiryDays) || 7, 1, 30),
+    share:
+      raw.share && typeof raw.share === 'object'
+        ? {
+            token: String(raw.share.token || '').trim(),
+            status: String(raw.share.status || '').trim().toLowerCase(),
+            shareUrl: String(raw.share.share_url || raw.share.shareUrl || '').trim(),
+            expiresAt: raw.share.expires_at ?? raw.share.expiresAt ?? '',
+            createdAt: raw.share.created_at ?? raw.share.createdAt ?? '',
+            createdBy: String(raw.share.created_by || raw.share.createdBy || '').trim(),
+            lastAccessAt: raw.share.last_access_at ?? raw.share.lastAccessAt ?? '',
+            isExpired: Boolean(raw.share.is_expired ?? raw.share.isExpired),
+            isAccessible: Boolean(raw.share.is_accessible ?? raw.share.isAccessible ?? true),
+          }
+        : null,
     tags,
   };
 };
@@ -64,11 +86,14 @@ export default function DocumentDetail() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSavingOcr, setIsSavingOcr] = useState(false);
+  const [shareAccessState, setShareAccessState] = useState(null);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [shareLinks, setShareLinks] = useState([]);
   const [shareLinksLoading, setShareLinksLoading] = useState(false);
   const [shareLinksError, setShareLinksError] = useState('');
   const [shareActionLoadingId, setShareActionLoadingId] = useState(0);
+  const [shareActionLoadingType, setShareActionLoadingType] = useState('');
   const summaryProgressTimerRef = useRef(null);
   const {
     toastState,
@@ -80,6 +105,8 @@ export default function DocumentDetail() {
   } = useUiFeedback();
   const authToken = sessionStorage.getItem('auth_token') || '';
   const username = authToken ? (sessionStorage.getItem('username') || '') : '';
+  const safeShareToken = String(shareToken || '').trim();
+  const isSharedView = Boolean(safeShareToken);
   const canManageShareLinks = Boolean(document?.canManageShareLinks);
   const canUseAiTools = Boolean(document?.allowAiTools);
   const canUseOcr = canUseAiTools && Boolean(document?.allowOcr);
@@ -89,9 +116,10 @@ export default function DocumentDetail() {
   useEffect(() => {
     const fetchDoc = async () => {
       try {
+        setError(null);
+        setShareAccessState(null);
         const params = new URLSearchParams();
         if (username) params.set('username', username);
-        const safeShareToken = String(shareToken || '').trim();
         let endpoint = '';
         if (safeShareToken) {
           endpoint = params.toString()
@@ -104,7 +132,28 @@ export default function DocumentDetail() {
         }
         const res = await fetch(endpoint);
         const payload = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(payload.error || 'Document not found');
+        if (!res.ok) {
+          const message = payload.error || 'Document not found';
+          if (safeShareToken) {
+            const lowered = String(message).toLowerCase();
+            setShareAccessState({
+              statusCode: res.status,
+              message,
+              requiresSignIn:
+                res.status === 401 ||
+                lowered.includes('workspace members') ||
+                lowered.includes('sign in') ||
+                lowered.includes('auth token'),
+              isExpired: lowered.includes('expired'),
+              isRestricted: lowered.includes('restricted'),
+              isMissing:
+                res.status === 404 ||
+                lowered.includes('not found') ||
+                lowered.includes('invalid share'),
+            });
+          }
+          throw new Error(message);
+        }
         const data = normalizeDocument(payload);
         setDocument(data);
         setExtractedText(isImageFileType(data?.fileType) ? (data?.content || '') : '');
@@ -124,6 +173,7 @@ export default function DocumentDetail() {
       setShareLinksLoading(false);
       setShareLinksError('');
       setShareActionLoadingId(0);
+      setShareActionLoadingType('');
       return;
     }
     refreshShareLinks(document.id);
@@ -139,13 +189,58 @@ export default function DocumentDetail() {
   }, []);
 
   if (loading) return <div className="container document-detail"><p>Loading...</p></div>;
-  if (error || !document) return <div className="container document-detail"><p>Error: {error}</p></div>;
+  if (error || !document) {
+    if (isSharedView) {
+      const shareErrorTitle = shareAccessState?.isExpired
+        ? 'This Share Link Has Expired'
+        : shareAccessState?.isRestricted
+          ? 'This Workspace Does Not Allow Shared Links'
+          : shareAccessState?.requiresSignIn
+            ? 'This Share Link Needs A Workspace Account'
+            : shareAccessState?.isMissing
+              ? 'This Share Link Is Invalid'
+              : 'Cannot Open This Shared Document';
+      return (
+        <>
+          <main className="container document-detail document-share-page" role="main">
+            <section className="document-share-hero document-share-hero-error">
+              <span className="document-share-kicker">Shared Document</span>
+              <h1>{shareErrorTitle}</h1>
+              <p>{shareAccessState?.message || error || 'This shared document could not be opened.'}</p>
+              <div className="document-share-actions">
+                {shareAccessState?.requiresSignIn && (
+                  <button
+                    type="button"
+                    className="btn btn-primary"
+                    onClick={() => navigate('/login', { state: { from: `/shared/${safeShareToken}` } })}
+                  >
+                    Sign In To Continue
+                  </button>
+                )}
+                <button type="button" className="btn" onClick={() => navigate('/')}>
+                  Go Home
+                </button>
+              </div>
+            </section>
+          </main>
+          <UiFeedbackLayer
+            toastState={toastState}
+            confirmDialogState={confirmDialogState}
+            onDismissToast={dismissToast}
+            onCloseConfirmDialog={closeConfirmDialog}
+          />
+        </>
+      );
+    }
+    return <div className="container document-detail"><p>Error: {error}</p></div>;
+  }
 
   const fileParams = new URLSearchParams();
   if (username) fileParams.set('username', username);
   if (shareToken) fileParams.set('share_token', shareToken);
   const fileUrl = `/api/documents/${document.id}/file${fileParams.toString() ? `?${fileParams.toString()}` : ''}`;
   const isImage = isImageFileType(document.fileType);
+  const shareModeLabel = getLinkSharingModeLabel(document.linkSharingMode);
   
   const formatDateTimeLabel = (value) => {
     if (!value) return 'Unknown';
@@ -161,6 +256,7 @@ export default function DocumentDetail() {
       setShareLinksLoading(false);
       setShareLinksError('');
       setShareActionLoadingId(0);
+      setShareActionLoadingType('');
       return;
     }
 
@@ -374,11 +470,51 @@ export default function DocumentDetail() {
     if (!output) return;
     const blob = new Blob([output], { type: 'text/plain;charset=utf-8' });
     const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
+    const link = window.document.createElement('a');
     link.href = url;
     link.download = `studyhub-summary-${new Date().toISOString().slice(0, 10)}.txt`;
     link.click();
     URL.revokeObjectURL(url);
+  };
+
+  const handleSaveOcrText = async () => {
+    if (!username) {
+      showToast('Please sign in to save OCR text as a note.', 'warning');
+      return;
+    }
+    const safeText = extractedText.trim();
+    if (!safeText) {
+      showToast('There is no OCR text to save yet.', 'warning');
+      return;
+    }
+
+    setIsSavingOcr(true);
+    try {
+      const payload = {
+        username,
+        text: safeText,
+        title: `${document?.title || 'Untitled'} OCR Note`,
+      };
+      if (shareToken) payload.share_token = shareToken;
+      const response = await fetch(`/api/documents/${document.id}/import-text`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to save OCR note');
+      }
+      const savedTitle = String(data?.document?.title || '').trim();
+      showToast(
+        savedTitle ? `OCR text saved as "${savedTitle}".` : 'OCR text saved as a new note.',
+        'success'
+      );
+    } catch (err) {
+      showToast(`Save failed: ${err.message || 'Unknown error'}`, 'error');
+    } finally {
+      setIsSavingOcr(false);
+    }
   };
 
   const handleCopyShareLink = async () => {
@@ -446,6 +582,7 @@ export default function DocumentDetail() {
     if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
 
     setShareActionLoadingId(shareLinkId);
+    setShareActionLoadingType('revoke');
     try {
       const response = await fetch(`/api/documents/${document.id}/share-links/${shareLinkId}`, {
         method: 'DELETE',
@@ -459,6 +596,72 @@ export default function DocumentDetail() {
       showToast(err.message || 'Failed to revoke share link', 'error');
     } finally {
       setShareActionLoadingId(0);
+      setShareActionLoadingType('');
+    }
+  };
+
+  const handleDeleteShareLink = async (shareLink) => {
+    if (!username || !document?.id || !canManageShareLinks) return;
+    const shareLinkId = Number(shareLink?.id);
+    if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
+
+    const shouldDelete = await requestConfirmation({
+      title: 'Delete share link record?',
+      description: 'This removes the inactive share link from the list permanently.',
+      confirmLabel: 'Delete',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldDelete) return;
+
+    setShareActionLoadingId(shareLinkId);
+    setShareActionLoadingType('delete');
+    try {
+      const response = await fetch(`/api/documents/${document.id}/share-links/${shareLinkId}/delete`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Failed to delete share link');
+      await refreshShareLinks(document.id);
+      showToast('Share link deleted.', 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to delete share link', 'error');
+    } finally {
+      setShareActionLoadingId(0);
+      setShareActionLoadingType('');
+    }
+  };
+
+  const handleDeleteInactiveShareLinks = async () => {
+    if (!username || !document?.id || !canManageShareLinks) return;
+    const shouldDelete = await requestConfirmation({
+      title: 'Delete all inactive share links?',
+      description: 'This permanently removes all expired and revoked share links from the list.',
+      confirmLabel: 'Delete All Inactive',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!shouldDelete) return;
+
+    setShareActionLoadingId(-2);
+    setShareActionLoadingType('delete-inactive');
+    try {
+      const response = await fetch(`/api/documents/${document.id}/share-links/inactive`, {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Failed to delete inactive share links');
+      setShareLinks(Array.isArray(payload.items) ? payload.items : []);
+      showToast(`Deleted ${payload.deleted_count || 0} inactive share link(s).`, 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to delete inactive share links', 'error');
+    } finally {
+      setShareActionLoadingId(0);
+      setShareActionLoadingType('');
     }
   };
 
@@ -474,6 +677,7 @@ export default function DocumentDetail() {
     if (!shouldRevokeAll) return;
 
     setShareActionLoadingId(-1);
+    setShareActionLoadingType('revoke-all');
     try {
       const response = await fetch(`/api/documents/${document.id}/share-links`, {
         method: 'DELETE',
@@ -488,6 +692,7 @@ export default function DocumentDetail() {
       showToast(err.message || 'Failed to revoke all share links', 'error');
     } finally {
       setShareActionLoadingId(0);
+      setShareActionLoadingType('');
     }
   };
 
@@ -499,8 +704,61 @@ export default function DocumentDetail() {
         type="button" 
         onClick={() => navigate('/', { state: { showFiles: true } })} 
       >
-        ← Back
+        {isSharedView ? '← Back Home' : '← Back'}
       </button>
+
+      {isSharedView && (
+        <section className="document-share-hero">
+          <div className="document-share-head">
+            <div>
+              <span className="document-share-kicker">Shared Document</span>
+              <h1>Open Shared Note</h1>
+              <strong className="document-share-title">{document.title}</strong>
+              <p>
+                {document.linkSharingMode === 'public'
+                  ? 'Anyone with this link can open and download the file.'
+                  : 'This file was shared from a workspace. Keep the link private and use it before it expires.'}
+              </p>
+            </div>
+            <div className="document-share-pill-group" aria-label="Share access details">
+              <span className="document-share-pill">{shareModeLabel}</span>
+              {document?.share?.isExpired ? (
+                <span className="document-share-pill danger">Expired</span>
+              ) : (
+                <span className="document-share-pill success">Active Link</span>
+              )}
+            </div>
+          </div>
+          <div className="document-share-meta-grid">
+            <div>
+              <span>Shared access</span>
+              <strong>{shareModeLabel}</strong>
+            </div>
+            <div>
+              <span>Expires</span>
+              <strong>{formatDateTimeLabel(document?.share?.expiresAt)}</strong>
+            </div>
+            <div>
+              <span>Last opened</span>
+              <strong>{formatDateTimeLabel(document?.share?.lastAccessAt)}</strong>
+            </div>
+          </div>
+          <div className="document-share-actions">
+            <a href={fileUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
+              Download Shared File
+            </a>
+            {!username && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => navigate('/login', { state: { from: `/shared/${safeShareToken}` } })}
+              >
+                Sign In For Full Access
+              </button>
+            )}
+          </div>
+        </section>
+      )}
 
       <article className="document-detail-card">
         <header className="document-detail-head">
@@ -536,7 +794,19 @@ export default function DocumentDetail() {
                   onClick={handleRevokeAllShareLinks}
                   disabled={shareLinksLoading || shareActionLoadingId !== 0 || !shareLinks.length}
                 >
-                  Revoke All
+                  {shareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-delete"
+                  onClick={handleDeleteInactiveShareLinks}
+                  disabled={
+                    shareLinksLoading ||
+                    shareActionLoadingId !== 0 ||
+                    !shareLinks.some((item) => !isActiveShareLink(item))
+                  }
+                >
+                  {shareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
                 </button>
                 <button
                   type="button"
@@ -557,7 +827,7 @@ export default function DocumentDetail() {
               <ul className="notion-doc-share-list">
                 {shareLinks.map((item, index) => {
                   const status = String(item?.status || 'unknown').toLowerCase();
-                  const isActive = status === 'active' && !item?.is_expired;
+                  const isActive = isActiveShareLink(item);
                   const loading = Number(item?.id) === shareActionLoadingId;
                   return (
                     <li key={`detail-share-${item?.id || item?.token || index}`}>
@@ -578,10 +848,12 @@ export default function DocumentDetail() {
                         <button
                           type="button"
                           className="btn btn-delete"
-                          onClick={() => handleRevokeShareLink(item)}
-                          disabled={!isActive || loading || shareActionLoadingId === -1}
+                          onClick={() => (isActive ? handleRevokeShareLink(item) : handleDeleteShareLink(item))}
+                          disabled={loading || shareActionLoadingId < 0}
                         >
-                          {loading ? 'Revoking...' : 'Revoke'}
+                          {loading
+                            ? (shareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
+                            : (isActive ? 'Revoke' : 'Delete')}
                         </button>
                       </div>
                     </li>
@@ -662,6 +934,16 @@ export default function DocumentDetail() {
               {isImage ? (
                 <article className="notion-ai-output">
                   <h3>Text Content</h3>
+                  <div className="notion-ai-actions-simple">
+                    <button
+                      type="button"
+                      className="btn notion-ai-action-chip"
+                      onClick={handleSaveOcrText}
+                      disabled={isSavingOcr || !extractedText.trim() || !username}
+                    >
+                      {isSavingOcr ? 'Saving note...' : 'Save OCR As Note'}
+                    </button>
+                  </div>
                   <textarea
                     value={extractedText}
                     onChange={(event) => setExtractedText(event.target.value)}
@@ -669,6 +951,12 @@ export default function DocumentDetail() {
                     style={{ width: '100%' }}
                     placeholder="OCR output will appear here. You can also edit it manually."
                   />
+                  <p className="muted tiny">
+                    Saving creates a new text note in the same workspace so it can be reopened, edited, and downloaded later.
+                  </p>
+                  {!username && (
+                    <p className="muted tiny">Sign in with a workspace account before saving OCR text as a note.</p>
+                  )}
                 </article>
               ) : (
                 <article className="notion-ai-output">
