@@ -2,3 +2,11 @@ venv
 __pycache__
 .git
 node_modules
+dist
+uploads
+database.db
+studyhub.db
+tmp.txt
+noteskit-react@1.0.0
+.env
+.env.*
