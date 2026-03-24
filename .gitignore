@@ -1,5 +1,8 @@
 node_modules/
 venv/
+.venv/
+venv_old/
+venv311_backup/
 __pycache__/
 .DS_Store
 *.db
