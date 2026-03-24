@@ -1181,6 +1181,7 @@ export default function HomePage() {
   const [activeDocShareLinksLoading, setActiveDocShareLinksLoading] = useState(false);
   const [activeDocShareLinksError, setActiveDocShareLinksError] = useState('');
   const [activeDocShareActionLoadingId, setActiveDocShareActionLoadingId] = useState(0);
+  const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
   const [extractedText, setExtractedText] = useState('');
   const [aiHideInputText, setAiHideInputText] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -5171,8 +5172,6 @@ export default function HomePage() {
   const activeDocEditHint = activeDocExt === 'txt'
     ? 'TXT files can only be saved as plain text; formatting is only kept in the in-app editor view.'
     : 'Saving will overwrite the original DOCX while preserving common formatting (headings, bold, italic, lists, colors, alignment, etc.).';
-  const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
-
   const closeDocumentPane = () => {
     setActiveDoc(null);
     setActiveDocError('');
