@@ -842,42 +842,84 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
     if not img_bytes:
         return False, '', 'Empty image payload'
 
-    headers = {
-        'Content-Type': str(mimetype or 'application/octet-stream').strip() or 'application/octet-stream',
-        'Accept': 'application/json, text/plain;q=0.9, */*;q=0.8',
-        'X-Source-Filename': str(source_filename or 'image.jpg').strip() or 'image.jpg',
-    }
+    safe_filename = str(source_filename or 'image.jpg').strip() or 'image.jpg'
+    safe_mimetype = str(mimetype or 'application/octet-stream').strip() or 'application/octet-stream'
+    attempts = [
+        (
+            'raw-bytes',
+            {
+                'headers': {
+                    'Content-Type': safe_mimetype,
+                    'Accept': 'application/json, text/plain;q=0.9, */*;q=0.8',
+                    'X-Source-Filename': safe_filename,
+                },
+                'data': img_bytes,
+            },
+        ),
+        (
+            'multipart:file',
+            {
+                'files': {
+                    'file': (safe_filename, img_bytes, safe_mimetype),
+                },
+            },
+        ),
+        (
+            'multipart:image',
+            {
+                'files': {
+                    'image': (safe_filename, img_bytes, safe_mimetype),
+                },
+            },
+        ),
+    ]
 
-    try:
-        response = requests.post(
-            endpoint,
-            headers=headers,
-            data=img_bytes,
-            timeout=EXTERNAL_OCR_TIMEOUT_SECONDS,
-        )
-    except requests.exceptions.Timeout:
-        return False, '', f'External OCR timeout after {EXTERNAL_OCR_TIMEOUT_SECONDS}s'
-    except Exception as e:
-        return False, '', f'External OCR request failed: {e}'
-
-    if response.status_code >= 400:
-        return False, '', f'External OCR failed ({response.status_code}): {hf_error_message(response)}'
-
-    content_type = str(response.headers.get('content-type') or '').strip().lower()
-    if 'application/json' in content_type:
+    attempt_errors = []
+    for attempt_name, request_kwargs in attempts:
         try:
-            payload = response.json()
-        except Exception:
-            payload = None
-    else:
-        payload = None
+            response = requests.post(
+                endpoint,
+                timeout=EXTERNAL_OCR_TIMEOUT_SECONDS,
+                **request_kwargs,
+            )
+        except requests.exceptions.Timeout:
+            return False, '', f'External OCR timeout after {EXTERNAL_OCR_TIMEOUT_SECONDS}s'
+        except Exception as e:
+            return False, '', f'External OCR request failed: {e}'
 
-    extracted_text = normalize_ocr_text(payload)
-    if not extracted_text and payload is None:
-        extracted_text = str(response.text or '').strip()
-    if not extracted_text:
-        return False, '', 'External OCR returned empty text'
-    return True, extracted_text, ''
+        if response.status_code >= 400:
+            error_message = hf_error_message(response)
+            attempt_errors.append(f'{attempt_name}: HTTP {response.status_code} - {error_message}')
+            if response.status_code == 422 and attempt_name != attempts[-1][0]:
+                continue
+            if response.status_code == 422:
+                return False, '', (
+                    'External OCR returned 422 Unprocessable Entity. '
+                    'The Colab /ocr endpoint likely expects a different request schema '
+                    f'({"; ".join(attempt_errors)})'
+                )
+            return False, '', f'External OCR failed ({response.status_code}): {error_message}'
+
+        content_type = str(response.headers.get('content-type') or '').strip().lower()
+        if 'application/json' in content_type:
+            try:
+                payload = response.json()
+            except Exception:
+                payload = None
+        else:
+            payload = None
+
+        extracted_text = normalize_ocr_text(payload)
+        if not extracted_text and payload is None:
+            extracted_text = str(response.text or '').strip()
+        if extracted_text:
+            return True, extracted_text, ''
+        attempt_errors.append(f'{attempt_name}: empty response')
+
+    return False, '', (
+        'External OCR returned empty text'
+        + (f' ({"; ".join(attempt_errors)})' if attempt_errors else '')
+    )
 
 # ==========================================
 # 专家 1 号：视觉专家 (负责看图识字)
