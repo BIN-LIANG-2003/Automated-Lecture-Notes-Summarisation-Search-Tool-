@@ -1084,6 +1084,7 @@ const DocumentsList = lazy(() => import('../components/DocumentsList.jsx'));
 const UsageChart = lazy(() => import('../components/UsageChart.jsx'));
 const AIAssistantPanel = lazy(() => import('../components/AIAssistantPanel.jsx'));
 const WorkspaceSettingsModal = lazy(() => import('../components/WorkspaceSettingsModal.jsx'));
+const WorkspaceInviteModal = lazy(() => import('../components/WorkspaceInviteModal.jsx'));
 const RichTextEditor = lazy(() => import('../components/RichTextEditor.jsx'));
 const PdfInlineViewer = lazy(() => import('../components/PdfInlineViewer.jsx'));
 
@@ -5709,22 +5710,6 @@ export default function HomePage() {
           if (isLoggedIn) handleSignOut();
           else navigate('/login');
         }}
-        workspaceInviteOpen={workspaceInviteOpen}
-        workspaceInviteDraft={workspaceInviteDraft}
-        onChangeWorkspaceInviteDraft={setWorkspaceInviteDraft}
-        workspaceActionLoading={workspaceActionLoading}
-        onInviteMembers={handleInviteMembers}
-        inviteCopied={inviteCopied}
-        onCopyInviteLink={handleCopyInviteLink}
-        onCopyInviteMessage={handleCopyInviteMessage}
-        workspaceInviteLink={workspaceInviteLink}
-        latestInviteDelivery={latestInviteDelivery}
-        trustedInviteDomains={trustedInviteDomains}
-        defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
-        inviteItems={inviteItems}
-        onResendInvitation={handleResendInvitation}
-        onReviewInvitation={handleReviewInvitation}
-        onRemoveInvite={handleRemoveInvite}
         homeActive={!showFiles && !showAI && !docPaneVisible}
         filesActive={showFiles && !showAI && !docPaneVisible}
         aiActive={showAI && !docPaneVisible}
@@ -7506,6 +7491,31 @@ export default function HomePage() {
               tagCount: dashboardStats.tags,
               memberCount: workspaceMemberCount,
             }}
+          />
+        </Suspense>
+      )}
+
+      {workspaceInviteOpen && (
+        <Suspense fallback={<p className="muted tiny">Loading invites...</p>}>
+          <WorkspaceInviteModal
+            open={workspaceInviteOpen}
+            workspaceActionLoading={workspaceActionLoading}
+            onClose={() => setWorkspaceInviteOpen(false)}
+            isLoggedIn={isLoggedIn}
+            workspaceInviteDraft={workspaceInviteDraft}
+            onChangeWorkspaceInviteDraft={setWorkspaceInviteDraft}
+            onInviteMembers={handleInviteMembers}
+            inviteCopied={inviteCopied}
+            onCopyInviteLink={handleCopyInviteLink}
+            onCopyInviteMessage={handleCopyInviteMessage}
+            workspaceInviteLink={workspaceInviteLink}
+            latestInviteDelivery={latestInviteDelivery}
+            trustedInviteDomains={trustedInviteDomains}
+            defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
+            inviteItems={inviteItems}
+            onResendInvitation={handleResendInvitation}
+            onReviewInvitation={handleReviewInvitation}
+            onRemoveInvite={handleRemoveInvite}
           />
         </Suspense>
       )}

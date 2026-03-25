@@ -41,6 +41,11 @@ HF_TOKEN = (os.environ.get('HF_API_TOKEN') or '').strip()
 HF_MODEL_BASE_URL = (os.environ.get('HF_MODEL_BASE_URL') or 'https://router.huggingface.co/hf-inference/models').rstrip('/')
 OCR_MODEL_ID = os.environ.get('HF_OCR_MODEL') or 'lbin2021/my-lecture-ocr'
 SUMMARIZER_MODEL_ID = os.environ.get('HF_SUMMARIZER_MODEL') or 'facebook/bart-large-cnn'
+EXTERNAL_OCR_SERVICE_URL = (os.environ.get('EXTERNAL_OCR_SERVICE_URL') or '').strip()
+try:
+    EXTERNAL_OCR_TIMEOUT_SECONDS = max(15, int((os.getenv('EXTERNAL_OCR_TIMEOUT_SECONDS') or '60').strip()))
+except Exception:
+    EXTERNAL_OCR_TIMEOUT_SECONDS = 60
 OCRMYPDF_BINARY = (os.getenv('OCRMYPDF_BINARY') or 'ocrmypdf').strip() or 'ocrmypdf'
 OCRMYPDF_LANGUAGE = (os.getenv('OCRMYPDF_LANGUAGE') or 'eng').strip() or 'eng'
 _pdf_ocr_enabled_raw = str(os.getenv('ENABLE_PDF_OCR_FALLBACK') or '1').strip().lower()
