@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
+import { downloadFileWithAuth } from '../lib/fileDownload.js';
 import { coerceOcrText } from '../lib/ocr.js';
-import { buildSummaryDiagnostics } from '../lib/summaryDiagnostics.js';
+import { buildSummaryDiagnostics, formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
@@ -87,6 +88,7 @@ export default function DocumentDetail() {
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingOcr, setIsSavingOcr] = useState(false);
+  const [isDownloadingFile, setIsDownloadingFile] = useState(false);
   const [shareAccessState, setShareAccessState] = useState(null);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [shareLinks, setShareLinks] = useState([]);
@@ -237,6 +239,7 @@ export default function DocumentDetail() {
 
   const fileParams = new URLSearchParams();
   if (username) fileParams.set('username', username);
+  if (authToken) fileParams.set('auth_token', authToken);
   if (shareToken) fileParams.set('share_token', shareToken);
   const fileUrl = `/api/documents/${document.id}/file${fileParams.toString() ? `?${fileParams.toString()}` : ''}`;
   const isImage = isImageFileType(document.fileType);
@@ -410,7 +413,7 @@ export default function DocumentDetail() {
       });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error(data.error || 'Service error');
+        throw new Error(formatSummaryErrorMessage(data));
       }
       setAnalysisResult(data);
       if (data?.cache_hit) {
@@ -514,6 +517,21 @@ export default function DocumentDetail() {
       showToast(`Save failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {
       setIsSavingOcr(false);
+    }
+  };
+
+  const handleDownloadFile = async () => {
+    if (isDownloadingFile) return;
+    setIsDownloadingFile(true);
+    try {
+      await downloadFileWithAuth(fileUrl, {
+        authToken,
+        filename: document?.filename || document?.title || 'document',
+      });
+    } catch (err) {
+      showToast(err.message || 'Download failed.', 'error');
+    } finally {
+      setIsDownloadingFile(false);
     }
   };
 
@@ -744,9 +762,14 @@ export default function DocumentDetail() {
             </div>
           </div>
           <div className="document-share-actions">
-            <a href={fileUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
-              Download Shared File
-            </a>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleDownloadFile}
+              disabled={isDownloadingFile}
+            >
+              {isDownloadingFile ? 'Downloading...' : 'Download Shared File'}
+            </button>
             {!username && (
               <button
                 type="button"
@@ -777,9 +800,14 @@ export default function DocumentDetail() {
             >
               Share Link
             </button>
-            <a href={fileUrl} target="_blank" rel="noreferrer" className="btn btn-primary">
-              Download 
-            </a>
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={handleDownloadFile}
+              disabled={isDownloadingFile}
+            >
+              {isDownloadingFile ? 'Downloading...' : 'Download'}
+            </button>
           </div>
         </header>
 

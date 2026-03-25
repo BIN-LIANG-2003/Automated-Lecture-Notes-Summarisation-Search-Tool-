@@ -98,3 +98,31 @@ export const buildSummaryDiagnostics = (analysisResult) => {
 
   return diagnostics;
 };
+
+export const formatSummaryErrorMessage = (payload) => {
+  const baseError = String(payload?.error || 'Service error').trim() || 'Service error';
+  const details = payload?.details && typeof payload.details === 'object' ? payload.details : {};
+  const fileType = String(details.file_type || '').trim().toLowerCase();
+  const textSource = String(details.text_source || '').trim().toLowerCase();
+  const extractionError = String(details.file_extraction_error || '').trim();
+  const attemptedExtraction = Boolean(details.attempted_file_extraction);
+
+  const hints = [];
+  if (fileType === 'pdf') {
+    if (attemptedExtraction && extractionError) {
+      hints.push(`PDF extract detail: ${extractionError}`);
+    } else if (textSource === 'empty' || attemptedExtraction) {
+      hints.push('If this is a scanned PDF, OCR fallback must be available on the server. Try Rebuild after deployment.');
+    }
+  } else if (fileType === 'docx' || fileType === 'txt') {
+    if (attemptedExtraction && extractionError) {
+      hints.push(`File extract detail: ${extractionError}`);
+    } else if (textSource === 'empty') {
+      hints.push('The server could not read text from the source file. Re-upload or open the note and save content once.');
+    }
+  } else if (fileType && ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(fileType)) {
+    hints.push('Run OCR first, then summarize the extracted text.');
+  }
+
+  return [baseError, ...hints].filter(Boolean).join(' ');
+};

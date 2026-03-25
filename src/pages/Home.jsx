@@ -21,7 +21,9 @@ import {
   loadWorkspaceState,
   persistWorkspaceState,
 } from '../lib/workspaces.js';
+import { downloadFileWithAuth } from '../lib/fileDownload.js';
 import { coerceOcrText } from '../lib/ocr.js';
+import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_SIDEBAR_RECENT_LIMIT = 10;
 const MIN_SIDEBAR_RECENT_LIMIT = 5;
@@ -1179,6 +1181,8 @@ export default function HomePage() {
   const [activeDocDraftHtml, setActiveDocDraftHtml] = useState('');
   const [activeDocSaveLoading, setActiveDocSaveLoading] = useState(false);
   const [activeDocSaveError, setActiveDocSaveError] = useState('');
+  const [activeDocDownloadLoading, setActiveDocDownloadLoading] = useState(false);
+  const [sidebarDownloadDocId, setSidebarDownloadDocId] = useState(0);
   const [activeDocShareLinks, setActiveDocShareLinks] = useState([]);
   const [activeDocShareLinksLoading, setActiveDocShareLinksLoading] = useState(false);
   const [activeDocShareLinksError, setActiveDocShareLinksError] = useState('');
@@ -3397,7 +3401,7 @@ export default function HomePage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        throw new Error(data?.error || 'Service error');
+        throw new Error(formatSummaryErrorMessage(data));
       }
       return data;
     } catch (error) {
@@ -5229,9 +5233,56 @@ export default function HomePage() {
     const params = new URLSearchParams();
     if (activeDocFileVersion) params.set('v', String(activeDocFileVersion));
     if (username) params.set('username', username);
+    if (authToken) params.set('auth_token', authToken);
     const qs = params.toString();
     return `/api/documents/${activeDoc.id}/file${qs ? `?${qs}` : ''}`;
-  }, [activeDoc, activeDocFileVersion, username]);
+  }, [activeDoc, activeDocFileVersion, authToken, username]);
+  const handleDownloadDocumentFile = async (doc, { trackSidebar = false } = {}) => {
+    const targetDocId = toPositiveDocId(doc?.id);
+    if (!targetDocId) return;
+    const isActiveDownload = !trackSidebar && Number(activeDoc?.id) === targetDocId;
+
+    const params = new URLSearchParams();
+    if (username) params.set('username', username);
+    const downloadUrl = `/api/documents/${targetDocId}/file${params.toString() ? `?${params.toString()}` : ''}`;
+    const fallbackFilename =
+      String(doc?.filename || '').trim() ||
+      [String(doc?.title || '').trim() || `document-${targetDocId}`, String(doc?.fileType || '').trim()]
+        .filter(Boolean)
+        .join('.');
+
+    if (isActiveDownload) {
+      setActiveDocDownloadLoading(true);
+    }
+    if (trackSidebar) {
+      setSidebarDownloadDocId(targetDocId);
+    }
+
+    try {
+      await downloadFileWithAuth(downloadUrl, {
+        authToken,
+        filename: fallbackFilename,
+      });
+    } catch (err) {
+      showToast(err.message || 'Download failed.', 'error');
+      throw err;
+    } finally {
+      if (isActiveDownload) {
+        setActiveDocDownloadLoading(false);
+      }
+      if (trackSidebar) {
+        setSidebarDownloadDocId((prev) => (prev === targetDocId ? 0 : prev));
+        setSidebarMenuDocId((prev) => (prev === targetDocId ? null : prev));
+      }
+    }
+  };
+  const handleDownloadActiveDoc = async () => {
+    if (!activeDoc || activeDocDownloadLoading) return;
+    await handleDownloadDocumentFile(activeDoc);
+  };
+  const handleDownloadRecentDocument = async (doc) => {
+    await handleDownloadDocumentFile(doc, { trackSidebar: true });
+  };
   const activeDocStreamUrl = activeDocFileUrl;
   const activeDocExt = activeDoc ? getDocExt(activeDoc) : '';
   const activeDocIsImage = ['jpg', 'jpeg', 'png', 'webp'].includes(activeDocExt);
@@ -5252,6 +5303,7 @@ export default function HomePage() {
     setActiveDocEditMode(false);
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
+    setActiveDocDownloadLoading(false);
     clearActiveDocShareState();
   };
 
@@ -5732,7 +5784,8 @@ export default function HomePage() {
           setMobileSidebarOpen(false);
           openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc });
         }}
-        username={username}
+        onDownloadRecentDocument={handleDownloadRecentDocument}
+        downloadingRecentDocId={sidebarDownloadDocId}
       />
 
       <div className="notion-main">
@@ -5831,14 +5884,14 @@ export default function HomePage() {
                         </div>
                       </div>
                       <div className="notion-inline-doc-actions">
-                        <a
-                          href={activeDocFileUrl}
-                          target="_blank"
-                          rel="noreferrer"
+                        <button
+                          type="button"
                           className="btn"
+                          onClick={handleDownloadActiveDoc}
+                          disabled={activeDocDownloadLoading}
                         >
-                          Download File
-                        </a>
+                          {activeDocDownloadLoading ? 'Downloading...' : 'Download File'}
+                        </button>
                         <button
                           type="button"
                           className="btn"
@@ -6054,7 +6107,8 @@ export default function HomePage() {
                           title={activeDoc.title}
                           uploadedAt={activeDoc.uploadedAt}
                           tags={activeDoc.tags}
-                          downloadUrl={activeDocFileUrl}
+                          onDownload={handleDownloadActiveDoc}
+                          downloadLoading={activeDocDownloadLoading}
                           editable={activeWorkspaceSettings.allow_note_editing}
                           onSummarizeDocument={() => handleUseDocumentForAI(activeDoc)}
                           canSummarize={isLoggedIn && activeWorkspaceSettings.allow_ai_tools}

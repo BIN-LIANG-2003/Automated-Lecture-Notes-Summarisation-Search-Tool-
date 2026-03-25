@@ -53,6 +53,32 @@ def get_bearer_token():
     return auth_header[7:].strip()
 
 
+def get_request_auth_token():
+    bearer_token = get_bearer_token()
+    if bearer_token:
+        return bearer_token
+
+    query_token = (request.args.get('auth_token') or '').strip()
+    if query_token:
+        return query_token
+
+    form_token = (request.form.get('auth_token') or '').strip()
+    if form_token:
+        return form_token
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        if isinstance(data, dict):
+            json_token = (data.get('auth_token') or '').strip()
+            if json_token:
+                return json_token
+
+    value_token = (request.values.get('auth_token') or '').strip()
+    if value_token:
+        return value_token
+    return ''
+
+
 def extract_request_username():
     query_username = (request.args.get('username') or '').strip()
     if query_username:
@@ -91,11 +117,11 @@ def enforce_auth_token_middleware():
     if not username:
         return None
 
-    bearer_token = get_bearer_token()
-    if not bearer_token:
+    auth_token = get_request_auth_token()
+    if not auth_token:
         return jsonify({'error': 'Auth token is required'}), 401
 
-    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+    token_ok, token_username, token_error = decode_auth_token(auth_token)
     if not token_ok:
         return jsonify({'error': token_error or 'Invalid auth token'}), 401
     if token_username != username:

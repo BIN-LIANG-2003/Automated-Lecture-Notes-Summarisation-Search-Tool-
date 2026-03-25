@@ -42,7 +42,8 @@ export default function PdfInlineViewer({
   title,
   uploadedAt = '',
   tags = [],
-  downloadUrl = '',
+  onDownload,
+  downloadLoading = false,
   editable = false,
   onSummarizeDocument,
   canSummarize = true,
@@ -502,6 +503,11 @@ export default function PdfInlineViewer({
     }
   };
 
+  const handleDownload = async () => {
+    if (typeof onDownload !== 'function' || downloadLoading) return;
+    await onDownload();
+  };
+
   return (
     <div className="notion-pdf-inline">
       <div className="notion-pdf-toolbar">
@@ -513,15 +519,15 @@ export default function PdfInlineViewer({
           <span className="notion-pdf-doc-sub">Tags: {tagsLabel}</span>
         </div>
         <div className="notion-pdf-toolbar-actions">
-          {downloadUrl && (
-            <a
-              href={downloadUrl}
-              target="_blank"
-              rel="noreferrer"
+          {typeof onDownload === 'function' && (
+            <button
+              type="button"
               className="notion-pdf-btn notion-pdf-btn-link"
+              onClick={handleDownload}
+              disabled={downloadLoading}
             >
-              Download File
-            </a>
+              {downloadLoading ? 'Downloading...' : 'Download File'}
+            </button>
           )}
           {typeof onSummarizeDocument === 'function' && (
             <button

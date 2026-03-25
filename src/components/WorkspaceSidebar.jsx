@@ -113,7 +113,8 @@ export default function WorkspaceSidebar({
   sidebarMenuDocId,
   onToggleSidebarMenu,
   onOpenRecentDocument,
-  username,
+  onDownloadRecentDocument,
+  downloadingRecentDocId,
 }) {
   const activeWorkspaceLabel = activeWorkspace?.name || `${accountName}'s Workspace`;
   const activeWorkspaceIcon = getWorkspaceIconLabel(activeWorkspace, accountName);
@@ -588,17 +589,14 @@ export default function WorkspaceSidebar({
                     </button>
 
                     {sidebarMenuDocId === doc.id && (
-                      <a
+                      <button
+                        type="button"
                         className="notion-sidebar-doc-download"
-                        href={`/api/documents/${doc.id}/file${
-                          username ? `?username=${encodeURIComponent(username)}` : ''
-                        }`}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={() => onToggleSidebarMenu(null)}
+                        onClick={() => onDownloadRecentDocument?.(doc)}
+                        disabled={Number(downloadingRecentDocId) === Number(doc.id)}
                       >
-                        Download
-                      </a>
+                        {Number(downloadingRecentDocId) === Number(doc.id) ? 'Downloading...' : 'Download'}
+                      </button>
                     )}
                   </div>
                 </div>

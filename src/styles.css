@@ -2541,10 +2541,17 @@ body.notion-home-body .skip-link:focus-visible{
   padding:7px 10px;
   font-size:13px;
   white-space:nowrap;
+  cursor:pointer;
+  font:inherit;
 }
 
 .notion-sidebar-doc-download:hover{
   background:#f6f6f4;
+}
+
+.notion-sidebar-doc-download:disabled{
+  opacity:0.6;
+  cursor:not-allowed;
 }
 
 .notion-sidebar-empty{

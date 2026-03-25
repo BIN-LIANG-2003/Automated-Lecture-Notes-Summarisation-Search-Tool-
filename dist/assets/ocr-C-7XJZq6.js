@@ -1,3 +1,0 @@
-const s=["text","ocr_text","extracted_text","result","content","generated_text","output_text","prediction","predictions","value","data","lines","texts"],i=(t,n=0)=>{if(n>5||t==null)return"";if(typeof t=="string")return t.trim();if(typeof t=="number"||typeof t=="boolean")return String(t).trim();if(Array.isArray(t))return t.map(e=>i(e,n+1)).filter(Boolean).join(`
-`).trim();if(typeof t=="object"){for(const r of s){if(!(r in t))continue;const e=i(t[r],n+1);if(e)return e}if(Array.isArray(t.choices)){const r=t.choices.map(e=>!e||typeof e!="object"?"":e.message&&typeof e.message=="object"?i(e.message.content,n+1):i(e.text,n+1)).filter(Boolean);if(r.length)return r.join(`
-`).trim()}}return""};export{i as c};
