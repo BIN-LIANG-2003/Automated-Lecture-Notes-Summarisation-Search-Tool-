@@ -656,16 +656,30 @@ a{ color:inherit; }
 .empty{ text-align:center; padding:20px; background: rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.08); border-radius:var(--radius); }
 .document-detail{ padding:40px 0 80px; }
 .document-detail-back{ margin-bottom:20px; }
-.document-share-page{ padding-top:56px; }
+.document-share-page{ padding-top:32px; }
+.document-share-shell{
+  min-height:100vh;
+  grid-template-columns:minmax(0, 1fr);
+  align-content:start;
+  background:#f7f7f5;
+  color:#2f2f2f;
+  gap:0;
+  padding:28px 0 64px;
+}
+.document-share-shell > *{
+  width:min(1100px, 92%);
+  margin-inline:auto;
+}
+.document-share-shell .document-detail-back{
+  margin-bottom:16px;
+}
 .document-share-hero{
   margin:0 0 20px;
   padding:24px;
   border-radius:var(--radius);
-  border:1px solid rgba(255,255,255,.1);
-  background:
-    radial-gradient(circle at top right, rgba(122,162,255,.16), transparent 42%),
-    linear-gradient(145deg, rgba(18,24,37,.96), rgba(9,13,20,.94));
-  box-shadow: var(--shadow);
+  border:1px solid #e4e4e1;
+  background:#fff;
+  box-shadow:0 6px 20px rgba(0,0,0,0.04);
   display:grid;
   gap:16px;
 }
@@ -680,7 +694,7 @@ a{ color:inherit; }
   font-size:12px;
   letter-spacing:.08em;
   text-transform:uppercase;
-  color:#b7c6f8;
+  color:#6b7a93;
 }
 .document-share-head{
   display:flex;
@@ -694,13 +708,13 @@ a{ color:inherit; }
 .document-share-title{
   display:block;
   font-size:18px;
-  color:#f5f7fb;
+  color:#24344f;
   margin-bottom:8px;
 }
 .document-share-head p,
 .document-share-hero-error p{
   margin:0;
-  color:rgba(233,236,241,.82);
+  color:#667084;
   line-height:1.6;
 }
 .document-share-pill-group{
@@ -715,21 +729,21 @@ a{ color:inherit; }
   min-height:34px;
   padding:6px 12px;
   border-radius:999px;
-  border:1px solid rgba(255,255,255,.12);
-  background:rgba(255,255,255,.05);
-  color:#edf2ff;
+  border:1px solid #dbe4f4;
+  background:#edf2fb;
+  color:#415472;
   font-size:13px;
   white-space:nowrap;
 }
 .document-share-pill.success{
-  background:rgba(78, 205, 153, .14);
-  border-color:rgba(78, 205, 153, .28);
-  color:#d7ffe8;
+  background:#eef9f1;
+  border-color:#cfe2d7;
+  color:#2f6b42;
 }
 .document-share-pill.danger{
-  background:rgba(255, 123, 123, .14);
-  border-color:rgba(255, 123, 123, .28);
-  color:#ffdede;
+  background:#fff1f1;
+  border-color:#efc9c9;
+  color:#a33d3d;
 }
 .document-share-meta-grid{
   display:grid;
@@ -739,8 +753,8 @@ a{ color:inherit; }
 .document-share-meta-grid div{
   padding:14px;
   border-radius:14px;
-  border:1px solid rgba(255,255,255,.08);
-  background:rgba(255,255,255,.04);
+  border:1px solid #e1e7f4;
+  background:#fbfdff;
   display:grid;
   gap:6px;
 }
@@ -748,10 +762,10 @@ a{ color:inherit; }
   font-size:12px;
   text-transform:uppercase;
   letter-spacing:.06em;
-  color:rgba(233,236,241,.62);
+  color:#6a748a;
 }
 .document-share-meta-grid strong{
-  color:#f5f7fb;
+  color:#24344f;
   line-height:1.4;
 }
 .document-share-actions{
@@ -762,10 +776,10 @@ a{ color:inherit; }
 .document-detail-card{
   margin-top:18px;
   padding:24px;
-  background: rgba(255,255,255,.04);
-  border:1px solid rgba(255,255,255,.08);
+  background:#fff;
+  border:1px solid #e4e4e1;
   border-radius:var(--radius);
-  box-shadow: var(--shadow);
+  box-shadow:0 6px 20px rgba(0,0,0,0.04);
 }
 .document-detail-card header h1{ margin:0 0 8px; }
 .document-detail-head{
@@ -790,22 +804,32 @@ a{ color:inherit; }
 .document-detail-section-title{ margin-top:0; }
 .document-detail-pre{
   white-space:pre-wrap;
-  color:#e9ecf1;
+  color:#344054;
   font-family:inherit;
 }
 .document-detail-ai-section{ margin-top:20px; }
 .document-body{
   margin-top:18px;
-  background: rgba(11,14,20,.9);
+  background:#fbfbf9;
   border-radius:var(--radius);
   padding:18px;
-  border:1px solid rgba(255,255,255,.08);
+  border:1px solid #e7e7e4;
 }
 .document-body pre{
   margin:0;
   white-space:pre-wrap;
   font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Consolas, monospace;
   line-height:1.5;
+}
+.document-share-shell .document-share-head h1,
+.document-share-shell .document-share-hero-error h1,
+.document-share-shell .document-detail-card header h1,
+.document-share-shell .document-detail-section-title{
+  color:#24344f;
+}
+.document-share-shell .document-meta,
+.document-share-shell .muted{
+  color:#667084;
 }
 
 /* ===========================

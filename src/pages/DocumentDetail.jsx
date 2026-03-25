@@ -204,7 +204,7 @@ export default function DocumentDetail() {
               : 'Cannot Open This Shared Document';
       return (
         <>
-          <main className="container document-detail document-share-page" role="main">
+          <main className="notion-shell document-share-shell document-detail document-share-page" role="main">
             <section className="document-share-hero document-share-hero-error">
               <span className="document-share-kicker">Shared Document</span>
               <h1>{shareErrorTitle}</h1>
@@ -716,7 +716,12 @@ export default function DocumentDetail() {
 
   return (
     <>
-      <main className="container document-detail" role="main">
+      <main
+        className={isSharedView
+          ? 'notion-shell document-share-shell document-detail document-share-page'
+          : 'container document-detail'}
+        role="main"
+      >
       <button 
         className="btn document-detail-back" 
         type="button" 
@@ -791,24 +796,26 @@ export default function DocumentDetail() {
             <div className="document-meta document-detail-meta">Category: {document.category}</div>
             <div className="document-meta document-detail-meta">Tags: {document.tags?.length ? document.tags.join(', ') : 'None'}</div>
           </div>
-          <div className="document-detail-head-actions">
-            <button
-              type="button"
-              className="btn"
-              onClick={handleCopyShareLink}
-              disabled={document.linkSharingMode === 'restricted' || !username || !canManageShareLinks}
-            >
-              Share Link
-            </button>
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleDownloadFile}
-              disabled={isDownloadingFile}
-            >
-              {isDownloadingFile ? 'Downloading...' : 'Download'}
-            </button>
-          </div>
+          {!isSharedView && (
+            <div className="document-detail-head-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={handleCopyShareLink}
+                disabled={document.linkSharingMode === 'restricted' || !username || !canManageShareLinks}
+              >
+                Share Link
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleDownloadFile}
+                disabled={isDownloadingFile}
+              >
+                {isDownloadingFile ? 'Downloading...' : 'Download'}
+              </button>
+            </div>
+          )}
         </header>
 
         {username && canManageShareLinks && (
@@ -912,35 +919,37 @@ export default function DocumentDetail() {
               {!canUseAiTools && (
                 <p className="muted tiny">AI tools are disabled in this workspace settings.</p>
               )}
-              <div className="notion-ai-actions-simple">
-                {isImage && (
+              {!isSharedView && (
+                <div className="notion-ai-actions-simple">
+                  {isImage && (
+                    <button
+                      type="button"
+                      className="btn notion-ai-action-chip"
+                      onClick={handleExtractText}
+                      disabled={isExtracting || !canUseOcr}
+                    >
+                      {!canUseOcr ? 'OCR Disabled' : isExtracting ? 'Running image OCR...' : 'Image OCR'}
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    className="btn btn-primary notion-ai-action-chip"
+                    onClick={handleAnalyzeText}
+                    disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
+                  >
+                    {isAnalyzing ? 'Summarizing document...' : (isImage ? 'Summarize Text' : 'Summarize Document')}
+                  </button>
                   <button
                     type="button"
                     className="btn notion-ai-action-chip"
-                    onClick={handleExtractText}
-                    disabled={isExtracting || !canUseOcr}
+                    onClick={() => handleAnalyzeText({ forceRefresh: true })}
+                    disabled={isAnalyzing || !canUseAiTools}
+                    title="Bypass cache and refresh document text before summarizing"
                   >
-                    {!canUseOcr ? 'OCR Disabled' : isExtracting ? 'Running image OCR...' : 'Image OCR'}
+                    Rebuild (Refresh Text)
                   </button>
-                )}
-                <button
-                  type="button"
-                  className="btn btn-primary notion-ai-action-chip"
-                  onClick={handleAnalyzeText}
-                  disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
-                >
-                  {isAnalyzing ? 'Summarizing document...' : (isImage ? 'Summarize Text' : 'Summarize Document')}
-                </button>
-                <button
-                  type="button"
-                  className="btn notion-ai-action-chip"
-                  onClick={() => handleAnalyzeText({ forceRefresh: true })}
-                  disabled={isAnalyzing || !canUseAiTools}
-                  title="Bypass cache and refresh document text before summarizing"
-                >
-                  Rebuild (Refresh Text)
-                </button>
-              </div>
+                </div>
+              )}
               {summaryProgress.active && (
                 <div className="notion-summary-progress" aria-live="polite">
                   <div className="notion-summary-progress-head">
