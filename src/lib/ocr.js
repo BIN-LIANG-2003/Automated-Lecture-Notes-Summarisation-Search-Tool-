@@ -50,3 +50,45 @@ export const coerceOcrText = (payload, depth = 0) => {
 
   return '';
 };
+
+const looksLikeHtmlError = (value) => {
+  const text = String(value || '').trim().toLowerCase();
+  if (!text) return false;
+  return text.startsWith('<!doctype html') || text.startsWith('<html') || text.includes('<html');
+};
+
+const normalizeOcrErrorPart = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return '';
+  if (!looksLikeHtmlError(text)) return text;
+  if (text.includes('410')) {
+    return 'Hugging Face OCR endpoint returned 410 Gone. The configured OCR model or inference endpoint is unavailable.';
+  }
+  return 'Hugging Face OCR endpoint returned an HTML error page instead of JSON.';
+};
+
+export const formatOcrErrorMessage = (payload) => {
+  const details = payload?.details && typeof payload.details === 'object' ? payload.details : {};
+  const runtimeHints = Array.isArray(details?.runtime?.hints)
+    ? details.runtime.hints
+    : [];
+  const parts = [
+    payload?.error,
+    details?.external,
+    details?.huggingface,
+    details?.local,
+    ...runtimeHints,
+  ]
+    .map(normalizeOcrErrorPart)
+    .filter(Boolean);
+
+  const deduped = [];
+  const seen = new Set();
+  parts.forEach((part) => {
+    const key = part.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    deduped.push(part);
+  });
+  return deduped.join(' | ').trim() || 'Service error';
+};

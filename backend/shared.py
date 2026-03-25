@@ -31,6 +31,7 @@ from .config import (
     S3_BUCKET,
     SUMMARY_CACHE_VERSION,
     SUMMARIZER_MODEL_ID,
+    WORKSPACE_SUMMARY_LENGTH_LEVELS,
     s3_client,
 )
 from .db import get_db_connection
@@ -380,6 +381,13 @@ def hf_model_url(model_id):
     return f"{HF_MODEL_BASE_URL}/{model_id}"
 
 
+def looks_like_html_error(text):
+    value = str(text or '').strip().lower()
+    if not value:
+        return False
+    return value.startswith('<!doctype html') or value.startswith('<html') or '<html' in value[:240]
+
+
 def hf_error_message(response):
     try:
         body = response.json()
@@ -390,7 +398,16 @@ def hf_error_message(response):
                 return str(body['message'])
     except Exception:
         pass
-    return (response.text or '').strip()[:240] or 'Unknown error'
+    raw_text = (response.text or '').strip()
+    if looks_like_html_error(raw_text):
+        status_code = getattr(response, 'status_code', 0) or 0
+        if status_code == 410:
+            return (
+                'Hugging Face OCR endpoint returned 410 Gone. '
+                'The configured OCR model or inference endpoint is no longer available.'
+            )
+        return 'Hugging Face OCR endpoint returned an HTML error page instead of JSON.'
+    return raw_text[:240] or 'Unknown error'
 
 
 def split_text_for_summary(text_content, max_chars=3600, min_chars=1200, overlap_chars=220):
@@ -914,7 +931,8 @@ def extract_text_from_image(doc_id=None):
     hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
     if hf_headers:
         try:
-            response = requests.post(hf_model_url(OCR_MODEL_ID), headers=hf_headers, data=img_bytes, timeout=90)
+            target_url = hf_model_url(OCR_MODEL_ID)
+            response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
             if response.status_code < 400:
                 try:
                     ocr_result = response.json()
@@ -927,8 +945,34 @@ def extract_text_from_image(doc_id=None):
                     hf_error = f"HF OCR returned non-JSON response: {hf_error_message(response)}"
             else:
                 hf_error = f"HF OCR failed ({response.status_code}): {hf_error_message(response)}"
+                print(
+                    "OCR provider failure:",
+                    json.dumps(
+                        {
+                            "provider": "huggingface",
+                            "status_code": response.status_code,
+                            "model": OCR_MODEL_ID,
+                            "url": target_url,
+                            "content_type": str(response.headers.get('content-type') or '').strip(),
+                            "message": hf_error,
+                        },
+                        ensure_ascii=False,
+                    ),
+                )
         except Exception as e:
             hf_error = f"HF OCR error: {e}"
+            print(
+                "OCR provider exception:",
+                json.dumps(
+                    {
+                        "provider": "huggingface",
+                        "model": OCR_MODEL_ID,
+                        "url": hf_model_url(OCR_MODEL_ID),
+                        "message": hf_error,
+                    },
+                    ensure_ascii=False,
+                ),
+            )
     else:
         hf_error = "HF_API_TOKEN is not configured on server"
 

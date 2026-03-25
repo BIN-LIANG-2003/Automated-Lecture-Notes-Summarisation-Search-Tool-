@@ -22,7 +22,7 @@ import {
   persistWorkspaceState,
 } from '../lib/workspaces.js';
 import { downloadFileWithAuth } from '../lib/fileDownload.js';
-import { coerceOcrText } from '../lib/ocr.js';
+import { coerceOcrText, formatOcrErrorMessage } from '../lib/ocr.js';
 import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_SIDEBAR_RECENT_LIMIT = 10;
@@ -3262,19 +3262,7 @@ export default function HomePage() {
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const runtimeHints = Array.isArray(data?.details?.runtime?.hints)
-          ? data.details.runtime.hints.join(' | ')
-          : '';
-        const detail = [
-          data?.error,
-          data?.details?.external,
-          data?.details?.huggingface,
-          data?.details?.local,
-          runtimeHints,
-        ]
-          .filter(Boolean)
-          .join(' | ');
-        showToast(`Text extraction failed: ${detail || 'Service error'}`, 'error');
+        showToast(`Text extraction failed: ${formatOcrErrorMessage(data)}`, 'error');
         return;
       }
 
