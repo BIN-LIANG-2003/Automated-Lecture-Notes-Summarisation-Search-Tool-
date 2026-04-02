@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { authFetch } from '../lib/authFetch.js';
 
 const MAX_UPLOAD_QUEUE_ITEMS = 30;
 
@@ -106,7 +107,7 @@ export default function useUploadQueue({
       formData.append('category', preferredCategory);
     }
     try {
-      const response = await fetch('/api/documents/upload', {
+      const response = await authFetch('/api/documents/upload', {
         method: 'POST',
         body: formData,
       });

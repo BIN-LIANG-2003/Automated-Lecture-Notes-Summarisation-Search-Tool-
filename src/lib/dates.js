@@ -8,3 +8,10 @@ export const fmtDate = (value) => {
 };
 
 export const todayKey = () => fmtDate(new Date());
+
+export const formatDateTimeLabel = (value) => {
+  if (!value) return 'Unknown';
+  const dt = new Date(value);
+  if (Number.isNaN(dt.getTime())) return String(value);
+  return dt.toLocaleString();
+};

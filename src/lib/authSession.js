@@ -1,3 +1,5 @@
+import { authFetch } from './authFetch.js';
+
 const SESSION_STORAGE_KEYS = ['username', 'email', 'auth_token', 'loginAt'];
 
 export function readStoredAuthSession() {
@@ -42,7 +44,7 @@ export async function fetchCurrentSession(authToken = '') {
   }
 
   try {
-    const response = await window.fetch('/api/auth/me', {
+    const response = await authFetch('/api/auth/me', {
       headers: {
         Authorization: `Bearer ${safeToken}`,
       },
@@ -82,7 +84,7 @@ export async function logoutCurrentSession(authToken = '') {
   }
 
   try {
-    const response = await window.fetch('/api/auth/logout', {
+    const response = await authFetch('/api/auth/logout', {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${safeToken}`,

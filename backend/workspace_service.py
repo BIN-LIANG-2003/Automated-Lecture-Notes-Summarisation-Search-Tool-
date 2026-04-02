@@ -5,6 +5,7 @@ from flask import jsonify, request
 
 from .config import DEFAULT_WORKSPACE_SETTINGS, INVITE_EXPIRY_DAYS
 from .db import get_db_connection
+from .security import get_authenticated_username
 from .storage import remove_document_file_from_storage
 from .utils import invitation_is_expired, normalize_email, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import (
@@ -53,7 +54,7 @@ def _deliver_workspace_invitation_email(workspace_row, invitation_row, inviter_u
 
 
 def get_workspaces():
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -134,7 +135,7 @@ def get_workspaces():
 
 def create_workspace():
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     name = (data.get('name') or '').strip() or f"{username}'s Workspace"
     plan = (data.get('plan') or '').strip() or 'Free'
     settings_json = workspace_settings_to_json(data.get('settings') or DEFAULT_WORKSPACE_SETTINGS)
@@ -173,7 +174,7 @@ def create_workspace():
 
 def update_workspace(workspace_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     name = (data.get('name') or '').strip()
     incoming_settings = data.get('settings')
     if not username:
@@ -212,8 +213,7 @@ def update_workspace(workspace_id):
 
 
 def delete_workspace(workspace_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -273,7 +273,7 @@ def delete_workspace(workspace_id):
 
 
 def list_workspace_invitations(workspace_id):
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -307,7 +307,7 @@ def list_workspace_invitations(workspace_id):
 
 def create_workspace_invitations(workspace_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     raw_emails = data.get('emails', [])
     expiry_days = data.get('expiry_days', INVITE_EXPIRY_DAYS)
 
@@ -429,8 +429,7 @@ def create_workspace_invitations(workspace_id):
 
 
 def cancel_workspace_invitation(workspace_id, invitation_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -481,7 +480,7 @@ def cancel_workspace_invitation(workspace_id, invitation_id):
 
 def resend_workspace_invitation(workspace_id, invitation_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -561,7 +560,7 @@ def resend_workspace_invitation(workspace_id, invitation_id):
 
 def review_workspace_invitation(workspace_id, invitation_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     action = (data.get('action') or '').strip().lower()
     note = (data.get('note') or '').strip()
     if not username:
@@ -654,7 +653,7 @@ def review_workspace_invitation(workspace_id, invitation_id):
 
 def get_invitation_by_token(token):
     safe_token = (token or '').strip()
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not safe_token:
         return jsonify({'error': 'token is required'}), 400
 
@@ -720,8 +719,7 @@ def get_invitation_by_token(token):
 
 def request_join_by_invitation(token):
     safe_token = (token or '').strip()
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     if not safe_token:
         return jsonify({'error': 'token is required'}), 400
     if not username:

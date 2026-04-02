@@ -1,4 +1,4 @@
-export const ACCOUNT_HISTORY_KEY = 'auth-account-history-v1';
+const ACCOUNT_HISTORY_KEY = 'auth-account-history-v1';
 const MAX_HISTORY_ITEMS = 5;
 
 const normalizeHistoryEntry = (raw) => {

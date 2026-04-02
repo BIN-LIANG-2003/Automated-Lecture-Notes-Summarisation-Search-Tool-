@@ -19,19 +19,21 @@ from .document_domain import (
     sanitize_editor_html,
     user_can_edit_document,
 )
+from .document_search import DOCUMENT_RESULT_COLUMNS_SQL, build_document_listing_base_query
 from .share_domain import (
     check_document_access,
     get_document_link_sharing_mode,
     is_document_soft_deleted,
     user_can_manage_document_share_links,
 )
+from .security import get_authenticated_username
 from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, write_file_bytes_to_storage
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
 
 def get_documents():
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     workspace_id = (request.args.get('workspace_id') or '').strip()
     if not username:
         return jsonify({'error': 'username is required'}), 400
@@ -61,59 +63,26 @@ def get_documents():
         if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
             return jsonify({'error': 'No access to this workspace'}), 403
 
-        where_parts = [
-            'username = ?',
-            "COALESCE(deleted_at, '') = ''",
-        ]
-        params = [username]
-        if workspace_id:
-            where_parts.append('workspace_id = ?')
-            params.append(workspace_id)
-        if category_filter:
-            where_parts.append("LOWER(COALESCE(category, '')) = ?")
-            params.append(category_filter)
-        if tag_filter:
-            where_parts.append("(',' || LOWER(COALESCE(tags, '')) || ',') LIKE ?")
-            params.append(f'%,{tag_filter},%')
-        if query:
-            where_parts.append(
-                "("
-                "LOWER(COALESCE(title, '')) LIKE ? OR "
-                "LOWER(COALESCE(category, '')) LIKE ? OR "
-                "LOWER(COALESCE(content, '')) LIKE ? OR "
-                "LOWER(COALESCE(tags, '')) LIKE ?"
-                ")"
-            )
-            like_query = f'%{query}%'
-            params.extend([like_query, like_query, like_query, like_query])
-        if start_date:
-            where_parts.append("COALESCE(uploaded_at, '') >= ?")
-            params.append(f'{start_date}T00:00:00')
-        if end_date:
-            where_parts.append("COALESCE(uploaded_at, '') <= ?")
-            params.append(f'{end_date}T23:59:59')
-        if file_type_filter:
-            if file_type_filter in ('image', 'images'):
-                image_exts = ('png', 'jpg', 'jpeg', 'webp', 'gif')
-                placeholders = ','.join('?' for _ in image_exts)
-                where_parts.append(f"LOWER(COALESCE(file_type, '')) IN ({placeholders})")
-                params.extend(image_exts)
-            elif file_type_filter in ('editable', 'editables'):
-                editable_exts = ('txt', 'docx')
-                placeholders = ','.join('?' for _ in editable_exts)
-                where_parts.append(f"LOWER(COALESCE(file_type, '')) IN ({placeholders})")
-                params.extend(editable_exts)
-            elif file_type_filter.isalnum() and len(file_type_filter) <= 12:
-                where_parts.append("LOWER(COALESCE(file_type, '')) = ?")
-                params.append(file_type_filter)
-
-        where_sql = ' AND '.join(where_parts)
+        listing_query = build_document_listing_base_query(
+            conn,
+            username=username,
+            query=query,
+            workspace_id=workspace_id,
+            category_filter=category_filter,
+            tag_filter=tag_filter,
+            start_date=start_date,
+            end_date=end_date,
+            file_type_filter=file_type_filter,
+        )
+        base_sql = listing_query['base_sql']
+        params = listing_query['params']
+        search_order_sql = listing_query.get('search_order_sql') or ''
+        final_order_by_sql = f'{search_order_sql}, {order_by_sql}' if search_order_sql else order_by_sql
 
         total_cursor = conn.execute(
             f'''
             SELECT COUNT(1) AS total
-            FROM documents
-            WHERE {where_sql}
+            FROM ({base_sql}) document_results
             ''',
             params,
         )
@@ -122,15 +91,14 @@ def get_documents():
 
         cursor = conn.execute(
             f'''
-            SELECT *
-            FROM documents
-            WHERE {where_sql}
-            ORDER BY {order_by_sql}
+            SELECT {DOCUMENT_RESULT_COLUMNS_SQL}
+            FROM ({base_sql}) document_results
+            ORDER BY {final_order_by_sql}
             LIMIT ? OFFSET ?
             ''',
             [*params, limit, offset],
         )
-        docs = [dict(doc) for doc in cursor.fetchall()]
+        docs = [row_to_dict(doc) or {} for doc in cursor.fetchall()]
         if include_meta:
             payload = {
                 'items': docs,
@@ -143,8 +111,7 @@ def get_documents():
                 facet_cursor = conn.execute(
                     f'''
                     SELECT category, tags, file_type
-                    FROM documents
-                    WHERE {where_sql}
+                    FROM ({base_sql}) document_results
                     ''',
                     params,
                 )
@@ -179,7 +146,7 @@ def get_documents():
 
 
 def get_trashed_documents():
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     workspace_id = (request.args.get('workspace_id') or '').strip()
     if not username:
         return jsonify({'error': 'username is required'}), 400
@@ -266,8 +233,7 @@ def get_trashed_documents():
 
 
 def clear_workspace_documents(workspace_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -319,9 +285,11 @@ def upload_file():
         return jsonify({'error': 'No file part'}), 400
 
     file = request.files['file']
-    username = (request.form.get('username') or 'Anonymous').strip()
+    username = get_authenticated_username()
     requested_workspace_id = (request.form.get('workspace_id') or '').strip()
     requested_category = normalize_document_category(request.form.get('category', ''))
+    if not username:
+        return jsonify({'error': 'Auth token is required'}), 401
 
     if requested_workspace_id and username:
         conn = get_db_connection()
@@ -429,7 +397,7 @@ def upload_file():
 
 
 def get_document(doc_id):
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
     if not conn:
@@ -484,7 +452,7 @@ def get_document(doc_id):
 
 def delete_document(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     permanent = parse_bool(data.get('permanent') or request.args.get('permanent'), False)
     if not username:
         return jsonify({'error': 'username is required'}), 400
@@ -543,8 +511,7 @@ def delete_document(doc_id):
 
 
 def restore_document(doc_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -580,7 +547,7 @@ def restore_document(doc_id):
 
 def update_document_tags(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     raw_tags = data.get('tags', [])
 
     if isinstance(raw_tags, list):
@@ -625,7 +592,7 @@ def update_document_tags(doc_id):
 
 def update_document_category(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     next_category = normalize_document_category(data.get('category', ''))
     if not next_category:
         next_category = DEFAULT_DOCUMENT_CATEGORY
@@ -663,7 +630,7 @@ def update_document_category(doc_id):
 
 def update_document_content(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     content = data.get('content', '')
     content_html = data.get('content_html')
 
@@ -730,7 +697,7 @@ def update_document_content(doc_id):
 
 def import_document_text(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     share_token = (data.get('share_token') or '').strip()
     text = str(data.get('text') or '')
     text = text.replace('\r\n', '\n').replace('\r', '\n').strip()
@@ -821,7 +788,7 @@ def import_document_text(doc_id):
 
 
 def update_document_pdf_file(doc_id):
-    username = ((request.args.get('username') or request.form.get('username') or '').strip())
+    username = get_authenticated_username()
     if request.files and 'file' in request.files:
         file_bytes = request.files['file'].read()
     else:
@@ -875,7 +842,7 @@ def update_document_pdf_file(doc_id):
 
 
 def get_document_file(doc_id):
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
     if not conn:
@@ -906,9 +873,14 @@ def get_document_file(doc_id):
         print(f"File stream error: {e}")
         return jsonify({'error': 'Could not read file from storage'}), 500
 
-    return send_file(
+    response = send_file(
         io.BytesIO(file_bytes),
         mimetype=mimetype,
         download_name=title or filename,
         as_attachment=False,
     )
+    if (request.args.get('auth_token') or '').strip():
+        response.headers['Cache-Control'] = 'no-store, private, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response

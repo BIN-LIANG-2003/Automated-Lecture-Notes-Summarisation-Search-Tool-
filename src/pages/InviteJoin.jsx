@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { authFetch } from '../lib/authFetch.js';
 
 const statusLabel = (status) => {
   if (status === 'pending') return 'Pending request';
@@ -34,7 +35,7 @@ export default function InviteJoinPage() {
     setError('');
     try {
       const query = username ? `?username=${encodeURIComponent(username)}` : '';
-      const res = await fetch(`/api/invitations/${encodeURIComponent(token)}${query}`);
+      const res = await authFetch(`/api/invitations/${encodeURIComponent(token)}${query}`);
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to load invitation');
       setData(payload);
@@ -61,7 +62,7 @@ export default function InviteJoinPage() {
     setSubmitting(true);
     setError('');
     try {
-      const res = await fetch(`/api/invitations/${encodeURIComponent(token)}/request-join`, {
+      const res = await authFetch(`/api/invitations/${encodeURIComponent(token)}/request-join`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username }),

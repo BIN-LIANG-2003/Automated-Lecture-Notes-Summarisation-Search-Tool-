@@ -4,8 +4,12 @@ venv/
 venv_old/
 venv311_backup/
 __pycache__/
+*.py[cod]
 .DS_Store
 *.db
 uploads/
+.vscode/
+.pytest_cache/
 .env
 .env.*
+!.env.example

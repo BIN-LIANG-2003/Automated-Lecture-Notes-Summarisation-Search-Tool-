@@ -1,4 +1,4 @@
-export const USAGE_KEY = 'usageByDate';
+const USAGE_KEY = 'usageByDate';
 
 export const loadUsageMap = () => {
   try {

@@ -1,4 +1,4 @@
-export const ACCOUNTS_KEY = 'accounts';
+const ACCOUNTS_KEY = 'accounts';
 
 export const loadAccounts = () => {
   try {

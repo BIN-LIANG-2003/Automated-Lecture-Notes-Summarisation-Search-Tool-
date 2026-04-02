@@ -44,7 +44,7 @@ from .document_domain import (
     plaintext_to_html,
     user_can_edit_document,
 )
-from .security import create_auth_token, decode_auth_token, get_bearer_token
+from .security import create_auth_token, decode_auth_token, get_authenticated_username, get_bearer_token
 from .share_domain import (
     check_document_access,
     is_document_soft_deleted,
@@ -926,7 +926,7 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
 # 对应前端的【按钮 1】
 # ==========================================
 def extract_text_from_image(doc_id=None):
-    username = (request.values.get('username') or '').strip()
+    username = get_authenticated_username()
     share_token = (request.values.get('share_token') or '').strip()
     requested_workspace_id = (request.values.get('workspace_id') or '').strip()
     img_bytes = b''
@@ -1134,7 +1134,7 @@ def extract_text_from_image(doc_id=None):
 # ==========================================
 def analyze_text():
     data = request.get_json(silent=True) or {}
-    username = str(data.get('username') or '').strip()
+    username = get_authenticated_username()
     share_token = str(data.get('share_token') or '').strip()
     requested_workspace_id = str(data.get('workspace_id') or '').strip()
     requested_doc_id = parse_int(data.get('doc_id', 0), 0, 0)
@@ -1513,7 +1513,9 @@ def analyze_text():
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 def uploaded_file(filename):
-    username = (request.args.get('username') or '').strip()
+    bearer_token = get_bearer_token()
+    token_ok, token_username, _ = decode_auth_token(bearer_token)
+    username = token_username if token_ok else ''
     share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
     if conn:

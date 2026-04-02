@@ -255,6 +255,26 @@ def init_db():
         ON document_summary_cache(updated_at);
     '''
 
+    documents_owner_deleted_uploaded_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_documents_owner_deleted_uploaded
+        ON documents(username, deleted_at, uploaded_at);
+    '''
+
+    documents_workspace_deleted_uploaded_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_documents_workspace_deleted_uploaded
+        ON documents(username, workspace_id, deleted_at, uploaded_at);
+    '''
+
+    documents_owner_category_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_documents_owner_category
+        ON documents(username, category);
+    '''
+
+    documents_owner_file_type_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_documents_owner_file_type
+        ON documents(username, file_type);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
@@ -269,11 +289,17 @@ def init_db():
         conn.execute(document_share_links_doc_idx_sql)
         conn.execute(document_summary_cache_lookup_idx_sql)
         conn.execute(document_summary_cache_recent_idx_sql)
+        conn.execute(documents_owner_deleted_uploaded_idx_sql)
+        conn.execute(documents_workspace_deleted_uploaded_idx_sql)
+        conn.execute(documents_owner_category_idx_sql)
+        conn.execute(documents_owner_file_type_idx_sql)
         ensure_documents_columns(conn)
         ensure_workspaces_columns(conn)
 
+        from .document_search import ensure_document_search_support
         from .workspace_domain import backfill_documents_workspace_ids
 
+        ensure_document_search_support(conn)
         backfill_documents_workspace_ids(conn)
         conn.commit()
         print('✅ Database tables initialized successfully.')

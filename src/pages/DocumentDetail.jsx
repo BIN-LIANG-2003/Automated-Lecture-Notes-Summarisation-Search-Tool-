@@ -2,8 +2,21 @@ import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
+import { authFetch } from '../lib/authFetch.js';
+import { copyTextToClipboard } from '../lib/clipboard.js';
+import { formatDateTimeLabel } from '../lib/dates.js';
 import { downloadFileWithAuth } from '../lib/fileDownload.js';
 import { coerceOcrText, formatOcrErrorMessage } from '../lib/ocr.js';
+import {
+  createDocumentShareLink,
+  deleteDocumentShareLink,
+  deleteInactiveDocumentShareLinks,
+  isActiveShareLink,
+  listDocumentShareLinks,
+  revokeAllDocumentShareLinks,
+  revokeDocumentShareLink,
+} from '../lib/shareLinks.js';
+import { buildSummaryExportText, downloadTextFile } from '../lib/summaryExport.js';
 import { buildSummaryDiagnostics, formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
@@ -24,8 +37,6 @@ const getLinkSharingModeLabel = (mode) => {
   if (safeMode === 'workspace') return 'Workspace Members';
   return 'Restricted';
 };
-const isActiveShareLink = (item) =>
-  String(item?.status || '').trim().toLowerCase() === 'active' && !Boolean(item?.is_expired ?? item?.isExpired);
 
 const normalizeDocument = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
@@ -132,7 +143,7 @@ export default function DocumentDetail() {
             ? `/api/documents/${docId}?${params.toString()}`
             : `/api/documents/${docId}`;
         }
-        const res = await fetch(endpoint);
+        const res = await authFetch(endpoint, {}, { authToken });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) {
           const message = payload.error || 'Document not found';
@@ -237,20 +248,20 @@ export default function DocumentDetail() {
     return <div className="container document-detail"><p>Error: {error}</p></div>;
   }
 
-  const fileParams = new URLSearchParams();
-  if (username) fileParams.set('username', username);
-  if (authToken) fileParams.set('auth_token', authToken);
-  if (shareToken) fileParams.set('share_token', shareToken);
-  const fileUrl = `/api/documents/${document.id}/file${fileParams.toString() ? `?${fileParams.toString()}` : ''}`;
+  const previewFileParams = new URLSearchParams();
+  if (username) previewFileParams.set('username', username);
+  if (shareToken) {
+    previewFileParams.set('share_token', shareToken);
+  } else if (authToken) {
+    previewFileParams.set('auth_token', authToken);
+  }
+  const fileUrl = `/api/documents/${document.id}/file${previewFileParams.toString() ? `?${previewFileParams.toString()}` : ''}`;
+  const downloadFileParams = new URLSearchParams();
+  if (username) downloadFileParams.set('username', username);
+  if (shareToken) downloadFileParams.set('share_token', shareToken);
+  const downloadUrl = `/api/documents/${document.id}/file${downloadFileParams.toString() ? `?${downloadFileParams.toString()}` : ''}`;
   const isImage = isImageFileType(document.fileType);
   const shareModeLabel = getLinkSharingModeLabel(document.linkSharingMode);
-  
-  const formatDateTimeLabel = (value) => {
-    if (!value) return 'Unknown';
-    const dt = new Date(value);
-    if (Number.isNaN(dt.getTime())) return String(value);
-    return dt.toLocaleString();
-  };
 
   const refreshShareLinks = async (targetDocId = document?.id) => {
     const id = Number(targetDocId);
@@ -266,11 +277,8 @@ export default function DocumentDetail() {
     setShareLinksLoading(true);
     setShareLinksError('');
     try {
-      const params = new URLSearchParams({ username });
-      const response = await fetch(`/api/documents/${id}/share-links?${params.toString()}`);
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Failed to load share links');
-      setShareLinks(Array.isArray(payload.items) ? payload.items : []);
+      const items = await listDocumentShareLinks(id, { username });
+      setShareLinks(items);
     } catch (err) {
       setShareLinks([]);
       setShareLinksError(err.message || 'Failed to load share links');
@@ -297,9 +305,9 @@ export default function DocumentDetail() {
       const endpoint = params.toString()
         ? `/api/extract-text/${targetDocId}?${params.toString()}`
         : `/api/extract-text/${targetDocId}`;
-      const response = await fetch(endpoint, {
+      const response = await authFetch(endpoint, {
         method: 'POST',
-      });
+      }, { authToken });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(formatOcrErrorMessage(data));
@@ -394,11 +402,11 @@ export default function DocumentDetail() {
       if (safeDocId > 0) payload.doc_id = safeDocId;
       if (forceRefresh) payload.force_refresh = true;
 
-      const response = await fetch('/api/analyze-text', {
+      const response = await authFetch('/api/analyze-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }, { authToken });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(formatSummaryErrorMessage(data));
@@ -419,33 +427,15 @@ export default function DocumentDetail() {
     }
   };
 
-  const toSummaryExportText = () => {
-    if (!analysisResult) return '';
-    const keywords = Array.isArray(analysisResult.keywords) ? analysisResult.keywords : [];
-    const keySentences = Array.isArray(analysisResult.key_sentences)
-      ? analysisResult.key_sentences
-      : [];
-    const blocks = [
-      `Summary:\n${analysisResult.summary || ''}`,
-      `Keywords:\n${keywords.length ? keywords.join(', ') : 'N/A'}`,
-      `Key Sentences:\n${keySentences.length ? keySentences.join('\n') : 'N/A'}`,
-      `Source:\n${analysisResult.summary_source || 'fallback'}`,
-    ];
-    if (analysisResult.summary_note) {
-      blocks.push(`Note:\n${analysisResult.summary_note}`);
-    }
-    return blocks.join('\n\n').trim();
-  };
-
   const handleCopySummary = async () => {
     if (!canExportSummary) {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = toSummaryExportText();
+    const output = buildSummaryExportText(analysisResult);
     if (!output) return;
     try {
-      await navigator.clipboard.writeText(output);
+      await copyTextToClipboard(output);
       showToast('Summary copied to clipboard.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
@@ -457,15 +447,9 @@ export default function DocumentDetail() {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = toSummaryExportText();
+    const output = buildSummaryExportText(analysisResult);
     if (!output) return;
-    const blob = new Blob([output], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = window.document.createElement('a');
-    link.href = url;
-    link.download = `studyhub-summary-${new Date().toISOString().slice(0, 10)}.txt`;
-    link.click();
-    URL.revokeObjectURL(url);
+    downloadTextFile(`studyhub-summary-${new Date().toISOString().slice(0, 10)}.txt`, output);
   };
 
   const handleSaveOcrText = async () => {
@@ -487,11 +471,11 @@ export default function DocumentDetail() {
         title: `${document?.title || 'Untitled'} OCR Note`,
       };
       if (shareToken) payload.share_token = shareToken;
-      const response = await fetch(`/api/documents/${document.id}/import-text`, {
+      const response = await authFetch(`/api/documents/${document.id}/import-text`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }, { authToken });
       const data = await response.json().catch(() => ({}));
       if (!response.ok) {
         throw new Error(data.error || 'Failed to save OCR note');
@@ -512,7 +496,7 @@ export default function DocumentDetail() {
     if (isDownloadingFile) return;
     setIsDownloadingFile(true);
     try {
-      await downloadFileWithAuth(fileUrl, {
+      await downloadFileWithAuth(downloadUrl, {
         authToken,
         filename: document?.filename || document?.title || 'document',
       });
@@ -537,30 +521,11 @@ export default function DocumentDetail() {
       return;
     }
     try {
-      const response = await fetch(`/api/documents/${document.id}/share-links`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          expiry_days: document.defaultShareExpiryDays || 7,
-        }),
+      const { payload, shareUrl } = await createDocumentShareLink(document.id, {
+        username,
+        expiryDays: document.defaultShareExpiryDays || 7,
       });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        const activeCount = Number(payload?.active_count);
-        const maxCount = Number(payload?.max_active_share_links_per_document);
-        if (response.status === 409 && Number.isFinite(activeCount) && Number.isFinite(maxCount)) {
-          throw new Error(
-            `Share link limit reached (${activeCount}/${maxCount}). Revoke old links or enable auto-revoke.`
-          );
-        }
-        throw new Error(payload.error || 'Failed to create share link');
-      }
-      const shareUrl = payload.token
-        ? `${window.location.origin}/#/shared/${payload.token}`
-        : payload.share_url || '';
-      if (!shareUrl.trim()) throw new Error('Failed to create share link');
-      await navigator.clipboard.writeText(shareUrl);
+      await copyTextToClipboard(shareUrl);
       showToast(
         `Share link copied. Expires in ${payload.expiry_days || document.defaultShareExpiryDays || 7} day(s).`,
         'success'
@@ -575,7 +540,7 @@ export default function DocumentDetail() {
     const value = String(shareUrl || '').trim();
     if (!value) return;
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       showToast('Share link copied.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
@@ -590,13 +555,7 @@ export default function DocumentDetail() {
     setShareActionLoadingId(shareLinkId);
     setShareActionLoadingType('revoke');
     try {
-      const response = await fetch(`/api/documents/${document.id}/share-links/${shareLinkId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Failed to revoke share link');
+      await revokeDocumentShareLink(document.id, shareLinkId, { username });
       await refreshShareLinks(document.id);
     } catch (err) {
       showToast(err.message || 'Failed to revoke share link', 'error');
@@ -623,13 +582,7 @@ export default function DocumentDetail() {
     setShareActionLoadingId(shareLinkId);
     setShareActionLoadingType('delete');
     try {
-      const response = await fetch(`/api/documents/${document.id}/share-links/${shareLinkId}/delete`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Failed to delete share link');
+      await deleteDocumentShareLink(document.id, shareLinkId, { username });
       await refreshShareLinks(document.id);
       showToast('Share link deleted.', 'success');
     } catch (err) {
@@ -654,13 +607,7 @@ export default function DocumentDetail() {
     setShareActionLoadingId(-2);
     setShareActionLoadingType('delete-inactive');
     try {
-      const response = await fetch(`/api/documents/${document.id}/share-links/inactive`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Failed to delete inactive share links');
+      const payload = await deleteInactiveDocumentShareLinks(document.id, { username });
       setShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showToast(`Deleted ${payload.deleted_count || 0} inactive share link(s).`, 'success');
     } catch (err) {
@@ -685,13 +632,7 @@ export default function DocumentDetail() {
     setShareActionLoadingId(-1);
     setShareActionLoadingType('revoke-all');
     try {
-      const response = await fetch(`/api/documents/${document.id}/share-links`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(payload.error || 'Failed to revoke all share links');
+      const payload = await revokeAllDocumentShareLinks(document.id, { username });
       setShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showToast(`Revoked ${payload.revoked_count || 0} share link(s).`, 'success');
     } catch (err) {

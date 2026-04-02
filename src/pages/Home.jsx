@@ -6,7 +6,8 @@ import UploadPanel from '../components/UploadPanel.jsx';
 import WorkspaceSidebar from '../components/WorkspaceSidebar.jsx';
 import useDocumentsList from '../hooks/useDocumentsList.js';
 import useUploadQueue from '../hooks/useUploadQueue.js';
-import { todayKey } from '../lib/dates.js';
+import { formatDateTimeLabel, todayKey } from '../lib/dates.js';
+import { copyTextToClipboard } from '../lib/clipboard.js';
 import { loadUsageMap, persistUsageMap } from '../lib/usage.js';
 import { loadAccounts } from '../lib/accounts.js';
 import {
@@ -16,6 +17,7 @@ import {
   removeAccountFromHistory,
 } from '../lib/accountHistory.js';
 import { clearStoredAuthSession, logoutCurrentSession } from '../lib/authSession.js';
+import { authFetch } from '../lib/authFetch.js';
 import {
   createWorkspace,
   loadWorkspaceState,
@@ -23,6 +25,16 @@ import {
 } from '../lib/workspaces.js';
 import { downloadFileWithAuth } from '../lib/fileDownload.js';
 import { coerceOcrText, formatOcrErrorMessage } from '../lib/ocr.js';
+import {
+  createDocumentShareLink,
+  deleteDocumentShareLink,
+  deleteInactiveDocumentShareLinks,
+  isActiveShareLink,
+  listDocumentShareLinks,
+  revokeAllDocumentShareLinks,
+  revokeDocumentShareLink,
+} from '../lib/shareLinks.js';
+import { buildSummaryExportText, downloadTextFile } from '../lib/summaryExport.js';
 import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_SIDEBAR_RECENT_LIMIT = 10;
@@ -65,8 +77,6 @@ const SUGGESTED_CATEGORIES = [
 ];
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
-const isActiveShareLink = (item) =>
-  String(item?.status || '').trim().toLowerCase() === 'active' && !Boolean(item?.is_expired ?? item?.isExpired);
 const HOME_TAB_OPTIONS = ['home', 'files', 'ai'];
 const SIDEBAR_DENSITY_OPTIONS = [
   { value: 'comfortable', label: 'Comfortable' },
@@ -1561,7 +1571,7 @@ export default function HomePage() {
 
     setWorkspaceLoading(true);
     try {
-      const res = await fetch(`/api/workspaces?username=${encodeURIComponent(username)}`);
+      const res = await authFetch(`/api/workspaces?username=${encodeURIComponent(username)}`, {}, { authToken });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to load workspaces');
 
@@ -1676,7 +1686,7 @@ export default function HomePage() {
       });
       if (safeQuery) params.set('q', safeQuery);
       if (activeWorkspaceId) params.set('workspace_id', activeWorkspaceId);
-      const res = await fetch(`/api/documents/trash?${params.toString()}`);
+      const res = await authFetch(`/api/documents/trash?${params.toString()}`, {}, { authToken });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) {
         throw new Error(payload.error || 'Failed to load Trash');
@@ -2343,13 +2353,6 @@ export default function HomePage() {
 
   const formatDisplayDate = (value) => formatDisplayDateValue(value);
 
-  const formatDateTimeLabel = (value) => {
-    if (!value) return 'Unknown';
-    const dt = new Date(value);
-    if (Number.isNaN(dt.getTime())) return String(value);
-    return dt.toLocaleString();
-  };
-
   const sidebarDocs = useMemo(() => {
     const byId = new Map(documents.map((doc) => [Number(doc.id), doc]));
     return sidebarRecentIds
@@ -2577,11 +2580,11 @@ export default function HomePage() {
     if (isLoggedIn && username) {
       setWorkspaceActionLoading(true);
       try {
-        const res = await fetch('/api/workspaces', {
+        const res = await authFetch('/api/workspaces', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username, name: nextName }),
-        });
+        }, { authToken });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to create workspace');
         await refreshWorkspaces({ preferredWorkspaceId: payload.id, preserveActive: false });
@@ -2690,7 +2693,7 @@ export default function HomePage() {
     const nextSettings = normalizeWorkspaceSettings(workspaceSettingsDraft);
     if (isLoggedIn && username) {
       setWorkspaceActionLoading(true);
-      fetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}`, {
+      authFetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -2698,7 +2701,7 @@ export default function HomePage() {
           name: nextName,
           settings: nextSettings,
         }),
-      })
+      }, { authToken })
         .then(async (res) => {
           const payload = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(payload.error || 'Failed to save workspace settings');
@@ -2789,7 +2792,7 @@ export default function HomePage() {
     if (isLoggedIn && username) {
       setWorkspaceActionLoading(true);
       try {
-        const res = await fetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations`, {
+        const res = await authFetch(`/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -2797,7 +2800,7 @@ export default function HomePage() {
             emails: candidates,
             expiry_days: activeWorkspaceSettings.default_invite_expiry_days,
           }),
-        });
+        }, { authToken });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to create invitations');
 
@@ -2906,13 +2909,14 @@ export default function HomePage() {
     if (isLoggedIn && username && hasServerInvitationId) {
       setWorkspaceActionLoading(true);
       try {
-        const res = await fetch(
+        const res = await authFetch(
           `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${targetInvitationId}`,
           {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username }),
-          }
+          },
+          { authToken }
         );
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to remove invitation');
@@ -2951,7 +2955,7 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${invitationId}/review`,
         {
           method: 'POST',
@@ -2960,7 +2964,8 @@ export default function HomePage() {
             username,
             action,
           }),
-        }
+        },
+        { authToken }
       );
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Review failed');
@@ -2979,13 +2984,14 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
-      const res = await fetch(
+      const res = await authFetch(
         `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${invitationId}/resend`,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username }),
-        }
+        },
+        { authToken }
       );
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to resend invitation email');
@@ -3038,7 +3044,7 @@ export default function HomePage() {
       return;
     }
     try {
-      await navigator.clipboard.writeText(inviteUrl);
+      await copyTextToClipboard(inviteUrl);
       if (!inviteItem) setInviteCopied(true);
       showWorkspaceToast('sharing', 'Invite link copied.', 'success');
     } catch {
@@ -3053,7 +3059,7 @@ export default function HomePage() {
       return;
     }
     try {
-      await navigator.clipboard.writeText(message);
+      await copyTextToClipboard(message);
       showWorkspaceToast('sharing', 'Invite message copied.', 'success');
     } catch {
       showToast('Copy failed. Please copy the message manually.', 'error');
@@ -3227,17 +3233,13 @@ export default function HomePage() {
     setStarredDragId(0);
   };
 
-  const buildAuthenticatedJsonHeaders = () => {
-    const headers = { 'Content-Type': 'application/json' };
-    if (authToken) {
-      headers.Authorization = `Bearer ${authToken}`;
-    }
-    return headers;
-  };
-
   const handleExtractText = async (imageFile) => {
     if (!imageFile) {
       showToast('Please select an image first.', 'warning');
+      return;
+    }
+    if (!isLoggedIn || !authToken || !username) {
+      showToast('Please sign in to use OCR.', 'warning');
       return;
     }
     if (!activeWorkspaceSettings.allow_ai_tools) {
@@ -3256,10 +3258,10 @@ export default function HomePage() {
     if (activeWorkspaceId) formData.append('workspace_id', activeWorkspaceId);
 
     try {
-      const response = await fetch('/api/extract-text', {
+      const response = await authFetch('/api/extract-text', {
         method: 'POST',
         body: formData,
-      });
+      }, { authToken });
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -3297,6 +3299,10 @@ export default function HomePage() {
   const openAIImagePicker = () => {
     if (!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr) return;
     if (isExtracting) return;
+    if (!isLoggedIn || !authToken || !username) {
+      showToast('Please sign in to use OCR.', 'warning');
+      return;
+    }
     aiImageInputRef.current?.click();
   };
 
@@ -3361,6 +3367,12 @@ export default function HomePage() {
     silentError = false,
     forceRefresh = false,
   } = {}) => {
+    if (!isLoggedIn || !authToken || !username) {
+      if (!silentError) {
+        showToast('Please sign in to use AI tools.', 'warning');
+      }
+      return null;
+    }
     const payload = {
       username: username || '',
       workspace_id: activeWorkspaceId || '',
@@ -3382,11 +3394,11 @@ export default function HomePage() {
 
     if (trackLoading) setIsAnalyzing(true);
     try {
-      const response = await fetch('/api/analyze-text', {
+      const response = await authFetch('/api/analyze-text', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
-      });
+      }, { authToken });
       const data = await response.json().catch(() => ({}));
 
       if (!response.ok) {
@@ -3443,43 +3455,15 @@ export default function HomePage() {
     }
   };
 
-  const toSummaryExportText = () => {
-    if (!analysisResult) return '';
-    const keywords = Array.isArray(analysisResult.keywords) ? analysisResult.keywords : [];
-    const keySentences = Array.isArray(analysisResult.key_sentences)
-      ? analysisResult.key_sentences
-      : [];
-    const blocks = [
-      `Summary:\n${analysisResult.summary || ''}`,
-      `Keywords:\n${keywords.length ? keywords.join(', ') : 'N/A'}`,
-      `Key Sentences:\n${keySentences.length ? keySentences.join('\n') : 'N/A'}`,
-      `Source:\n${analysisResult.summary_source || 'fallback'}`,
-    ];
-    if (analysisResult.summary_note) {
-      blocks.push(`Note:\n${analysisResult.summary_note}`);
-    }
-    return blocks.join('\n\n').trim();
-  };
-
-  const downloadTextFile = (filename, content) => {
-    const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    link.click();
-    URL.revokeObjectURL(url);
-  };
-
   const handleCopySummary = async () => {
     if (!activeWorkspaceSettings.allow_export) {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = toSummaryExportText();
+    const output = buildSummaryExportText(analysisResult);
     if (!output) return;
     try {
-      await navigator.clipboard.writeText(output);
+      await copyTextToClipboard(output);
       showWorkspaceToast('summary', 'Summary copied to clipboard.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
@@ -3491,7 +3475,7 @@ export default function HomePage() {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = toSummaryExportText();
+    const output = buildSummaryExportText(analysisResult);
     if (!output) return;
     const stamp = new Date().toISOString().slice(0, 10);
     downloadTextFile(`studyhub-summary-${stamp}.txt`, output);
@@ -3502,7 +3486,7 @@ export default function HomePage() {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = toSummaryExportText();
+    const output = buildSummaryExportText(analysisResult);
     if (!output) return;
     const subject = encodeURIComponent('StudyHub Note Summary');
     const body = encodeURIComponent(output.slice(0, 7000));
@@ -3744,11 +3728,7 @@ export default function HomePage() {
     setActiveDocShareLinksLoading(true);
     setActiveDocShareLinksError('');
     try {
-      const params = new URLSearchParams({ username });
-      const res = await fetch(`/api/documents/${targetDocId}/share-links?${params.toString()}`);
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to load share links');
-      const items = Array.isArray(payload.items) ? payload.items : [];
+      const items = await listDocumentShareLinks(targetDocId, { username });
       setActiveDocShareLinks(items);
     } catch (err) {
       setActiveDocShareLinks([]);
@@ -3765,13 +3745,7 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(shareLinkId);
     setActiveDocShareActionLoadingType('revoke');
     try {
-      const res = await fetch(`/api/documents/${activeDoc.id}/share-links/${shareLinkId}`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to revoke share link');
+      await revokeDocumentShareLink(activeDoc.id, shareLinkId, { username });
       await refreshActiveDocShareLinks(activeDoc.id);
     } catch (err) {
       showToast(err.message || 'Failed to revoke share link', 'error');
@@ -3797,13 +3771,7 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(shareLinkId);
     setActiveDocShareActionLoadingType('delete');
     try {
-      const res = await fetch(`/api/documents/${activeDoc.id}/share-links/${shareLinkId}/delete`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to delete share link');
+      await deleteDocumentShareLink(activeDoc.id, shareLinkId, { username });
       await refreshActiveDocShareLinks(activeDoc.id);
       showWorkspaceToast('sharing', 'Share link deleted.', 'success');
     } catch (err) {
@@ -3828,13 +3796,7 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(-2);
     setActiveDocShareActionLoadingType('delete-inactive');
     try {
-      const res = await fetch(`/api/documents/${activeDoc.id}/share-links/inactive`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to delete inactive share links');
+      const payload = await deleteInactiveDocumentShareLinks(activeDoc.id, { username });
       setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showWorkspaceToast('sharing', `Deleted ${payload.deleted_count || 0} inactive share link(s).`, 'success');
     } catch (err) {
@@ -3858,13 +3820,7 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(-1);
     setActiveDocShareActionLoadingType('revoke-all');
     try {
-      const res = await fetch(`/api/documents/${activeDoc.id}/share-links`, {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username }),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to revoke all share links');
+      const payload = await revokeAllDocumentShareLinks(activeDoc.id, { username });
       setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showWorkspaceToast('sharing', `Revoked ${payload.revoked_count || 0} share link(s).`, 'success');
     } catch (err) {
@@ -3879,7 +3835,7 @@ export default function HomePage() {
     const value = String(shareUrl || '').trim();
     if (!value) return;
     try {
-      await navigator.clipboard.writeText(value);
+      await copyTextToClipboard(value);
       showWorkspaceToast('sharing', 'Share link copied.', 'success');
     } catch {
       showToast('Copy failed. Please copy manually.', 'error');
@@ -3902,31 +3858,11 @@ export default function HomePage() {
     const docId = Number(doc?.id);
     if (!Number.isFinite(docId)) return;
     try {
-      const res = await fetch(`/api/documents/${docId}/share-links`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          username,
-          expiry_days: activeWorkspaceSettings.default_share_expiry_days,
-        }),
+      const { payload, shareUrl } = await createDocumentShareLink(docId, {
+        username,
+        expiryDays: activeWorkspaceSettings.default_share_expiry_days,
       });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        const activeCount = Number(payload?.active_count);
-        const maxCount = Number(payload?.max_active_share_links_per_document);
-        if (res.status === 409 && Number.isFinite(activeCount) && Number.isFinite(maxCount)) {
-          throw new Error(
-            `Share link limit reached (${activeCount}/${maxCount}). Revoke old links or enable auto-revoke.`
-          );
-        }
-        throw new Error(payload.error || 'Failed to create share link');
-      }
-      const shareUrl = payload.token
-        ? `${window.location.origin}/#/shared/${payload.token}`
-        : payload.share_url || '';
-      if (!shareUrl.trim()) throw new Error('Failed to create share link');
-
-      await navigator.clipboard.writeText(shareUrl);
+      await copyTextToClipboard(shareUrl);
       showWorkspaceToast(
         'sharing',
         `Share link copied. Expires in ${payload.expiry_days || activeWorkspaceSettings.default_share_expiry_days} day(s).`,
@@ -3964,11 +3900,11 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
-      const res = await fetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/documents`, {
+      const res = await authFetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/documents`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username }),
-      });
+      }, { authToken });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to clear workspace notes');
 
@@ -4049,11 +3985,11 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
-      const res = await fetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}`, {
+      const res = await authFetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username }),
-      });
+      }, { authToken });
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to delete workspace');
 
@@ -4139,7 +4075,7 @@ export default function HomePage() {
       const endpoint = params.toString()
         ? `/api/documents/${docId}?${params.toString()}`
         : `/api/documents/${docId}`;
-      const res = await fetch(endpoint);
+      const res = await authFetch(endpoint, {}, { authToken });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Document not found');
       const normalizedDoc = normalizeDocument(data);
@@ -4206,7 +4142,7 @@ export default function HomePage() {
           includeMeta: false,
           includeFacets: false,
         });
-        const res = await fetch(`/api/documents?${params.toString()}`);
+        const res = await authFetch(`/api/documents?${params.toString()}`, {}, { authToken });
         const payload = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(payload.error || 'Failed to load matching documents');
 
@@ -4317,11 +4253,11 @@ export default function HomePage() {
     try {
       const results = await Promise.all(selectedIds.map(async (docId) => {
         try {
-          const res = await fetch(`/api/documents/${docId}/restore`, {
+          const res = await authFetch(`/api/documents/${docId}/restore`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: username || '' }),
-          });
+          }, { authToken });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || 'Restore failed');
           return { id: docId, ok: true };
@@ -4380,11 +4316,11 @@ export default function HomePage() {
     try {
       const results = await Promise.all(selectedIds.map(async (docId) => {
         try {
-          const res = await fetch(`/api/documents/${docId}`, {
+          const res = await authFetch(`/api/documents/${docId}`, {
             method: 'DELETE',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ username: username || '', permanent: true }),
-          });
+          }, { authToken });
           const data = await res.json().catch(() => ({}));
           if (!res.ok) throw new Error(data.error || 'Permanent delete failed');
           return { id: docId, ok: true, warning: String(data.warning || '').trim() };
@@ -4435,11 +4371,11 @@ export default function HomePage() {
     const shouldMoveToPreviousTrashPage = trashPage > 1 && trashItems.length <= 1;
     setTrashActionLoadingId(`restore-${docId}`);
     try {
-      const res = await fetch(`/api/documents/${docId}/restore`, {
+      const res = await authFetch(`/api/documents/${docId}/restore`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username || '' }),
-      });
+      }, { authToken });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Restore failed');
 
@@ -4472,11 +4408,11 @@ export default function HomePage() {
 
     setTrashActionLoadingId(`delete-${docId}`);
     try {
-      const res = await fetch(`/api/documents/${docId}`, {
+      const res = await authFetch(`/api/documents/${docId}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username || '', permanent: true }),
-      });
+      }, { authToken });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Permanent delete failed');
 
@@ -4509,11 +4445,11 @@ export default function HomePage() {
     });
     if (!shouldDelete) return;
     try {
-      const res = await fetch(`/api/documents/${doc.id}`, {
+      const res = await authFetch(`/api/documents/${doc.id}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username: username || '' }),
-      });
+      }, { authToken });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data.error || 'Move to Trash failed');
 
@@ -4636,11 +4572,11 @@ export default function HomePage() {
     const successItems = await runBulkAction(
       'Move selected documents to Trash',
       async (docId) => {
-        const res = await fetch(`/api/documents/${docId}`, {
+        const res = await authFetch(`/api/documents/${docId}`, {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ username: username || '' }),
-        });
+        }, { authToken });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Move to Trash failed');
         return data;
@@ -4674,11 +4610,11 @@ export default function HomePage() {
     await runBulkAction(
       'Update category',
       async (docId) => {
-        const res = await fetch(`/api/documents/${docId}/category`, {
+        const res = await authFetch(`/api/documents/${docId}/category`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ category: nextCategory, username: username || '' }),
-        });
+        }, { authToken });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to update category');
         return normalizeDocument(data);
@@ -4727,11 +4663,11 @@ export default function HomePage() {
     await runBulkAction(
       'Update tags',
       async (docId) => {
-        const res = await fetch(`/api/documents/${docId}/tags`, {
+        const res = await authFetch(`/api/documents/${docId}/tags`, {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ tags: nextTags, username: username || '' }),
-        });
+        }, { authToken });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to update tags');
         return normalizeDocument(data);
@@ -4940,11 +4876,11 @@ export default function HomePage() {
       .filter(Boolean);
 
     try {
-      const res = await fetch(`/api/documents/${doc.id}/tags`, {
+      const res = await authFetch(`/api/documents/${doc.id}/tags`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ tags: nextTags, username: username || '' }),
-      });
+      }, { authToken });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update tags');
 
@@ -4975,11 +4911,11 @@ export default function HomePage() {
     const nextCategory = input.trim();
 
     try {
-      const res = await fetch(`/api/documents/${doc.id}/category`, {
+      const res = await authFetch(`/api/documents/${doc.id}/category`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ category: nextCategory, username: username || '' }),
-      });
+      }, { authToken });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update category');
 
@@ -5004,7 +4940,7 @@ export default function HomePage() {
     try {
       const contentHtml = activeDocDraftHtml || '';
       const contentText = richHtmlToPlainText(contentHtml);
-      const res = await fetch(`/api/documents/${activeDoc.id}/content`, {
+      const res = await authFetch(`/api/documents/${activeDoc.id}/content`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -5012,7 +4948,7 @@ export default function HomePage() {
           content_html: contentHtml,
           username: username || '',
         }),
-      });
+      }, { authToken });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save document content');
 
@@ -5049,11 +4985,11 @@ export default function HomePage() {
     try {
       const payload = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
       const query = username ? `?username=${encodeURIComponent(username)}` : '';
-      const res = await fetch(`/api/documents/${activeDoc.id}/pdf${query}`, {
+      const res = await authFetch(`/api/documents/${activeDoc.id}/pdf${query}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/pdf' },
         body: payload,
-      });
+      }, { authToken });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to save PDF file');
 
@@ -6357,6 +6293,7 @@ export default function HomePage() {
           {showAI && !docPaneVisible && (
             <Suspense fallback={<p className="muted tiny">Loading AI assistant...</p>}>
               <AIAssistantPanel
+                isLoggedIn={isLoggedIn}
                 allowAiTools={activeWorkspaceSettings.allow_ai_tools}
                 allowOcr={activeWorkspaceSettings.allow_ocr}
                 allowExport={activeWorkspaceSettings.allow_export}

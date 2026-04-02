@@ -1,4 +1,6 @@
-from flask import jsonify, request
+import re
+
+from flask import g, jsonify, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, BadTimeSignature, SignatureExpired
 
 from .config import AUTH_BYPASS_ENDPOINTS, AUTH_TOKEN_SALT, AUTH_TOKEN_SECRET, AUTH_TOKEN_TTL_SECONDS
@@ -6,6 +8,7 @@ from .utils import utcnow_iso
 
 
 _auth_token_serializer = URLSafeTimedSerializer(AUTH_TOKEN_SECRET)
+_FILE_AUTH_TOKEN_PATH_RE = re.compile(r'^/api/documents/\d+/file$')
 
 
 def create_auth_token(username):
@@ -58,24 +61,10 @@ def get_request_auth_token():
     if bearer_token:
         return bearer_token
 
-    query_token = (request.args.get('auth_token') or '').strip()
-    if query_token:
-        return query_token
-
-    form_token = (request.form.get('auth_token') or '').strip()
-    if form_token:
-        return form_token
-
-    if request.is_json:
-        data = request.get_json(silent=True) or {}
-        if isinstance(data, dict):
-            json_token = (data.get('auth_token') or '').strip()
-            if json_token:
-                return json_token
-
-    value_token = (request.values.get('auth_token') or '').strip()
-    if value_token:
-        return value_token
+    if _FILE_AUTH_TOKEN_PATH_RE.fullmatch(str(request.path or '').strip()):
+        query_token = (request.args.get('auth_token') or '').strip()
+        if query_token:
+            return query_token
     return ''
 
 
@@ -101,6 +90,66 @@ def extract_request_username():
     return ''
 
 
+def get_request_share_token():
+    query_token = (request.args.get('share_token') or '').strip()
+    if query_token:
+        return query_token
+
+    form_token = (request.form.get('share_token') or '').strip()
+    if form_token:
+        return form_token
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        if isinstance(data, dict):
+            json_token = (data.get('share_token') or '').strip()
+            if json_token:
+                return json_token
+    return ''
+
+
+def _request_doc_id():
+    view_args = request.view_args if isinstance(request.view_args, dict) else {}
+    raw_doc_id = view_args.get('doc_id')
+    if raw_doc_id not in (None, ''):
+        try:
+            return max(0, int(raw_doc_id))
+        except Exception:
+            return 0
+
+    if request.is_json:
+        data = request.get_json(silent=True) or {}
+        if isinstance(data, dict):
+            raw_doc_id = data.get('doc_id')
+            if raw_doc_id not in (None, ''):
+                try:
+                    return max(0, int(raw_doc_id))
+                except Exception:
+                    return 0
+    return 0
+
+
+def _request_allows_anonymous_access(endpoint_leaf):
+    if endpoint_leaf in AUTH_BYPASS_ENDPOINTS:
+        return True
+
+    share_token = get_request_share_token()
+    if not share_token:
+        return False
+
+    if endpoint_leaf in {'get_document', 'get_document_file'}:
+        return True
+    if endpoint_leaf == 'extract_text_from_image' and _request_doc_id() > 0:
+        return True
+    if endpoint_leaf == 'analyze_text' and _request_doc_id() > 0:
+        return True
+    return False
+
+
+def get_authenticated_username():
+    return str(getattr(g, 'authenticated_username', '') or '').strip()
+
+
 def enforce_auth_token_middleware():
     path = str(request.path or '')
     if not path.startswith('/api/'):
@@ -109,21 +158,32 @@ def enforce_auth_token_middleware():
         return None
 
     endpoint = str(request.endpoint or '')
+    if not endpoint:
+        return None
     endpoint_leaf = endpoint.rsplit('.', 1)[-1]
-    if endpoint in AUTH_BYPASS_ENDPOINTS or endpoint_leaf in AUTH_BYPASS_ENDPOINTS:
-        return None
-
-    username = extract_request_username()
-    if not username:
-        return None
+    g.authenticated_username = ''
+    g.auth_token_error = ''
 
     auth_token = get_request_auth_token()
+    token_ok = False
+    token_username = ''
+    token_error = ''
+    if auth_token:
+        token_ok, token_username, token_error = decode_auth_token(auth_token)
+        if token_ok:
+            g.authenticated_username = token_username
+        else:
+            g.auth_token_error = token_error or 'Invalid auth token'
+
+    username = extract_request_username()
+    if token_ok and username and token_username != username:
+        return jsonify({'error': 'Auth token does not match username'}), 403
+
+    if _request_allows_anonymous_access(endpoint_leaf) or endpoint in AUTH_BYPASS_ENDPOINTS:
+        return None
+
     if not auth_token:
         return jsonify({'error': 'Auth token is required'}), 401
-
-    token_ok, token_username, token_error = decode_auth_token(auth_token)
     if not token_ok:
         return jsonify({'error': token_error or 'Invalid auth token'}), 401
-    if token_username != username:
-        return jsonify({'error': 'Auth token does not match username'}), 403
     return None

@@ -789,6 +789,10 @@ a{ color:inherit; }
   gap:20px;
   margin-bottom:16px;
 }
+.document-detail-head > :first-child{
+  flex:1 1 auto;
+  min-width:0;
+}
 .document-detail-head-actions{
   display:flex;
   gap:8px;

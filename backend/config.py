@@ -18,11 +18,53 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 
 GOOGLE_CLIENT_ID = '1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com'
-AUTH_TOKEN_SECRET = (
-    (os.environ.get('AUTH_TOKEN_SECRET') or '').strip()
-    or (os.environ.get('FLASK_SECRET_KEY') or '').strip()
-    or 'studyhub-dev-secret-change-me'
-)
+DEFAULT_AUTH_TOKEN_SECRET = 'studyhub-dev-secret-change-me'
+MIN_AUTH_TOKEN_SECRET_LENGTH = 32
+WEAK_AUTH_TOKEN_SECRET_VALUES = {
+    '',
+    'changeme',
+    'change-me',
+    'default',
+    'secret',
+    'studyhub',
+    DEFAULT_AUTH_TOKEN_SECRET,
+}
+
+
+def _is_production_environment():
+    return any(
+        str(os.environ.get(env_name) or '').strip().lower() == 'production'
+        for env_name in ('APP_ENV', 'FLASK_ENV')
+    )
+
+
+def _auth_token_secret_is_weak(value):
+    safe_value = str(value or '').strip()
+    lowered_value = safe_value.lower()
+    if lowered_value in WEAK_AUTH_TOKEN_SECRET_VALUES:
+        return True
+    if len(safe_value) < MIN_AUTH_TOKEN_SECRET_LENGTH:
+        return True
+    return False
+
+
+_primary_auth_token_secret = (os.environ.get('AUTH_TOKEN_SECRET') or '').strip()
+_legacy_auth_token_secret = (os.environ.get('FLASK_SECRET_KEY') or '').strip()
+if _primary_auth_token_secret:
+    AUTH_TOKEN_SECRET = _primary_auth_token_secret
+elif _legacy_auth_token_secret and not _auth_token_secret_is_weak(_legacy_auth_token_secret):
+    AUTH_TOKEN_SECRET = _legacy_auth_token_secret
+else:
+    AUTH_TOKEN_SECRET = DEFAULT_AUTH_TOKEN_SECRET
+
+IS_PRODUCTION_ENV = _is_production_environment()
+if IS_PRODUCTION_ENV and _auth_token_secret_is_weak(_primary_auth_token_secret):
+    raise RuntimeError(
+        'AUTH_TOKEN_SECRET must be set to a strong non-default value when '
+        'APP_ENV=production or FLASK_ENV=production. '
+        f'Use at least {MIN_AUTH_TOKEN_SECRET_LENGTH} characters and avoid default placeholders.'
+    )
+
 AUTH_TOKEN_SALT = 'studyhub-auth-token-v1'
 try:
     AUTH_TOKEN_TTL_SECONDS = max(3600, int((os.environ.get('AUTH_TOKEN_TTL_SECONDS') or '604800').strip()))

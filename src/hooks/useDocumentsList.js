@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { authFetch } from '../lib/authFetch.js';
 
 export default function useDocumentsList({
   username,
@@ -109,7 +110,7 @@ export default function useDocumentsList({
     });
 
     try {
-      const res = await fetch(`/api/documents?${params.toString()}`);
+      const res = await authFetch(`/api/documents?${params.toString()}`, {}, { authToken });
       if (res.ok) {
         const payload = await res.json().catch(() => ({}));
         const items = Array.isArray(payload?.items) ? payload.items : [];

@@ -1,4 +1,4 @@
-export const WORKSPACES_STORE_KEY = 'workspaceStateByAccount';
+const WORKSPACES_STORE_KEY = 'workspaceStateByAccount';
 const DEFAULT_WORKSPACE_SETTINGS = {
   workspace_icon: '📚',
   description: '',

@@ -3,6 +3,7 @@ from flask import jsonify, request
 from .config import DEFAULT_WORKSPACE_SETTINGS
 from .db import get_db_connection
 from .document_domain import plaintext_to_html
+from .security import get_authenticated_username
 from .utils import parse_bool, parse_int, row_to_dict, utcnow_iso
 from .share_domain import (
     check_document_access,
@@ -20,7 +21,7 @@ from .workspace_domain import expires_at_for_days, get_workspace_settings
 
 def create_document_share_link(doc_id):
     data = request.get_json(silent=True) or {}
-    username = (data.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -132,7 +133,7 @@ def create_document_share_link(doc_id):
 
 
 def list_document_share_links(doc_id):
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -163,8 +164,7 @@ def list_document_share_links(doc_id):
 
 
 def revoke_all_document_share_links(doc_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -213,8 +213,7 @@ def revoke_all_document_share_links(doc_id):
 
 
 def revoke_document_share_link(doc_id, share_link_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -262,8 +261,7 @@ def revoke_document_share_link(doc_id, share_link_id):
 
 
 def delete_document_share_link(doc_id, share_link_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -304,8 +302,7 @@ def delete_document_share_link(doc_id, share_link_id):
 
 
 def delete_inactive_document_share_links(doc_id):
-    data = request.get_json(silent=True) or {}
-    username = (data.get('username') or request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not username:
         return jsonify({'error': 'username is required'}), 400
 
@@ -365,7 +362,7 @@ def delete_inactive_document_share_links(doc_id):
 
 def get_document_by_share_token(token):
     safe_token = str(token or '').strip()
-    username = (request.args.get('username') or '').strip()
+    username = get_authenticated_username()
     if not safe_token:
         return jsonify({'error': 'Missing share token'}), 400
 

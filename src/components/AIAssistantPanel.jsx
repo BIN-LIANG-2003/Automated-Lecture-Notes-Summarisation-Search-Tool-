@@ -1,6 +1,7 @@
 import { buildSummaryDiagnostics } from '../lib/summaryDiagnostics.js';
 
 export default function AIAssistantPanel({
+  isLoggedIn = false,
   allowAiTools = true,
   allowOcr = true,
   allowExport = true,
@@ -48,9 +49,11 @@ export default function AIAssistantPanel({
             type="button"
             className="btn notion-ai-action-chip"
             onClick={onOpenAIImagePicker}
-            disabled={isExtracting || !allowOcr}
+            disabled={isExtracting || !allowOcr || !isLoggedIn}
           >
-            {!allowOcr
+            {!isLoggedIn
+              ? 'Sign In For OCR'
+              : !allowOcr
               ? 'OCR Disabled'
               : isExtracting
                 ? 'Running image OCR...'
@@ -60,9 +63,9 @@ export default function AIAssistantPanel({
             type="button"
             className="btn btn-primary notion-ai-action-chip"
             onClick={onAnalyzeText}
-            disabled={isAnalyzing || !String(extractedText || '').trim()}
+            disabled={isAnalyzing || !isLoggedIn || !String(extractedText || '').trim()}
           >
-            {isAnalyzing ? 'Summarizing text...' : 'Summarize Text'}
+            {!isLoggedIn ? 'Sign In To Summarize' : isAnalyzing ? 'Summarizing text...' : 'Summarize Text'}
           </button>
           <button
             type="button"
@@ -74,7 +77,9 @@ export default function AIAssistantPanel({
           </button>
         </div>
         <p className="muted tiny">
-          For PDF/DOCX/TXT notes, use <strong>Summarize Document</strong> in My Documents. Raw source text stays hidden.
+          {isLoggedIn
+            ? 'For PDF/DOCX/TXT notes, use Summarize Document in My Documents. Raw source text stays hidden.'
+            : 'Sign in to use the Home AI tools. Shared-document OCR and summary still work from a valid share link.'}
         </p>
 
         <section className="notion-ai-results">
