@@ -1,0 +1,86 @@
+import atexit
+import os
+import tempfile
+
+from werkzeug.security import generate_password_hash
+
+from backend import create_app
+from backend.config import DEFAULT_WORKSPACE_SETTINGS
+from backend.db import get_db_connection
+from backend.utils import utcnow_iso
+from backend.workspace_domain import ensure_owner_membership, workspace_settings_to_json
+
+
+def seed_app_data():
+    conn = get_db_connection()
+    now_iso = utcnow_iso()
+    try:
+        conn.execute(
+            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+            ('alice', 'alice@example.com', generate_password_hash('password123', method='pbkdf2:sha256')),
+        )
+        conn.execute(
+            '''
+            INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                'ws-e2e',
+                'E2E Workspace',
+                'Free',
+                'alice',
+                workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                now_iso,
+                now_iso,
+            ),
+        )
+        ensure_owner_membership(conn, 'ws-e2e', 'alice')
+        conn.execute(
+            '''
+            INSERT INTO documents (
+                filename,
+                title,
+                uploaded_at,
+                file_type,
+                content,
+                content_html,
+                username,
+                tags,
+                category,
+                workspace_id,
+                last_access_at,
+                deleted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                'graph-notes.txt',
+                'Graph Notes',
+                now_iso,
+                'txt',
+                'graph traversal bfs dfs shortest path smoke test content',
+                '<p>graph traversal bfs dfs shortest path smoke test content</p>',
+                'alice',
+                'graphs,smoke',
+                'Computer Science',
+                'ws-e2e',
+                '',
+                '',
+            ),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def main():
+    tempdir = tempfile.TemporaryDirectory(prefix='studyhub-e2e-')
+    atexit.register(tempdir.cleanup)
+    os.chdir(tempdir.name)
+    app = create_app()
+    seed_app_data()
+    port = int(os.environ.get('PORT', '5001'))
+    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
+
+
+if __name__ == '__main__':
+    main()
