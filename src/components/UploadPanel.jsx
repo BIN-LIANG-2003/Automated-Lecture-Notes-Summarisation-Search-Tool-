@@ -28,23 +28,29 @@ export default function UploadPanel({
   onClearCompletedUploads,
   canClearUploadQueue,
   uploadQueue,
+  embedded = false,
+  title = 'Upload Files',
+  description = 'Add new notes to this workspace and auto-index them for search.',
 }) {
   return (
-    <section className="uploader notion-panel-block notion-upload-panel" aria-labelledby="uploader-title">
-      <div className="notion-panel-head">
-        <h2 id="uploader-title" className="section-title">Upload Files</h2>
-        <p>Add new notes to this workspace and auto-index them for search.</p>
+    <section
+      className={`uploader${embedded ? ' notion-upload-tray' : ' notion-panel-block notion-upload-panel'}`}
+      aria-labelledby="uploader-title"
+    >
+      <div className={`notion-panel-head${embedded ? ' notion-upload-tray-head' : ''}`}>
+        <h2 id="uploader-title" className="section-title">{title}</h2>
+        <p>{description}</p>
       </div>
       <div
         className={`notion-upload-dropzone${dragUploadActive ? ' is-active' : ''}${
           !allowUploads ? ' is-disabled' : ''
-        }`}
+        }${embedded ? ' is-embedded' : ''}`}
         onDragEnter={onDragEnter}
         onDragOver={onDragOver}
         onDragLeave={onDragLeave}
         onDrop={onDrop}
       >
-        <form id="upload-form" onSubmit={onSubmit} noValidate>
+        <form id="upload-form" className={embedded ? 'notion-upload-form-embedded' : ''} onSubmit={onSubmit} noValidate>
           <input
             id="file-input"
             type="file"
@@ -69,7 +75,7 @@ export default function UploadPanel({
               <option key={category} value={category} />
             ))}
           </datalist>
-          <div className="uploader-actions">
+          <div className={`uploader-actions${embedded ? ' is-embedded' : ''}`}>
             <label
               htmlFor="file-input"
               className={`btn file-btn${!allowUploads ? ' disabled' : ''}`}
@@ -146,7 +152,9 @@ export default function UploadPanel({
             </section>
           )}
         </form>
-        <p className="notion-upload-drop-hint">Drag & drop files here for quick upload.</p>
+        <p className="notion-upload-drop-hint">
+          Drag & drop files here for quick upload.
+        </p>
       </div>
       <p className="muted tiny">
         {allowUploads

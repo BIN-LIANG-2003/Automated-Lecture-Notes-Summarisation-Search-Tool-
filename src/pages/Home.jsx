@@ -6482,46 +6482,141 @@ export default function HomePage() {
           {showFiles && !docPaneVisible && (
             <section id="files-section" className="files-section notion-files-section">
               <div className="notion-files-layout">
-                <aside className="notion-files-tools">
-                  <section className="filters notion-panel-block" aria-labelledby="filters-title">
-                    <div className="notion-panel-head">
-                      <h2 id="filters-title" className="section-title">Smart Filters</h2>
+                <section className="notion-files-workbench notion-panel-block" aria-labelledby="files-workbench-title">
+                  <div className="notion-files-workbench-head">
+                    <div className="notion-files-workbench-copy">
+                      <h2 id="files-workbench-title" className="section-title">Files Workspace</h2>
                       <p>
-                        {hasActiveFilters
-                          ? `${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''} active`
-                          : 'Search notes by keyword, date range, category, tag, and file type.'}
+                        Upload, filter, search, OCR, and manage your workspace documents from one integrated surface.
                       </p>
+                    </div>
+                    <div className="notion-files-actionbar">
+                      <div className="notion-files-actionbar-group">
+                        <button
+                          type="button"
+                          className="btn btn-primary"
+                          onClick={() => fileInputRef.current?.click()}
+                          disabled={!activeWorkspaceSettings.allow_uploads || uploadQueueRunning}
+                        >
+                          {uploadQueueRunning ? 'Uploading...' : 'Upload Files'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => openImageOcrPicker()}
+                          disabled={
+                            !isLoggedIn ||
+                            isExtracting ||
+                            bulkActionLoading ||
+                            selectAllMatchedLoading ||
+                            !activeWorkspaceSettings.allow_ai_tools ||
+                            !activeWorkspaceSettings.allow_ocr
+                          }
+                          title={
+                            !isLoggedIn
+                              ? 'Please sign in'
+                              : !activeWorkspaceSettings.allow_ai_tools
+                                ? 'AI is disabled in workspace settings'
+                                : !activeWorkspaceSettings.allow_ocr
+                                  ? 'OCR is disabled in workspace settings'
+                                  : undefined
+                          }
+                        >
+                          {isExtracting ? 'Running OCR...' : 'Image OCR'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => fetchDocuments(documentsPage)}
+                          disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
+                        >
+                          {documentsLoading ? 'Refreshing...' : 'Refresh'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleOpenTrashModal}
+                          disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
+                          title="Open Trash"
+                        >
+                          Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
+                        </button>
+                      </div>
+                      <div className="notion-files-actionbar-group notion-files-actionbar-group-secondary">
+                        <span className="notion-files-actionbar-label">Saved Views</span>
+                        <button type="button" className="btn" onClick={() => void handleSaveCurrentView()}>
+                          Save Current
+                        </button>
+                        <button type="button" className="btn" onClick={handleOpenSavedViewsImport}>
+                          Import
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleExportSavedViews}
+                          disabled={!savedViews.length}
+                        >
+                          Export
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={savedViewsImportInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    className="sr-only"
+                    onChange={handleImportSavedViewsFromFile}
+                  />
+
+                  <UploadPanel
+                    embedded
+                    title="Upload Files"
+                    description="Keep uploads visible inside Files. New OCR saves and uploads land back in My Documents."
+                    allowUploads={activeWorkspaceSettings.allow_uploads}
+                    dragUploadActive={dragUploadActive}
+                    onDragEnter={handleUploadDragEnter}
+                    onDragOver={handleUploadDragOver}
+                    onDragLeave={handleUploadDragLeave}
+                    onDrop={handleUploadDrop}
+                    onSubmit={handleUpload}
+                    fileInputRef={fileInputRef}
+                    onFileChange={handleFileChange}
+                    uploadCategory={uploadCategory}
+                    onUploadCategoryChange={setUploadCategory}
+                    categorySuggestions={categorySuggestions}
+                    uploadQueueRunning={uploadQueueRunning}
+                    fileHint={fileHint}
+                    uploadQueueSummary={uploadQueueSummary}
+                    uploadQueueExpanded={uploadQueueExpanded}
+                    onToggleUploadQueueExpanded={() => setUploadQueueExpanded((prev) => !prev)}
+                    onRetryFailedUploads={handleRetryFailedUploads}
+                    canRetryFailedUploads={canRetryFailedUploads}
+                    onClearCompletedUploads={handleClearCompletedUploads}
+                    canClearUploadQueue={canClearUploadQueue}
+                    uploadQueue={uploadQueue}
+                  />
+
+                  <section className="notion-files-filter-shell" aria-labelledby="filters-title">
+                    <div className="notion-files-filter-head">
+                      <div className="notion-panel-head">
+                        <h2 id="filters-title" className="section-title">Smart Filters</h2>
+                        <p>
+                          {hasActiveFilters
+                            ? `${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''} active`
+                            : 'Search notes by keyword, date range, category, tag, and file type.'}
+                        </p>
+                      </div>
+                      <button type="button" className="btn" onClick={() => setShortcutsOpen(true)}>
+                        Shortcuts
+                      </button>
                     </div>
                     <div className="notion-saved-views-bar" aria-label="Saved views">
                       <div className="notion-saved-views-head">
                         <span>Saved Views</span>
-                        <div className="notion-saved-views-actions">
-                          <button type="button" className="btn" onClick={() => void handleSaveCurrentView()}>
-                            Save Current
-                          </button>
-                          <button type="button" className="btn" onClick={handleOpenSavedViewsImport}>
-                            Import
-                          </button>
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={handleExportSavedViews}
-                            disabled={!savedViews.length}
-                          >
-                            Export
-                          </button>
-                          <button type="button" className="btn" onClick={() => setShortcutsOpen(true)}>
-                            Shortcuts
-                          </button>
-                        </div>
+                        <p className="notion-settings-help">Reusable presets for filters, sort, layout, and page size.</p>
                       </div>
-                      <input
-                        ref={savedViewsImportInputRef}
-                        type="file"
-                        accept=".json,application/json"
-                        className="sr-only"
-                        onChange={handleImportSavedViewsFromFile}
-                      />
                       {savedViews.length ? (
                         <div className="notion-saved-views-list">
                           {savedViews.map((view, index) => (
@@ -6589,7 +6684,7 @@ export default function HomePage() {
                         </div>
                       ) : (
                         <p className="notion-settings-help">
-                          Save your current filters/sort and reuse them in one click.
+                          Save your current filters and document layout to reopen this workbench state in one click.
                         </p>
                       )}
                     </div>
@@ -6781,22 +6876,21 @@ export default function HomePage() {
                               <button
                                 type="button"
                                 key={category}
-                                  className={`tag ${filters.category === category ? 'selected' : ''}`}
-                                  role="listitem"
-                                  onClick={() => {
-                                    setDocumentsPage(1);
-                                    setFilters((prev) => ({
-                                      ...prev,
-                                      category: prev.category === category ? '' : category,
-                                    }));
-                                  }}
-                                >
+                                className={`tag ${filters.category === category ? 'selected' : ''}`}
+                                role="listitem"
+                                onClick={() => {
+                                  setDocumentsPage(1);
+                                  setFilters((prev) => ({
+                                    ...prev,
+                                    category: prev.category === category ? '' : category,
+                                  }));
+                                }}
+                              >
                                 {category}
                               </button>
                             ))}
                           </div>
                         </div>
-
 
                         <div className="tags-row">
                           <span className="muted">Tags:</span>
@@ -6812,7 +6906,7 @@ export default function HomePage() {
                                     setDocumentsPage(1);
                                     setFilters((prev) => ({
                                       ...prev,
-                                      tag: prev.tag === tag ? '' : tag
+                                      tag: prev.tag === tag ? '' : tag,
                                     }));
                                   }}
                                 >
@@ -6843,34 +6937,8 @@ export default function HomePage() {
                       </div>
                     )}
                   </section>
-                </aside>
 
-                <UploadPanel
-                  allowUploads={activeWorkspaceSettings.allow_uploads}
-                  dragUploadActive={dragUploadActive}
-                  onDragEnter={handleUploadDragEnter}
-                  onDragOver={handleUploadDragOver}
-                  onDragLeave={handleUploadDragLeave}
-                  onDrop={handleUploadDrop}
-                  onSubmit={handleUpload}
-                  fileInputRef={fileInputRef}
-                  onFileChange={handleFileChange}
-                  uploadCategory={uploadCategory}
-                  onUploadCategoryChange={setUploadCategory}
-                  categorySuggestions={categorySuggestions}
-                  uploadQueueRunning={uploadQueueRunning}
-                  fileHint={fileHint}
-                  uploadQueueSummary={uploadQueueSummary}
-                  uploadQueueExpanded={uploadQueueExpanded}
-                  onToggleUploadQueueExpanded={() => setUploadQueueExpanded((prev) => !prev)}
-                  onRetryFailedUploads={handleRetryFailedUploads}
-                  canRetryFailedUploads={canRetryFailedUploads}
-                  onClearCompletedUploads={handleClearCompletedUploads}
-                  canClearUploadQueue={canClearUploadQueue}
-                  uploadQueue={uploadQueue}
-                />
-
-                <section className="notion-files-results notion-panel-block notion-results-panel" aria-labelledby="docs-title">
+                  <section className="notion-files-results" aria-labelledby="docs-title">
                   <div className="notion-files-results-head">
                     <div className="list-head">
                       <h2 id="docs-title" className="section-title">
@@ -6935,47 +7003,6 @@ export default function HomePage() {
                           ))}
                         </select>
                       </label>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => fetchDocuments(documentsPage)}
-                        disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                      >
-                        {documentsLoading ? 'Refreshing...' : 'Refresh'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={() => openImageOcrPicker()}
-                        disabled={
-                          !isLoggedIn ||
-                          isExtracting ||
-                          bulkActionLoading ||
-                          selectAllMatchedLoading ||
-                          !activeWorkspaceSettings.allow_ai_tools ||
-                          !activeWorkspaceSettings.allow_ocr
-                        }
-                        title={
-                          !isLoggedIn
-                            ? 'Please sign in'
-                            : !activeWorkspaceSettings.allow_ai_tools
-                              ? 'AI is disabled in workspace settings'
-                              : !activeWorkspaceSettings.allow_ocr
-                                ? 'OCR is disabled in workspace settings'
-                                : undefined
-                        }
-                      >
-                        {isExtracting ? 'Running OCR...' : 'Image OCR'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={handleOpenTrashModal}
-                        disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
-                        title="Open Trash"
-                      >
-                        Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
-                      </button>
                     </div>
                   </div>
                   <div className="notion-files-summary-bar">
@@ -7257,6 +7284,7 @@ export default function HomePage() {
                     </div>
                   )}
                 </section>
+              </section>
               </div>
             </section>
           )}

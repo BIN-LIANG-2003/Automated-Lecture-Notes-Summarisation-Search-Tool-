@@ -4070,13 +4070,7 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .notion-files-layout{
-  display:grid;
-  grid-template-columns:minmax(290px, 340px) minmax(0, 1fr);
-  grid-template-areas:
-    "tools upload"
-    "tools results";
-  align-items:start;
-  gap:18px;
+  display:block;
 }
 
 .notion-files-tools{
@@ -4107,6 +4101,63 @@ body.notion-home-body .skip-link:focus-visible{
   line-height:1.4;
 }
 
+.notion-files-workbench{
+  display:grid;
+  gap:16px;
+}
+
+.notion-files-workbench-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+  flex-wrap:wrap;
+  padding-bottom:2px;
+}
+
+.notion-files-workbench-copy{
+  display:grid;
+  gap:4px;
+  min-width:0;
+}
+
+.notion-files-workbench-copy p{
+  margin:0;
+  color:#66758d;
+  font-size:14px;
+  line-height:1.5;
+}
+
+.notion-files-actionbar{
+  display:flex;
+  align-items:flex-start;
+  justify-content:flex-end;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
+.notion-files-actionbar-group{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.notion-files-actionbar-group-secondary{
+  border:1px solid #e1e8f5;
+  border-radius:12px;
+  background:#f8fbff;
+  padding:6px 8px;
+}
+
+.notion-files-actionbar-label{
+  font-size:11px;
+  font-weight:700;
+  color:#61708a;
+  letter-spacing:.03em;
+  text-transform:uppercase;
+}
+
 #upload-form{
   display:grid;
   gap:12px;
@@ -4135,6 +4186,10 @@ body.notion-home-body .skip-link:focus-visible{
   color:#53617a;
   letter-spacing:.03em;
   text-transform:uppercase;
+}
+
+.notion-saved-views-head .notion-settings-help{
+  margin:0;
 }
 
 .notion-saved-views-actions{
@@ -4210,6 +4265,15 @@ body.notion-home-body .skip-link:focus-visible{
   margin:0;
 }
 
+.notion-upload-tray{
+  border-top:1px solid #e7edf8;
+  padding-top:16px;
+}
+
+.notion-upload-tray-head{
+  margin-bottom:8px;
+}
+
 .notion-upload-panel{
   grid-area:upload;
 }
@@ -4218,8 +4282,25 @@ body.notion-home-body .skip-link:focus-visible{
   grid-area:results;
 }
 
+.notion-files-filter-shell{
+  border-top:1px solid #e7edf8;
+  padding-top:16px;
+  display:grid;
+  gap:10px;
+}
+
+.notion-files-filter-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+}
+
 .notion-files-results{
   min-height:560px;
+  border-top:1px solid #e7edf8;
+  padding-top:16px;
 }
 
 .notion-filter-search-row{
@@ -4462,6 +4543,29 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-upload-dropzone.is-disabled{
   opacity:0.66;
+}
+
+.notion-upload-dropzone.is-embedded{
+  background:#f9fbff;
+}
+
+.notion-upload-form-embedded{
+  grid-template-columns:auto minmax(0, 1fr) auto;
+  align-items:end;
+  gap:8px 12px;
+}
+
+.notion-upload-form-embedded label{
+  margin:0;
+}
+
+.notion-upload-form-embedded .file-picker-text,
+.notion-upload-form-embedded .notion-upload-queue{
+  grid-column:1 / -1;
+}
+
+.uploader-actions.is-embedded{
+  align-self:end;
 }
 
 .notion-upload-drop-hint{
@@ -5729,16 +5833,22 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 @media (max-width: 1120px){
-  .notion-files-layout{
-    grid-template-columns:1fr;
-    grid-template-areas:
-      "tools"
-      "upload"
-      "results";
+  .notion-files-workbench-head{
+    flex-direction:column;
+    align-items:stretch;
   }
 
-  .notion-files-tools{
-    position:static;
+  .notion-files-actionbar{
+    justify-content:flex-start;
+  }
+
+  .notion-upload-form-embedded{
+    grid-template-columns:1fr;
+  }
+
+  .notion-upload-form-embedded .file-picker-text,
+  .notion-upload-form-embedded .notion-upload-queue{
+    grid-column:auto;
   }
 
   .cards-compact .document-card{
@@ -5852,9 +5962,30 @@ body.notion-home-body .skip-link:focus-visible{
     align-items:stretch;
   }
 
+  .notion-files-filter-head{
+    flex-direction:column;
+    align-items:stretch;
+  }
+
   .notion-files-summary-bar{
     flex-direction:column;
     align-items:stretch;
+  }
+
+  .notion-files-actionbar-group{
+    width:100%;
+  }
+
+  .notion-files-actionbar-group-secondary{
+    padding:8px;
+  }
+
+  .notion-files-actionbar-group .btn{
+    flex:1 1 calc(50% - 4px);
+  }
+
+  .notion-files-actionbar-label{
+    width:100%;
   }
 
   .notion-summary-actions{
