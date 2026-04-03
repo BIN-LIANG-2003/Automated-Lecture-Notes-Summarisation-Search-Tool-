@@ -67,6 +67,30 @@ def seed_app_data():
                 '',
             ),
         )
+        conn.execute(
+            '''
+            INSERT INTO document_share_links (
+                document_id,
+                workspace_id,
+                token,
+                created_by,
+                status,
+                expires_at,
+                created_at,
+                last_access_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                1,
+                'ws-e2e',
+                'graph-share-token',
+                'alice',
+                'active',
+                '2026-12-31T23:59:59',
+                now_iso,
+                '',
+            ),
+        )
         conn.commit()
     finally:
         conn.close()

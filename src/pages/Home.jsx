@@ -34,7 +34,14 @@ import {
   revokeAllDocumentShareLinks,
   revokeDocumentShareLink,
 } from '../lib/shareLinks.js';
-import { buildSummaryExportText, downloadTextFile } from '../lib/summaryExport.js';
+import {
+  buildSummaryExportFilename,
+  buildSummaryExportText,
+  downloadPlainTextPdf,
+  downloadSummaryPdf,
+  downloadTextFile,
+  openSummaryEmailDraft,
+} from '../lib/summaryExport.js';
 import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_SIDEBAR_RECENT_LIMIT = 10;
@@ -3477,8 +3484,22 @@ export default function HomePage() {
     }
     const output = buildSummaryExportText(analysisResult);
     if (!output) return;
-    const stamp = new Date().toISOString().slice(0, 10);
-    downloadTextFile(`studyhub-summary-${stamp}.txt`, output);
+    downloadTextFile(buildSummaryExportFilename('txt'), output);
+  };
+
+  const handleExportSummaryPdf = async () => {
+    if (!activeWorkspaceSettings.allow_export) {
+      showToast('Export is disabled in this workspace settings.', 'warning');
+      return;
+    }
+    const output = buildSummaryExportText(analysisResult);
+    if (!output) return;
+    try {
+      await downloadSummaryPdf(buildSummaryExportFilename('pdf'), analysisResult);
+    } catch (error) {
+      console.error('Failed to export summary PDF', error);
+      showToast('PDF export failed. Please try TXT export instead.', 'error');
+    }
   };
 
   const handleEmailSummary = () => {
@@ -3486,11 +3507,7 @@ export default function HomePage() {
       showToast('Export is disabled in this workspace settings.', 'warning');
       return;
     }
-    const output = buildSummaryExportText(analysisResult);
-    if (!output) return;
-    const subject = encodeURIComponent('StudyHub Note Summary');
-    const body = encodeURIComponent(output.slice(0, 7000));
-    window.open(`mailto:?subject=${subject}&body=${body}`, '_blank', 'noopener,noreferrer');
+    openSummaryEmailDraft(analysisResult);
   };
 
   const handleOpenSummaryCenter = () => {
@@ -3561,12 +3578,8 @@ export default function HomePage() {
     );
   };
 
-  const handleExportSummaryHistoryTxt = () => {
-    if (!summaryHistoryItems.length) {
-      showToast('No summary items to export.', 'warning');
-      return;
-    }
-    const content = summaryHistoryItems
+  const buildSummaryHistoryExportContent = () =>
+    summaryHistoryItems
       .map((entry, index) => {
         const keywords = Array.isArray(entry.keywords) ? entry.keywords.join(', ') : '';
         const keySentences = Array.isArray(entry.keySentences) ? entry.keySentences.join('\n') : '';
@@ -3587,9 +3600,35 @@ export default function HomePage() {
         ].join('\n');
       })
       .join('\n\n----------------------------------------\n\n');
+
+  const handleExportSummaryHistoryTxt = () => {
+    if (!summaryHistoryItems.length) {
+      showToast('No summary items to export.', 'warning');
+      return;
+    }
+    const content = buildSummaryHistoryExportContent();
     const stamp = new Date().toISOString().slice(0, 10);
     downloadTextFile(`studyhub-summary-history-${stamp}.txt`, content);
     showWorkspaceToast('summary', 'Summary history exported as TXT.', 'success');
+  };
+
+  const handleExportSummaryHistoryPdf = async () => {
+    if (!summaryHistoryItems.length) {
+      showToast('No summary items to export.', 'warning');
+      return;
+    }
+    const stamp = new Date().toISOString().slice(0, 10);
+    try {
+      await downloadPlainTextPdf(
+        `studyhub-summary-history-${stamp}.pdf`,
+        'StudyHub Summary History',
+        buildSummaryHistoryExportContent()
+      );
+      showWorkspaceToast('summary', 'Summary history exported as PDF.', 'success');
+    } catch (error) {
+      console.error('Failed to export summary history PDF', error);
+      showToast('PDF export failed. Please try TXT export instead.', 'error');
+    }
   };
 
   const handleExportSummaryHistoryJson = () => {
@@ -6303,6 +6342,7 @@ export default function HomePage() {
                 onAnalyzeText={handleAnalyzeText}
                 onCopySummary={handleCopySummary}
                 onExportSummary={handleExportSummary}
+                onExportSummaryPdf={handleExportSummaryPdf}
                 onEmailSummary={handleEmailSummary}
                 onOpenSummaryCenter={handleOpenSummaryCenter}
                 isExtracting={isExtracting}
@@ -7133,6 +7173,7 @@ export default function HomePage() {
         expandedIds={summaryCenterExpandedIds}
         actionId={summaryCenterActionId}
         onExportTxt={handleExportSummaryHistoryTxt}
+        onExportPdf={handleExportSummaryHistoryPdf}
         onExportJson={handleExportSummaryHistoryJson}
         onClearAll={handleClearSummaryHistory}
         onApplyItem={handleApplySummaryHistoryItem}

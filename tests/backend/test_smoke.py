@@ -4,13 +4,14 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta
 
+from docx import Document as DocxDocument
 from werkzeug.security import generate_password_hash
 
 from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend.security import create_auth_token
-from backend.utils import row_to_dict, utcnow_iso
+from backend.utils import parse_int, row_to_dict, utcnow_iso
 from backend.workspace_domain import ensure_owner_membership, workspace_settings_to_json
 
 
@@ -90,6 +91,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         file_type='txt',
         workspace_id=None,
         filename='document.txt',
+        uploaded_at='',
     ):
         conn = self._connection()
         try:
@@ -113,7 +115,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 (
                     filename,
                     title,
-                    utcnow_iso(),
+                    uploaded_at or utcnow_iso(),
                     file_type,
                     content,
                     '',
@@ -130,10 +132,18 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         finally:
             conn.close()
 
-    def _insert_share_link(self, document_id, token='public-share-token'):
+    def _insert_share_link(
+        self,
+        document_id,
+        token='public-share-token',
+        *,
+        status='active',
+        expires_at='',
+        workspace_id='',
+    ):
         conn = self._connection()
         try:
-            expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+            safe_expires_at = expires_at or (datetime.utcnow() + timedelta(days=7)).isoformat()
             conn.execute(
                 '''
                 INSERT INTO document_share_links (
@@ -149,11 +159,11 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 ''',
                 (
                     document_id,
-                    '',
+                    workspace_id,
                     token,
                     self.username,
-                    'active',
-                    expires_at,
+                    status,
+                    safe_expires_at,
                     utcnow_iso(),
                     '',
                 ),
@@ -162,6 +172,15 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             return token
         finally:
             conn.close()
+
+    def _build_docx_upload(self, *paragraphs):
+        document = DocxDocument()
+        for paragraph in paragraphs or ['']:
+            document.add_paragraph(str(paragraph))
+        buffer = io.BytesIO()
+        document.save(buffer)
+        buffer.seek(0)
+        return buffer
 
     def test_documents_requires_auth_and_returns_items_when_authenticated(self):
         self._insert_document(
@@ -231,6 +250,64 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['title'], 'Shared Revision Sheet')
         self.assertEqual(payload['share']['token'], share_token)
 
+    def test_expired_and_revoked_share_links_are_rejected(self):
+        expired_doc_id = self._insert_document(
+            'Expired Shared Note',
+            'expired share smoke content',
+            workspace_id='',
+            filename='expired-shared-note.txt',
+        )
+        revoked_doc_id = self._insert_document(
+            'Revoked Shared Note',
+            'revoked share smoke content',
+            workspace_id='',
+            filename='revoked-shared-note.txt',
+        )
+        expired_token = self._insert_share_link(
+            expired_doc_id,
+            token='expired-share-token',
+            status='active',
+            expires_at=(datetime.utcnow() - timedelta(days=1)).isoformat(),
+        )
+        revoked_token = self._insert_share_link(
+            revoked_doc_id,
+            token='revoked-share-token',
+            status='revoked',
+        )
+
+        expired_response = self.client.get(f'/api/share-links/{expired_token}')
+        self.assertEqual(expired_response.status_code, 403)
+        self.assertIn('expired', str(expired_response.get_json().get('error', '')).lower())
+
+        revoked_response = self.client.get(f'/api/share-links/{revoked_token}')
+        self.assertEqual(revoked_response.status_code, 403)
+        self.assertIn('no longer active', str(revoked_response.get_json().get('error', '')).lower())
+
+        conn = self._connection()
+        try:
+            row = row_to_dict(
+                conn.execute(
+                    'SELECT status FROM document_share_links WHERE token = ? LIMIT 1',
+                    (expired_token,),
+                ).fetchone()
+            ) or {}
+            self.assertEqual(str(row.get('status') or '').strip().lower(), 'expired')
+        finally:
+            conn.close()
+
+    def test_upload_requires_auth(self):
+        response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (io.BytesIO(b'unauthenticated upload attempt'), 'unauth-upload.txt'),
+                'category': 'Computer Science',
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 401)
+        self.assertIn('auth token', str(response.get_json().get('error', '')).lower())
+
     def test_upload_text_file_creates_document_visible_in_listing(self):
         upload_response = self.client.post(
             '/api/documents/upload',
@@ -252,6 +329,124 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'upload-smoke.txt')
+
+    def test_upload_docx_file_creates_searchable_document(self):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_docx_upload(
+                        'docxsmoke summary coverage',
+                        'This DOCX fixture proves parsing stays wired for smoke tests.',
+                    ),
+                    'upload-docx-smoke.docx',
+                ),
+                'category': 'Computer Science',
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+
+        response = self.client.get(
+            '/api/documents?include_meta=1&q=docxsmoke',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['total'], 1)
+        self.assertEqual(payload['items'][0]['title'], 'upload-docx-smoke.docx')
+        self.assertEqual(str(payload['items'][0]['file_type']).lower(), 'docx')
+
+    def test_search_edge_case_queries_do_not_error(self):
+        self._insert_document(
+            'C++ Primer',
+            'c++ templates pointers references smoke coverage',
+            filename='cpp-primer.txt',
+        )
+        self._insert_document(
+            'AI NLP Notes',
+            'ai nlp transformers language models smoke coverage',
+            tags='ai,nlp',
+            filename='ai-nlp-notes.txt',
+        )
+        self._insert_document(
+            'Machine Learning Basics',
+            'machine-learning regression clustering smoke coverage',
+            filename='machine-learning-basics.txt',
+        )
+        self._insert_document(
+            'General Study Notes',
+            'baseline notes for whitespace search coverage',
+            filename='general-study-notes.txt',
+        )
+
+        cases = [
+            ('C++', 1),
+            ('AI/NLP', 1),
+            ('machine-learning', 1),
+            ('   \n\t  ', 4),
+        ]
+        for query, minimum_total in cases:
+            with self.subTest(query=query):
+                response = self.client.get(
+                    '/api/documents',
+                    headers=self._auth_headers(),
+                    query_string={
+                        'include_meta': '1',
+                        'include_facets': '1',
+                        'q': query,
+                    },
+                )
+                self.assertEqual(response.status_code, 200)
+                payload = response.get_json()
+                self.assertIsInstance(payload.get('items'), list)
+                self.assertIsInstance(payload.get('facets'), dict)
+                self.assertGreaterEqual(parse_int(payload.get('total', 0), 0, 0), minimum_total)
+
+    def test_search_pagination_is_stable_for_same_query_across_offsets(self):
+        self._insert_document(
+            'Graph A',
+            'graph smoke pagination content',
+            filename='graph-a.txt',
+            uploaded_at='2026-01-01T10:00:00',
+        )
+        self._insert_document(
+            'Graph B',
+            'graph smoke pagination content',
+            filename='graph-b.txt',
+            uploaded_at='2026-01-01T10:00:00',
+        )
+        self._insert_document(
+            'Graph C',
+            'graph smoke pagination content',
+            filename='graph-c.txt',
+            uploaded_at='2026-01-01T10:00:00',
+        )
+
+        titles = []
+        totals = []
+        for offset in (0, 1, 2):
+            response = self.client.get(
+                '/api/documents',
+                headers=self._auth_headers(),
+                query_string={
+                    'include_meta': '1',
+                    'q': 'graph',
+                    'sort': 'title_asc',
+                    'limit': '1',
+                    'offset': str(offset),
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            payload = response.get_json()
+            totals.append(payload.get('total'))
+            self.assertEqual(len(payload.get('items') or []), 1)
+            titles.append(payload['items'][0]['title'])
+
+        self.assertEqual(totals, [3, 3, 3])
+        self.assertEqual(titles, ['Graph A', 'Graph B', 'Graph C'])
 
 
 if __name__ == '__main__':

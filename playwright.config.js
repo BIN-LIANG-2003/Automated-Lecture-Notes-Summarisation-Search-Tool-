@@ -1,14 +1,26 @@
 import { defineConfig } from '@playwright/test';
 
+const isCI = Boolean(process.env.CI);
+
 export default defineConfig({
   testDir: './tests/e2e',
+  outputDir: 'test-results',
   timeout: 30_000,
   expect: {
     timeout: 10_000,
   },
+  reporter: isCI
+    ? [
+        ['line'],
+        ['html', { open: 'never', outputFolder: 'playwright-report' }],
+      ]
+    : 'list',
   use: {
     baseURL: 'http://127.0.0.1:5001',
     headless: true,
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
+    video: isCI ? 'retain-on-failure' : 'off',
   },
   webServer: {
     command:

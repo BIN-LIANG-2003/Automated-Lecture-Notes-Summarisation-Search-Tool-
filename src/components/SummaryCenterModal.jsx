@@ -33,6 +33,7 @@ export default function SummaryCenterModal({
   expandedIds,
   actionId,
   onExportTxt,
+  onExportPdf,
   onExportJson,
   onClearAll,
   onApplyItem,
@@ -183,6 +184,9 @@ export default function SummaryCenterModal({
         <div className="notion-summary-center-actions">
           <button type="button" className="btn" onClick={onExportTxt} disabled={!items.length}>
             Export TXT
+          </button>
+          <button type="button" className="btn" onClick={onExportPdf} disabled={!items.length}>
+            Export PDF
           </button>
           <button type="button" className="btn" onClick={onExportJson} disabled={!items.length}>
             Export JSON

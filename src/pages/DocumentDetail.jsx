@@ -16,7 +16,13 @@ import {
   revokeAllDocumentShareLinks,
   revokeDocumentShareLink,
 } from '../lib/shareLinks.js';
-import { buildSummaryExportText, downloadTextFile } from '../lib/summaryExport.js';
+import {
+  buildSummaryExportFilename,
+  buildSummaryExportText,
+  downloadSummaryPdf,
+  downloadTextFile,
+  openSummaryEmailDraft,
+} from '../lib/summaryExport.js';
 import { buildSummaryDiagnostics, formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
@@ -449,7 +455,30 @@ export default function DocumentDetail() {
     }
     const output = buildSummaryExportText(analysisResult);
     if (!output) return;
-    downloadTextFile(`studyhub-summary-${new Date().toISOString().slice(0, 10)}.txt`, output);
+    downloadTextFile(buildSummaryExportFilename('txt'), output);
+  };
+
+  const handleExportSummaryPdf = async () => {
+    if (!canExportSummary) {
+      showToast('Export is disabled in this workspace settings.', 'warning');
+      return;
+    }
+    const output = buildSummaryExportText(analysisResult);
+    if (!output) return;
+    try {
+      await downloadSummaryPdf(buildSummaryExportFilename('pdf'), analysisResult);
+    } catch (error) {
+      console.error('Failed to export summary PDF', error);
+      showToast('PDF export failed. Please try TXT export instead.', 'error');
+    }
+  };
+
+  const handleEmailSummary = () => {
+    if (!canExportSummary) {
+      showToast('Export is disabled in this workspace settings.', 'warning');
+      return;
+    }
+    openSummaryEmailDraft(analysisResult);
   };
 
   const handleSaveOcrText = async () => {
@@ -973,6 +1002,22 @@ export default function DocumentDetail() {
                       disabled={!canExportSummary}
                     >
                       Export TXT
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={handleExportSummaryPdf}
+                      disabled={!canExportSummary}
+                    >
+                      Export PDF
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={handleEmailSummary}
+                      disabled={!canExportSummary}
+                    >
+                      Share by Email
                     </button>
                   </div>
                 </article>

@@ -11,6 +11,7 @@ export default function AIAssistantPanel({
   onAnalyzeText,
   onCopySummary,
   onExportSummary,
+  onExportSummaryPdf,
   onEmailSummary,
   onOpenSummaryCenter,
   isExtracting = false,
@@ -143,6 +144,14 @@ export default function AIAssistantPanel({
                   disabled={!allowExport}
                 >
                   Export TXT
+                </button>
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onExportSummaryPdf}
+                  disabled={!allowExport}
+                >
+                  Export PDF
                 </button>
                 <button
                   type="button"
