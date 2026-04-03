@@ -793,11 +793,39 @@ a{ color:inherit; }
   flex:1 1 auto;
   min-width:0;
 }
+.document-detail-head-side{
+  display:grid;
+  gap:8px;
+  justify-items:end;
+  flex:0 1 420px;
+  min-width:min(320px, 100%);
+}
 .document-detail-head-actions{
   display:flex;
   gap:8px;
   flex-shrink:0;
   flex-wrap:wrap;
+  justify-content:flex-end;
+}
+.document-detail-share-status{
+  display:flex;
+  align-items:center;
+  justify-content:flex-end;
+  gap:8px;
+  flex-wrap:wrap;
+}
+.document-share-pill.muted{
+  background:#f5f7fb;
+  border-color:#dce4f1;
+  color:#5a6b86;
+}
+.document-detail-share-hint{
+  margin:0;
+  max-width:420px;
+  color:#667084;
+  font-size:12px;
+  line-height:1.55;
+  text-align:right;
 }
 .document-detail-meta{ line-height:1.55; }
 .document-detail-preview-image{
@@ -6562,6 +6590,21 @@ body.notion-home-body .skip-link:focus-visible{
 
   .document-detail-head-actions{
     width:100%;
+  }
+
+  .document-detail-head-side{
+    width:100%;
+    min-width:0;
+    justify-items:stretch;
+  }
+
+  .document-detail-share-status{
+    justify-content:flex-start;
+  }
+
+  .document-detail-share-hint{
+    max-width:none;
+    text-align:left;
   }
 
   .document-share-actions{

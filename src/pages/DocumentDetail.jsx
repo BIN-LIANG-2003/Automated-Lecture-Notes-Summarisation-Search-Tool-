@@ -44,6 +44,27 @@ const getLinkSharingModeLabel = (mode) => {
   return 'Restricted';
 };
 
+const getShareLinkDisabledReason = ({
+  isSharedView = false,
+  linkSharingMode = 'workspace',
+  username = '',
+  canManageShareLinks = false,
+}) => {
+  if (isSharedView) {
+    return 'Share links cannot be created from a shared-document route.';
+  }
+  if (String(linkSharingMode || '').trim().toLowerCase() === 'restricted') {
+    return 'Link sharing is restricted in workspace settings.';
+  }
+  if (!String(username || '').trim()) {
+    return 'Sign in with a workspace account to create share links.';
+  }
+  if (!canManageShareLinks) {
+    return 'Share link creation is owner-only in current workspace settings.';
+  }
+  return '';
+};
+
 const normalizeDocument = (raw) => {
   if (!raw || typeof raw !== 'object') return null;
 
@@ -267,7 +288,27 @@ export default function DocumentDetail() {
   if (shareToken) downloadFileParams.set('share_token', shareToken);
   const downloadUrl = `/api/documents/${document.id}/file${downloadFileParams.toString() ? `?${downloadFileParams.toString()}` : ''}`;
   const isImage = isImageFileType(document.fileType);
+  const isPdf = String(document.fileType || '').toLowerCase() === 'pdf';
   const shareModeLabel = getLinkSharingModeLabel(document.linkSharingMode);
+  const shareLinkDisabledReason = getShareLinkDisabledReason({
+    isSharedView,
+    linkSharingMode: document.linkSharingMode,
+    username,
+    canManageShareLinks,
+  });
+  const shareLinkDisabled = Boolean(shareLinkDisabledReason);
+  const shareLinkHint = shareLinkDisabled
+    ? shareLinkDisabledReason
+    : isPdf
+      ? 'PDF files support share links here. Creating one copies the new link to your clipboard.'
+      : 'Create a share link from this detail page and copy it to your clipboard.';
+  const shareAvailabilityLabel = shareLinkDisabled
+    ? (document.linkSharingMode === 'restricted'
+      ? 'Sharing blocked'
+      : !username
+        ? 'Sign-in required'
+        : 'Owner-only')
+    : 'Share link available';
 
   const refreshShareLinks = async (targetDocId = document?.id) => {
     const id = Number(targetDocId);
@@ -537,16 +578,8 @@ export default function DocumentDetail() {
   };
 
   const handleCopyShareLink = async () => {
-    if (document.linkSharingMode === 'restricted') {
-      showToast('Link sharing is restricted in this workspace.', 'warning');
-      return;
-    }
-    if (!canManageShareLinks) {
-      showToast('Only workspace owner can create share links in current settings.', 'warning');
-      return;
-    }
-    if (!username) {
-      showToast('Please sign in to create a share link.', 'warning');
+    if (shareLinkDisabledReason) {
+      showToast(shareLinkDisabledReason, 'warning');
       return;
     }
     try {
@@ -755,23 +788,33 @@ export default function DocumentDetail() {
             <div className="document-meta document-detail-meta">Tags: {document.tags?.length ? document.tags.join(', ') : 'None'}</div>
           </div>
           {!isSharedView && (
-            <div className="document-detail-head-actions">
-              <button
-                type="button"
-                className="btn"
-                onClick={handleCopyShareLink}
-                disabled={document.linkSharingMode === 'restricted' || !username || !canManageShareLinks}
-              >
-                Share Link
-              </button>
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={handleDownloadFile}
-                disabled={isDownloadingFile}
-              >
-                {isDownloadingFile ? 'Downloading...' : 'Download'}
-              </button>
+            <div className="document-detail-head-side">
+              <div className="document-detail-head-actions">
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={handleCopyShareLink}
+                  disabled={shareLinkDisabled}
+                  title={shareLinkHint}
+                >
+                  Share Link
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleDownloadFile}
+                  disabled={isDownloadingFile}
+                >
+                  {isDownloadingFile ? 'Downloading...' : 'Download'}
+                </button>
+              </div>
+              <div className="document-detail-share-status" aria-live="polite">
+                <span className="document-share-pill">{shareModeLabel}</span>
+                <span className={`document-share-pill${shareLinkDisabled ? ' muted' : ' success'}`}>
+                  {shareAvailabilityLabel}
+                </span>
+              </div>
+              <p className="document-detail-share-hint">{shareLinkHint}</p>
             </div>
           )}
         </header>
@@ -856,10 +899,6 @@ export default function DocumentDetail() {
             )}
           </section>
         )}
-        {username && !canManageShareLinks && (
-          <p className="muted tiny">Share link management is owner-only in current workspace settings.</p>
-        )}
-
         <section className="document-body">
           {isImage ? (
             <img src={fileUrl} alt="Preview" className="document-detail-preview-image" />
