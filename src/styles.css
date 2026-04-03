@@ -1808,6 +1808,51 @@ body.notion-home-body .skip-link:focus-visible{
   padding:20px;
 }
 
+.notion-summary-result-modal,
+.notion-ocr-result-modal{
+  display:grid;
+  gap:14px;
+}
+
+.notion-summary-result-head{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+}
+
+.notion-summary-result-head h3{
+  margin:0;
+}
+
+.notion-ocr-modal-toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:10px;
+}
+
+.notion-ocr-modal-status{
+  display:grid;
+  gap:4px;
+}
+
+.notion-ocr-modal-status strong{
+  color:#1f2937;
+  font-size:14px;
+}
+
+.notion-ocr-modal-status span{
+  color:#64748b;
+  font-size:12px;
+}
+
+.notion-ocr-format-select{
+  min-width:140px;
+}
+
 .notion-settings-modal{
   display:grid;
   gap:12px;

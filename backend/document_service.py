@@ -32,6 +32,64 @@ from .utils import normalize_document_category, parse_bool, parse_int, row_to_di
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
 
+def _normalize_ocr_import_format(value):
+    safe_value = str(value or 'txt').strip().lower()
+    if safe_value in ('txt', 'docx', 'pdf'):
+        return safe_value
+    raise ValueError('file_format must be one of txt, docx, or pdf')
+
+
+def _create_ocr_note_document(
+    conn,
+    *,
+    username,
+    workspace_id,
+    title,
+    text,
+    category='',
+    file_format='txt',
+):
+    safe_text = str(text or '').replace('\r\n', '\n').replace('\r', '\n').strip()
+    if not safe_text:
+        raise ValueError('No text provided')
+
+    safe_format = _normalize_ocr_import_format(file_format)
+    safe_title = str(title or '').strip() or 'OCR Note'
+    safe_category = normalize_document_category(category or '') or DEFAULT_DOCUMENT_CATEGORY
+    content_html = sanitize_editor_html(plaintext_to_html(safe_text))
+    file_bytes, mimetype = build_editable_file_bytes(safe_format, safe_text, content_html)
+    unique_filename = f'{uuid.uuid4().hex}.{safe_format}'
+
+    try:
+        write_file_bytes_to_storage(unique_filename, file_bytes, mimetype)
+        insert_cursor = conn.execute(
+            '''
+            INSERT INTO documents (
+                filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                unique_filename,
+                safe_title,
+                datetime.utcnow().isoformat(),
+                safe_format,
+                safe_text,
+                content_html if safe_format in ('txt', 'docx') else '',
+                username,
+                '',
+                safe_category,
+                workspace_id,
+            ),
+        )
+        conn.commit()
+        new_doc_id = insert_cursor.lastrowid
+        new_doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (new_doc_id,))
+        return new_doc_id, row_to_dict(new_doc_cursor.fetchone()) or {}
+    except Exception:
+        remove_document_file_from_storage(unique_filename)
+        raise
+
+
 def get_documents():
     username = get_authenticated_username()
     workspace_id = (request.args.get('workspace_id') or '').strip()
@@ -702,6 +760,7 @@ def import_document_text(doc_id):
     text = str(data.get('text') or '')
     text = text.replace('\r\n', '\n').replace('\r', '\n').strip()
     custom_title = str(data.get('title') or '').strip()
+    file_format = _normalize_ocr_import_format(data.get('file_format') or data.get('format') or 'txt')
 
     if not username:
         return jsonify({'error': 'Please sign in to save OCR text as a note'}), 401
@@ -712,7 +771,6 @@ def import_document_text(doc_id):
     if not conn:
         return jsonify({'error': 'Database connection failed'}), 500
 
-    unique_filename = ''
     try:
         cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
         doc = cursor.fetchone()
@@ -735,53 +793,81 @@ def import_document_text(doc_id):
             (doc.get('category') if hasattr(doc, 'get') else doc['category']) or ''
         )
         note_title = custom_title or f'{source_title} OCR Note'
-        content_html = sanitize_editor_html(plaintext_to_html(text))
-        file_bytes, mimetype = build_editable_file_bytes('txt', text, content_html)
-
-        unique_filename = f'{uuid.uuid4().hex}.txt'
-        write_file_bytes_to_storage(unique_filename, file_bytes, mimetype)
-
-        insert_cursor = conn.execute(
-            '''
-            INSERT INTO documents (
-                filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                unique_filename,
-                note_title,
-                datetime.utcnow().isoformat(),
-                'txt',
-                text,
-                content_html,
-                username,
-                '',
-                source_category or DEFAULT_DOCUMENT_CATEGORY,
-                workspace_id,
-            ),
+        new_doc_id, new_doc = _create_ocr_note_document(
+            conn,
+            username=username,
+            workspace_id=workspace_id,
+            title=note_title,
+            text=text,
+            category=source_category or DEFAULT_DOCUMENT_CATEGORY,
+            file_format=file_format,
         )
-        conn.commit()
-
-        new_doc_id = insert_cursor.lastrowid
-        new_doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (new_doc_id,))
-        new_doc = new_doc_cursor.fetchone()
         return jsonify({
             'message': 'OCR note saved successfully',
             'new_doc_id': new_doc_id,
-            'document': row_to_dict(new_doc) or {},
+            'document': new_doc,
         }), 201
     except ValueError as e:
-        if unique_filename:
-            remove_document_file_from_storage(unique_filename)
         return jsonify({'error': str(e)}), 400
     except RuntimeError as e:
-        if unique_filename:
-            remove_document_file_from_storage(unique_filename)
         return jsonify({'error': str(e)}), 500
     except Exception as e:
-        if unique_filename:
-            remove_document_file_from_storage(unique_filename)
         print(f"OCR text import failed: {e}")
+        return jsonify({'error': 'Failed to save OCR note'}), 500
+    finally:
+        conn.close()
+
+
+def import_workspace_text():
+    data = request.get_json(silent=True) or {}
+    username = get_authenticated_username()
+    text = str(data.get('text') or '')
+    text = text.replace('\r\n', '\n').replace('\r', '\n').strip()
+    custom_title = str(data.get('title') or '').strip()
+    requested_workspace_id = str(data.get('workspace_id') or '').strip()
+    requested_category = normalize_document_category(data.get('category') or '')
+    file_format = _normalize_ocr_import_format(data.get('file_format') or data.get('format') or 'txt')
+
+    if not username:
+        return jsonify({'error': 'Please sign in to save OCR text as a note'}), 401
+    if not text:
+        return jsonify({'error': 'No text provided'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        workspace_id = requested_workspace_id or get_or_create_default_workspace_id(conn, username)
+        if workspace_id and not workspace_belongs_to_user(conn, workspace_id, username):
+            return jsonify({'error': 'Only workspace members can save OCR results as notes'}), 403
+
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        note_title = custom_title or 'Image OCR Note'
+        category = requested_category or workspace_settings.get('default_category') or DEFAULT_DOCUMENT_CATEGORY
+        new_doc_id, new_doc = _create_ocr_note_document(
+            conn,
+            username=username,
+            workspace_id=workspace_id,
+            title=note_title,
+            text=text,
+            category=category,
+            file_format=file_format,
+        )
+        return jsonify({
+            'message': 'OCR note saved successfully',
+            'new_doc_id': new_doc_id,
+            'document': new_doc,
+        }), 201
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except RuntimeError as e:
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        print(f"Workspace OCR text import failed: {e}")
         return jsonify({'error': 'Failed to save OCR note'}), 500
     finally:
         conn.close()

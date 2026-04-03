@@ -101,6 +101,8 @@ def normalize_workspace_settings(raw_settings):
     base['auto_categorize'] = parse_bool(source.get('auto_categorize', base['auto_categorize']), True)
 
     default_home_tab = str(source.get('default_home_tab', base['default_home_tab']) or '').strip().lower()
+    if default_home_tab == 'ai':
+        default_home_tab = 'files'
     if default_home_tab not in WORKSPACE_HOME_TABS:
         default_home_tab = DEFAULT_WORKSPACE_SETTINGS['default_home_tab']
     base['default_home_tab'] = default_home_tab

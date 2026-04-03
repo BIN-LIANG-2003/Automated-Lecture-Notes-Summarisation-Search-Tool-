@@ -5,6 +5,7 @@ import unittest
 from datetime import datetime, timedelta
 
 from docx import Document as DocxDocument
+from reportlab.pdfgen import canvas
 from werkzeug.security import generate_password_hash
 
 from backend import create_app
@@ -179,6 +180,17 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             document.add_paragraph(str(paragraph))
         buffer = io.BytesIO()
         document.save(buffer)
+        buffer.seek(0)
+        return buffer
+
+    def _build_pdf_upload(self, *lines):
+        buffer = io.BytesIO()
+        pdf = canvas.Canvas(buffer)
+        y = 780
+        for line in lines or ['']:
+            pdf.drawString(72, y, str(line))
+            y -= 18
+        pdf.save()
         buffer.seek(0)
         return buffer
 
@@ -358,6 +370,54 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'upload-docx-smoke.docx')
         self.assertEqual(str(payload['items'][0]['file_type']).lower(), 'docx')
+
+    def test_upload_pdf_file_is_searchable_or_visible_with_pdf_file_type(self):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_pdf_upload(
+                        'pdfsmoke searchable coverage',
+                        'This generated PDF fixture keeps PDF upload smoke coverage lightweight.',
+                    ),
+                    'upload-pdf-smoke.pdf',
+                ),
+                'category': 'Computer Science',
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+
+        search_response = self.client.get(
+            '/api/documents?include_meta=1&q=pdfsmoke',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(search_response.status_code, 200)
+        search_payload = search_response.get_json()
+        matching_items = [
+            item
+            for item in (search_payload.get('items') or [])
+            if item.get('title') == 'upload-pdf-smoke.pdf'
+        ]
+        if matching_items:
+            self.assertEqual(str(matching_items[0]['file_type']).lower(), 'pdf')
+            return
+
+        listing_response = self.client.get(
+            '/api/documents?include_meta=1&sort=newest',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(listing_response.status_code, 200)
+        listing_payload = listing_response.get_json()
+        listed_items = [
+            item
+            for item in (listing_payload.get('items') or [])
+            if item.get('title') == 'upload-pdf-smoke.pdf'
+        ]
+        self.assertTrue(listed_items, 'Uploaded PDF should remain visible in the document listing.')
+        self.assertEqual(str(listed_items[0]['file_type']).lower(), 'pdf')
 
     def test_search_edge_case_queries_do_not_error(self):
         self._insert_document(

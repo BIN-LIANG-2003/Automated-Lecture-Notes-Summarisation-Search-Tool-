@@ -119,7 +119,7 @@ CATEGORY_KEYWORDS = {
 }
 WORKSPACE_SUMMARY_LENGTH_LEVELS = {'short', 'medium', 'long'}
 WORKSPACE_LINK_SHARING_MODES = {'restricted', 'workspace', 'public'}
-WORKSPACE_HOME_TABS = {'home', 'files', 'ai'}
+WORKSPACE_HOME_TABS = {'home', 'files'}
 WORKSPACE_DOCUMENT_LAYOUTS = {'grid', 'compact'}
 WORKSPACE_DOCUMENT_SORTS = {'newest', 'oldest', 'title_asc', 'title_desc'}
 WORKSPACE_DOCUMENT_PAGE_SIZES = {12, 20, 40}

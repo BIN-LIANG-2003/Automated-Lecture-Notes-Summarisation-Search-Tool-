@@ -1,4 +1,10 @@
 const WORKSPACES_STORE_KEY = 'workspaceStateByAccount';
+const normalizeDefaultHomeTab = (value) => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (safe === 'files') return 'files';
+  if (safe === 'ai') return 'files';
+  return 'home';
+};
 const DEFAULT_WORKSPACE_SETTINGS = {
   workspace_icon: '📚',
   description: '',
@@ -62,6 +68,9 @@ export const createWorkspace = (accountName, overrides = {}) => {
     settings: {
       ...DEFAULT_WORKSPACE_SETTINGS,
       ...(overrides.settings && typeof overrides.settings === 'object' ? overrides.settings : {}),
+      default_home_tab: normalizeDefaultHomeTab(
+        overrides.settings?.default_home_tab ?? DEFAULT_WORKSPACE_SETTINGS.default_home_tab
+      ),
     },
     createdAt: overrides.createdAt || now,
   };

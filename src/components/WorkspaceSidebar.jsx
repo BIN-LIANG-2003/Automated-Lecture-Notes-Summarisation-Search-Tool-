@@ -24,11 +24,8 @@ export default function WorkspaceSidebar({
   onAuthAction,
   homeActive,
   filesActive,
-  aiActive,
-  aiDisabled,
   onGoHome,
   onGoFiles,
-  onGoAI,
   showStarredSection,
   starredDocs,
   activeDocId,
@@ -187,16 +184,6 @@ export default function WorkspaceSidebar({
         <button type="button" className={`notion-nav-item ${filesActive ? 'active' : ''}`} onClick={onGoFiles}>
           <span aria-hidden="true">📄</span>
           <span>My Files</span>
-        </button>
-        <button
-          type="button"
-          className={`notion-nav-item ${aiActive ? 'active' : ''}`}
-          onClick={onGoAI}
-          disabled={aiDisabled}
-          title={aiDisabled ? 'AI is disabled in workspace settings' : undefined}
-        >
-          <span aria-hidden="true">✨</span>
-          <span>AI Assistant</span>
         </button>
       </nav>
 

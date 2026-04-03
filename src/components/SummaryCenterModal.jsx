@@ -37,6 +37,8 @@ export default function SummaryCenterModal({
   onExportJson,
   onClearAll,
   onApplyItem,
+  onCopyItem,
+  onEmailItem,
   onOpenItemDocument,
   onRebuildItem,
   onToggleExpanded,
@@ -231,7 +233,13 @@ export default function SummaryCenterModal({
                   )}
                   <div className="notion-summary-history-actions">
                     <button type="button" className="btn btn-primary" onClick={() => onApplyItem(entry)}>
-                      Use in AI Panel
+                      Open Summary
+                    </button>
+                    <button type="button" className="btn" onClick={() => onCopyItem(entry)}>
+                      Copy Summary
+                    </button>
+                    <button type="button" className="btn" onClick={() => onEmailItem(entry)}>
+                      Share by Email
                     </button>
                     <button
                       type="button"

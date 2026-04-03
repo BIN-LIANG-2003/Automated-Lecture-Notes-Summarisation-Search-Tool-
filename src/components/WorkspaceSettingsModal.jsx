@@ -241,7 +241,6 @@ export default function WorkspaceSettingsModal({
                     >
                       <option value="home">Home overview</option>
                       <option value="files">My Files</option>
-                      <option value="ai">AI Assistant</option>
                     </select>
                   </div>
                   <div className="notion-settings-row">

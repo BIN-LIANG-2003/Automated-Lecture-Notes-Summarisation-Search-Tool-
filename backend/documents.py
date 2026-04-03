@@ -60,6 +60,11 @@ def import_document_text(doc_id):
     return document_service.import_document_text(doc_id)
 
 
+@documents_bp.route('/api/documents/import-text', methods=['POST'])
+def import_workspace_text():
+    return document_service.import_workspace_text()
+
+
 @documents_bp.route('/api/documents/<int:doc_id>/pdf', methods=['PUT'])
 def update_document_pdf_file(doc_id):
     return document_service.update_document_pdf_file(doc_id)

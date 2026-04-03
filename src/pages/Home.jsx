@@ -1,5 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
+import OcrResultModal from '../components/OcrResultModal.jsx';
+import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
 import TrashModal from '../components/TrashModal.jsx';
 import UploadPanel from '../components/UploadPanel.jsx';
@@ -84,7 +86,7 @@ const SUGGESTED_CATEGORIES = [
 ];
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
-const HOME_TAB_OPTIONS = ['home', 'files', 'ai'];
+const HOME_TAB_OPTIONS = ['home', 'files'];
 const SIDEBAR_DENSITY_OPTIONS = [
   { value: 'comfortable', label: 'Comfortable' },
   { value: 'compact', label: 'Compact' },
@@ -283,6 +285,11 @@ const EDITABLE_FILE_TYPE_VALUES = new Set(['txt', 'docx']);
 
 const createClientId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const createSavedViewId = () => createClientId('view');
+const stripFileExtension = (value) => String(value || '').replace(/\.[a-z0-9]+$/i, '').trim();
+const buildOcrNoteTitle = (value) => {
+  const base = stripFileExtension(value) || 'Image';
+  return `${base} OCR Note`;
+};
 const toPositiveDocId = (value) => {
   const next = Number(value);
   if (!Number.isFinite(next) || next <= 0) return 0;
@@ -819,8 +826,9 @@ const normalizeWorkspaceSettings = (raw) => {
   const linkMode = LINK_SHARING_MODES.includes(String(source.link_sharing_mode || '').toLowerCase())
     ? String(source.link_sharing_mode).toLowerCase()
     : DEFAULT_WORKSPACE_SETTINGS.link_sharing_mode;
-  const defaultHomeTab = HOME_TAB_OPTIONS.includes(String(source.default_home_tab || '').toLowerCase())
-    ? String(source.default_home_tab).toLowerCase()
+  const rawDefaultHomeTab = String(source.default_home_tab || '').toLowerCase();
+  const defaultHomeTab = HOME_TAB_OPTIONS.includes(rawDefaultHomeTab === 'ai' ? 'files' : rawDefaultHomeTab)
+    ? (rawDefaultHomeTab === 'ai' ? 'files' : rawDefaultHomeTab)
     : DEFAULT_WORKSPACE_SETTINGS.default_home_tab;
   const defaultDocumentsLayout = normalizeDocumentsLayout(
     source.default_documents_layout || DEFAULT_WORKSPACE_SETTINGS.default_documents_layout
@@ -1099,7 +1107,6 @@ const getDocumentRichHtml = (doc) => {
 
 const DocumentsList = lazy(() => import('../components/DocumentsList.jsx'));
 const UsageChart = lazy(() => import('../components/UsageChart.jsx'));
-const AIAssistantPanel = lazy(() => import('../components/AIAssistantPanel.jsx'));
 const WorkspaceSettingsModal = lazy(() => import('../components/WorkspaceSettingsModal.jsx'));
 const WorkspaceInviteModal = lazy(() => import('../components/WorkspaceInviteModal.jsx'));
 const RichTextEditor = lazy(() => import('../components/RichTextEditor.jsx'));
@@ -1141,7 +1148,8 @@ export default function HomePage() {
   const searchInputRef = useRef(null);
   const savedViewsImportInputRef = useRef(null);
   const trashRequestSeqRef = useRef(0);
-  const aiImageInputRef = useRef(null);
+  const ocrImageInputRef = useRef(null);
+  const pendingOcrSourceRef = useRef(null);
   const toastTimerRef = useRef(null);
   const confirmResolverRef = useRef(null);
   const inputDialogResolverRef = useRef(null);
@@ -1150,7 +1158,6 @@ export default function HomePage() {
     () => Boolean(sessionStorage.getItem('username') && sessionStorage.getItem('auth_token'))
   );
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
-  const [showAI, setShowAI] = useState(false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
@@ -1208,10 +1215,15 @@ export default function HomePage() {
   const [activeDocShareActionLoadingType, setActiveDocShareActionLoadingType] = useState('');
   const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
   const [extractedText, setExtractedText] = useState('');
-  const [aiHideInputText, setAiHideInputText] = useState(false);
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [summaryResultOpen, setSummaryResultOpen] = useState(false);
+  const [summaryResultTitle, setSummaryResultTitle] = useState('');
+  const [ocrResultOpen, setOcrResultOpen] = useState(false);
+  const [ocrSourceContext, setOcrSourceContext] = useState(null);
+  const [ocrSaveFormat, setOcrSaveFormat] = useState('txt');
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [isSavingOcrResult, setIsSavingOcrResult] = useState(false);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [uploadCategory, setUploadCategory] = useState('');
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
@@ -1789,13 +1801,22 @@ export default function HomePage() {
   }, [activeWorkspaceId]);
 
   useEffect(() => {
+    setSummaryResultOpen(false);
+    setSummaryResultTitle('');
+    setOcrResultOpen(false);
+    setOcrSourceContext(null);
+    setOcrSaveFormat('txt');
+    setExtractedText('');
+    setAnalysisResult(null);
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
     setMobileSidebarOpen(false);
-  }, [activeWorkspaceId, showFiles, showAI, docPaneVisible, isLoggedIn]);
+  }, [activeWorkspaceId, showFiles, docPaneVisible, isLoggedIn]);
 
   useEffect(() => {
     if (location.state?.showFiles) {
       setShowFiles(true);
-      setShowAI(false);
     }
   }, [location.state]);
 
@@ -1831,7 +1852,13 @@ export default function HomePage() {
       setActiveDocSaveError('');
       clearActiveDocShareState();
       setShowFiles(false);
-      setShowAI(false);
+      setSummaryResultOpen(false);
+      setSummaryResultTitle('');
+      setOcrResultOpen(false);
+      setOcrSourceContext(null);
+      setOcrSaveFormat('txt');
+      setExtractedText('');
+      setAnalysisResult(null);
       setShortcutsOpen(false);
       setTrashModalOpen(false);
       setTrashItems([]);
@@ -2250,12 +2277,7 @@ export default function HomePage() {
       {
         id: 'landing',
         label: 'Default landing',
-        value:
-          activeWorkspaceSettings.default_home_tab === 'ai'
-            ? 'AI Assistant'
-            : activeWorkspaceSettings.default_home_tab === 'files'
-              ? 'My Files'
-              : 'Home overview',
+        value: activeWorkspaceSettings.default_home_tab === 'files' ? 'My Files' : 'Home overview',
         detail: `${activeWorkspaceSettings.default_documents_layout} layout · ${activeWorkspaceSettings.default_documents_sort.replace('_', ' ')}`,
       },
       {
@@ -2491,18 +2513,7 @@ export default function HomePage() {
     setDocumentsSort(normalizeDocumentsSort(settings.default_documents_sort));
     setDocumentsPageSize(normalizeDocumentsPageSize(settings.default_documents_page_size));
     setDocumentsPage(1);
-    if (settings.default_home_tab === 'files') {
-      setShowFiles(true);
-      setShowAI(false);
-      return;
-    }
-    if (settings.default_home_tab === 'ai' && settings.allow_ai_tools) {
-      setShowFiles(false);
-      setShowAI(true);
-      return;
-    }
-    setShowFiles(false);
-    setShowAI(false);
+    setShowFiles(settings.default_home_tab === 'files');
   };
 
   const handleSignOut = ({ forgetCurrent = false } = {}) => {
@@ -2528,7 +2539,13 @@ export default function HomePage() {
     setActiveDocSaveError('');
     clearActiveDocShareState();
     setShowFiles(false);
-    setShowAI(false);
+    setSummaryResultOpen(false);
+    setSummaryResultTitle('');
+    setOcrResultOpen(false);
+    setOcrSourceContext(null);
+    setOcrSaveFormat('txt');
+    setExtractedText('');
+    setAnalysisResult(null);
     setShortcutsOpen(false);
     setTrashModalOpen(false);
     setTrashItems([]);
@@ -3169,6 +3186,18 @@ export default function HomePage() {
     return normalized;
   };
 
+  const toSummaryExportPayload = (entry) => {
+    const normalized = normalizeSummaryHistoryEntry(entry);
+    if (!normalized) return null;
+    return {
+      summary: normalized.summary,
+      keywords: normalized.keywords,
+      key_sentences: normalized.keySentences,
+      summary_source: normalized.summarySource,
+      summary_note: normalized.summaryNote,
+    };
+  };
+
   const pushSummaryHistoryEntry = (entry) => {
     const normalized = normalizeSummaryHistoryEntry(entry);
     if (!normalized) return;
@@ -3240,7 +3269,28 @@ export default function HomePage() {
     setStarredDragId(0);
   };
 
-  const handleExtractText = async (imageFile) => {
+  const openSummaryResultModal = (result, title = '') => {
+    setAnalysisResult(result);
+    setSummaryResultTitle(String(title || '').trim());
+    setSummaryResultOpen(true);
+  };
+
+  const closeSummaryResultModal = () => {
+    setSummaryResultOpen(false);
+  };
+
+  const closeOcrResultModal = () => {
+    setOcrResultOpen(false);
+    setOcrSourceContext(null);
+    setOcrSaveFormat('txt');
+    setExtractedText('');
+    if (!summaryResultOpen) {
+      setAnalysisResult(null);
+      setSummaryResultTitle('');
+    }
+  };
+
+  const handleExtractText = async (imageFile, options = {}) => {
     if (!imageFile) {
       showToast('Please select an image first.', 'warning');
       return;
@@ -3277,9 +3327,25 @@ export default function HomePage() {
       }
 
       const nextText = coerceOcrText(data?.text ?? data);
-      setAiHideInputText(false);
+      const sourceDoc = options?.sourceDoc || null;
+      const sourceTitle = String(
+        sourceDoc?.title || imageFile?.name || options?.sourceTitle || 'Selected image'
+      ).trim();
+      const sourceCategory = String(
+        sourceDoc?.category || options?.category || uploadCategory || activeWorkspaceSettings.default_category || ''
+      ).trim();
+      setSummaryResultOpen(false);
+      setSummaryResultTitle('');
       setExtractedText(nextText);
       setAnalysisResult(null);
+      setOcrSourceContext({
+        title: sourceTitle,
+        detail: String(data?.source || '').trim(),
+        category: sourceCategory,
+        workspaceId: String(sourceDoc?.workspace_id || sourceDoc?.workspaceId || activeWorkspaceId || '').trim(),
+        sourceDocId: toPositiveDocId(sourceDoc?.id),
+      });
+      setOcrResultOpen(true);
       if (!nextText) {
         const source = String(data?.source || '').trim();
         showToast(
@@ -3295,22 +3361,53 @@ export default function HomePage() {
     }
   };
 
-  const handleAIImageChange = async (event) => {
+  const handleOcrImageChange = async (event) => {
     const file = event.target.files?.[0] || null;
     event.target.value = '';
+    const sourceDoc = pendingOcrSourceRef.current || null;
+    pendingOcrSourceRef.current = null;
     if (!file) return;
     if (!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr) return;
-    await handleExtractText(file);
+    await handleExtractText(file, { sourceDoc });
   };
 
-  const openAIImagePicker = () => {
+  const openImageOcrPicker = (sourceDoc = null) => {
     if (!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr) return;
     if (isExtracting) return;
     if (!isLoggedIn || !authToken || !username) {
       showToast('Please sign in to use OCR.', 'warning');
       return;
     }
-    aiImageInputRef.current?.click();
+    pendingOcrSourceRef.current = sourceDoc || null;
+    ocrImageInputRef.current?.click();
+  };
+
+  const loadImageDocumentAsFile = async (doc) => {
+    const docId = toPositiveDocId(doc?.id);
+    if (!docId) throw new Error('Invalid image document');
+    const response = await authFetch(`/api/documents/${docId}/file`, {}, { authToken });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => ({}));
+      throw new Error(payload.error || 'Failed to load image file');
+    }
+    const blob = await response.blob();
+    const filename = String(doc?.filename || doc?.title || `document-${docId}.png`).trim();
+    const safeType = blob.type || `image/${getDocExt(doc) || 'png'}`;
+    return new File([blob], filename, { type: safeType });
+  };
+
+  const handleRunDocumentImageOcr = async (doc) => {
+    const fileType = String(getDocExt(doc) || '').trim().toLowerCase();
+    if (!IMAGE_FILE_TYPE_VALUES.has(fileType)) {
+      showToast('Image OCR is only available for image notes.', 'warning');
+      return;
+    }
+    try {
+      const file = await loadImageDocumentAsFile(doc);
+      await handleExtractText(file, { sourceDoc: doc });
+    } catch (error) {
+      showToast(error?.message || 'Failed to load image file for OCR.', 'error');
+    }
   };
 
   const startSummaryProgress = ({ forceRefresh = false, docId = 0, docTitle = '' } = {}) => {
@@ -3437,28 +3534,29 @@ export default function HomePage() {
       return;
     }
 
-    setAiHideInputText(false);
     const data = await requestSummary({
       text: extractedText,
       forceRefresh,
-      docTitle: forceRefresh ? 'Manual text' : '',
+      docTitle: String(ocrSourceContext?.title || 'Image OCR').trim(),
     });
     if (!data) return;
-    setAnalysisResult(data);
     const docId = toPositiveDocId(data?.document_id);
     const sourceDoc = docId ? documents.find((item) => toPositiveDocId(item.id) === docId) : null;
     const historyEntry = toSummaryHistoryEntry(sourceDoc || activeDoc || { id: docId }, data, {
       docId,
-      title: sourceDoc?.title || activeDoc?.title || (docId ? `Note ${docId}` : 'Manual Text'),
-      fileType: sourceDoc ? getDocExt(sourceDoc) : '',
+      title: sourceDoc?.title || ocrSourceContext?.title || activeDoc?.title || (docId ? `Note ${docId}` : 'OCR Text'),
+      fileType: sourceDoc ? getDocExt(sourceDoc) : 'txt',
     });
     if (historyEntry) {
       pushSummaryHistoryEntry(historyEntry);
     }
+    openSummaryResultModal(data, historyEntry?.title || ocrSourceContext?.title || 'OCR Text');
     if (data.cache_hit) {
       showWorkspaceToast('summary', 'Loaded summary from cache.', 'success');
     } else if (forceRefresh) {
       showWorkspaceToast('summary', 'Summary regenerated.', 'success');
+    } else {
+      showWorkspaceToast('summary', 'Summary is ready.', 'success');
     }
   };
 
@@ -3510,6 +3608,65 @@ export default function HomePage() {
     openSummaryEmailDraft(analysisResult);
   };
 
+  const handleSaveOcrResult = async () => {
+    if (!username) {
+      showToast('Please sign in to save OCR text as a note.', 'warning');
+      return;
+    }
+    const safeText = String(extractedText || '').trim();
+    if (!safeText) {
+      showToast('There is no OCR text to save yet.', 'warning');
+      return;
+    }
+
+    setIsSavingOcrResult(true);
+    try {
+      const sourceDocId = toPositiveDocId(ocrSourceContext?.sourceDocId);
+      const payload = {
+        username,
+        text: safeText,
+        title: buildOcrNoteTitle(ocrSourceContext?.title),
+        file_format: ocrSaveFormat,
+      };
+      if (sourceDocId > 0) {
+        const response = await authFetch(`/api/documents/${sourceDocId}/import-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }, { authToken });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to save OCR note');
+        }
+      } else {
+        const response = await authFetch('/api/documents/import-text', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            ...payload,
+            workspace_id: ocrSourceContext?.workspaceId || activeWorkspaceId,
+            category: ocrSourceContext?.category || activeWorkspaceSettings.default_category || DEFAULT_NOTE_CATEGORY,
+          }),
+        }, { authToken });
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || 'Failed to save OCR note');
+        }
+      }
+      setDocumentsPage(1);
+      await fetchDocuments(1);
+      showWorkspaceToast(
+        'upload',
+        `OCR text saved as a new ${String(ocrSaveFormat || 'txt').toUpperCase()} note.`,
+        'success'
+      );
+    } catch (error) {
+      showToast(error?.message || 'Failed to save OCR note.', 'error');
+    } finally {
+      setIsSavingOcrResult(false);
+    }
+  };
+
   const handleOpenSummaryCenter = () => {
     setSummaryCenterActionId('');
     setSummaryCenterOpen(true);
@@ -3518,12 +3675,8 @@ export default function HomePage() {
   const handleApplySummaryHistoryItem = (item) => {
     const entry = normalizeSummaryHistoryEntry(item);
     if (!entry) return;
-    setAnalysisResult({
-      summary: entry.summary,
-      keywords: entry.keywords,
-      key_sentences: entry.keySentences,
-      summary_source: entry.summarySource,
-      summary_note: entry.summaryNote,
+    openSummaryResultModal({
+      ...toSummaryExportPayload(entry),
       options_used: {
         summary_length: entry.summaryLength,
         chunk_count: entry.chunkCount,
@@ -3537,13 +3690,29 @@ export default function HomePage() {
       },
       document_id: entry.docId || null,
       text_source: 'summary_history',
-    });
-    setAiHideInputText(true);
-    setExtractedText('');
-    setShowFiles(false);
-    setShowAI(true);
+    }, entry.title);
     setSummaryCenterOpen(false);
     showWorkspaceToast('summary', `Loaded summary for "${entry.title}".`, 'success');
+  };
+
+  const handleCopySummaryHistoryItem = async (item) => {
+    const entry = normalizeSummaryHistoryEntry(item);
+    const payload = toSummaryExportPayload(entry);
+    if (!entry || !payload) return;
+    const output = buildSummaryExportText(payload);
+    if (!output) return;
+    try {
+      await copyTextToClipboard(output);
+      showWorkspaceToast('summary', `Summary copied for "${entry.title}".`, 'success');
+    } catch {
+      showToast('Copy failed. Please copy manually.', 'error');
+    }
+  };
+
+  const handleEmailSummaryHistoryItem = (item) => {
+    const payload = toSummaryExportPayload(item);
+    if (!payload) return;
+    openSummaryEmailDraft(payload);
   };
 
   const handleClearSummaryHistory = async () => {
@@ -3723,15 +3892,8 @@ export default function HomePage() {
       showToast('This note has no extracted text yet.', 'warning');
       return;
     }
-    closeDocumentPane();
-    setAiHideInputText(true);
-    setExtractedText('');
     setAnalysisResult(null);
-    setShowFiles(false);
-    setShowAI(true);
-    window.requestAnimationFrame(() => {
-      document.getElementById('ai-section')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-    });
+    setSummaryResultOpen(false);
     const result = await requestSummary({
       text: docId > 0 ? '' : text,
       docId,
@@ -3739,11 +3901,11 @@ export default function HomePage() {
       forceRefresh,
     });
     if (!result) return;
-    setAnalysisResult(result);
     const historyEntry = toSummaryHistoryEntry(doc, result, { docId });
     if (historyEntry) {
       pushSummaryHistoryEntry(historyEntry);
     }
+    openSummaryResultModal(result, String(doc?.title || '').trim());
     if (result.cache_hit) {
       showWorkspaceToast('summary', 'Loaded document summary from cache.', 'success');
     } else if (forceRefresh) {
@@ -4103,7 +4265,6 @@ export default function HomePage() {
     if (fromSidebar) {
       // Sidebar click should open the document pane directly, not stay in file-list mode.
       setShowFiles(false);
-      setShowAI(false);
       window.requestAnimationFrame(() => {
         document.getElementById('main')?.scrollIntoView({ block: 'start' });
       });
@@ -5249,7 +5410,7 @@ export default function HomePage() {
   };
   const activeDocStreamUrl = activeDocFileUrl;
   const activeDocExt = activeDoc ? getDocExt(activeDoc) : '';
-  const activeDocIsImage = ['jpg', 'jpeg', 'png', 'webp'].includes(activeDocExt);
+  const activeDocIsImage = IMAGE_FILE_TYPE_VALUES.has(activeDocExt);
   const activeDocIsPdf = activeDocExt === 'pdf';
   const activeDocCanEditText = ['txt', 'docx'].includes(activeDocExt);
   const activeDocViewHtml = useMemo(() => getDocumentRichHtml(activeDoc), [activeDoc]);
@@ -5274,7 +5435,6 @@ export default function HomePage() {
   const openFilesAndFocusSearch = () => {
     if (docPaneVisible) closeDocumentPane();
     setShowFiles(true);
-    setShowAI(false);
     window.setTimeout(() => {
       searchInputRef.current?.focus();
       searchInputRef.current?.select?.();
@@ -5293,7 +5453,6 @@ export default function HomePage() {
   const handleSaveCurrentView = async () => {
     if (!showFiles) {
       setShowFiles(true);
-      setShowAI(false);
     }
     const input = await requestTextInput({
       title: 'Save Current View',
@@ -5573,7 +5732,6 @@ export default function HomePage() {
         if (!activeWorkspaceSettings.allow_uploads) return;
         event.preventDefault();
         setShowFiles(true);
-        setShowAI(false);
         fileInputRef.current?.click();
         return;
       }
@@ -5685,29 +5843,17 @@ export default function HomePage() {
           if (isLoggedIn) handleSignOut();
           else navigate('/login');
         }}
-        homeActive={!showFiles && !showAI && !docPaneVisible}
-        filesActive={showFiles && !showAI && !docPaneVisible}
-        aiActive={showAI && !docPaneVisible}
-        aiDisabled={!activeWorkspaceSettings.allow_ai_tools}
+        homeActive={!showFiles && !docPaneVisible}
+        filesActive={showFiles && !docPaneVisible}
         onGoHome={() => {
           setMobileSidebarOpen(false);
           closeDocumentPane();
           setShowFiles(false);
-          setShowAI(false);
         }}
         onGoFiles={() => {
           setMobileSidebarOpen(false);
           closeDocumentPane();
           setShowFiles(true);
-          setShowAI(false);
-        }}
-        onGoAI={() => {
-          if (!activeWorkspaceSettings.allow_ai_tools) return;
-          setMobileSidebarOpen(false);
-          closeDocumentPane();
-          setShowFiles(false);
-          setShowAI(true);
-          setAiHideInputText(false);
         }}
         showStarredSection={activeWorkspaceSettings.show_starred_section}
         starredDocs={sidebarStarredDocs}
@@ -5861,6 +6007,16 @@ export default function HomePage() {
                         >
                           Rebuild (Refresh Text)
                         </button>
+                        {activeDocIsImage && (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => handleRunDocumentImageOcr(activeDoc)}
+                            disabled={!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr || isExtracting}
+                          >
+                            {isExtracting ? 'Running OCR...' : 'Image OCR'}
+                          </button>
+                        )}
                         <button
                           type="button"
                           className={`btn notion-inline-star-btn${activeDocIsStarred ? ' active' : ''}`}
@@ -6081,7 +6237,7 @@ export default function HomePage() {
             </section>
           )}
 
-          {!showFiles && !showAI && !docPaneVisible && (
+          {!showFiles && !docPaneVisible && (
             <section className="notion-overview-hero" aria-label="Workspace overview">
               <div className="notion-overview-hero-main">
                 <div className="notion-overview-eyebrow">
@@ -6112,7 +6268,6 @@ export default function HomePage() {
                     onClick={() => {
                       closeDocumentPane();
                       setShowFiles(true);
-                      setShowAI(false);
                     }}
                   >
                     Open Files
@@ -6121,15 +6276,13 @@ export default function HomePage() {
                     type="button"
                     className="btn"
                     onClick={() => {
-                      if (!activeWorkspaceSettings.allow_ai_tools) return;
                       closeDocumentPane();
-                      setShowFiles(false);
-                      setShowAI(true);
-                      setAiHideInputText(false);
+                      setShowFiles(true);
+                      openImageOcrPicker();
                     }}
-                    disabled={!activeWorkspaceSettings.allow_ai_tools}
+                    disabled={!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr || isExtracting}
                   >
-                    Ask AI
+                    {isExtracting ? 'Running OCR...' : 'Image OCR'}
                   </button>
                   <button
                     type="button"
@@ -6154,7 +6307,6 @@ export default function HomePage() {
                       onClick={() => {
                         closeDocumentPane();
                         setShowFiles(true);
-                        setShowAI(false);
                         window.requestAnimationFrame(() => {
                           fileInputRef.current?.click();
                         });
@@ -6202,16 +6354,14 @@ export default function HomePage() {
                       type="button"
                       className="notion-overview-command-btn"
                       onClick={() => {
-                        if (!activeWorkspaceSettings.allow_ai_tools) return;
-                        setShowFiles(false);
-                        setShowAI(true);
-                        setAiHideInputText(false);
-                        setExtractedText('');
+                        closeDocumentPane();
+                        setShowFiles(true);
+                        openImageOcrPicker();
                       }}
-                      disabled={!activeWorkspaceSettings.allow_ai_tools}
+                      disabled={!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr || isExtracting}
                     >
-                      <strong>Start AI session</strong>
-                      <span>Paste text, summarize documents, or extract from images.</span>
+                      <strong>Image OCR</strong>
+                      <span>Pick an image, review extracted text, then save a new TXT, DOCX, or PDF note.</span>
                     </button>
                   </div>
                 </aside>
@@ -6219,7 +6369,7 @@ export default function HomePage() {
             </section>
           )}
 
-          {!showFiles && !showAI && !docPaneVisible && (
+          {!showFiles && !docPaneVisible && (
             <section className="notion-dashboard-grid" aria-label="Dashboard summary">
               <article className="notion-dashboard-card">
                 <h3>Total Notes</h3>
@@ -6260,7 +6410,7 @@ export default function HomePage() {
             </section>
           )}
 
-          {!showFiles && !showAI && !docPaneVisible && activeWorkspaceSettings.show_recent_activity && (
+          {!showFiles && !docPaneVisible && activeWorkspaceSettings.show_recent_activity && (
             <section className="notion-overview-activity-grid" aria-label="Recent activity">
               <article className="notion-panel-block notion-overview-activity-panel">
                 <div className="notion-panel-head">
@@ -6314,46 +6464,19 @@ export default function HomePage() {
                   </ul>
                 ) : (
                   <p className="notion-settings-help">
-                    No summary history yet. Use AI Assistant or summarize a document to build this feed.
+                    No summary history yet. Use Image OCR or summarize a document to build this feed.
                   </p>
                 )}
               </article>
             </section>
           )}
 
-          {!showFiles && !showAI && !docPaneVisible && activeWorkspaceSettings.show_usage_chart && (
+          {!showFiles && !docPaneVisible && activeWorkspaceSettings.show_usage_chart && (
             <>
               <Suspense fallback={<p className="muted tiny">Loading usage chart...</p>}>
                 <UsageChart usageMap={usageMap} />
               </Suspense>
             </>
-          )}
-
-          {showAI && !docPaneVisible && (
-            <Suspense fallback={<p className="muted tiny">Loading AI assistant...</p>}>
-              <AIAssistantPanel
-                isLoggedIn={isLoggedIn}
-                allowAiTools={activeWorkspaceSettings.allow_ai_tools}
-                allowOcr={activeWorkspaceSettings.allow_ocr}
-                allowExport={activeWorkspaceSettings.allow_export}
-                aiImageInputRef={aiImageInputRef}
-                onAIImageChange={handleAIImageChange}
-                onOpenAIImagePicker={openAIImagePicker}
-                onAnalyzeText={handleAnalyzeText}
-                onCopySummary={handleCopySummary}
-                onExportSummary={handleExportSummary}
-                onExportSummaryPdf={handleExportSummaryPdf}
-                onEmailSummary={handleEmailSummary}
-                onOpenSummaryCenter={handleOpenSummaryCenter}
-                isExtracting={isExtracting}
-                isAnalyzing={isAnalyzing}
-                extractedText={extractedText}
-                hideInputText={aiHideInputText}
-                onChangeExtractedText={setExtractedText}
-                analysisResult={analysisResult}
-                summaryHistoryCount={summaryHistory.length}
-              />
-            </Suspense>
           )}
 
           {showFiles && !docPaneVisible && (
@@ -6823,6 +6946,30 @@ export default function HomePage() {
                       <button
                         type="button"
                         className="btn"
+                        onClick={() => openImageOcrPicker()}
+                        disabled={
+                          !isLoggedIn ||
+                          isExtracting ||
+                          bulkActionLoading ||
+                          selectAllMatchedLoading ||
+                          !activeWorkspaceSettings.allow_ai_tools ||
+                          !activeWorkspaceSettings.allow_ocr
+                        }
+                        title={
+                          !isLoggedIn
+                            ? 'Please sign in'
+                            : !activeWorkspaceSettings.allow_ai_tools
+                              ? 'AI is disabled in workspace settings'
+                              : !activeWorkspaceSettings.allow_ocr
+                                ? 'OCR is disabled in workspace settings'
+                                : undefined
+                        }
+                      >
+                        {isExtracting ? 'Running OCR...' : 'Image OCR'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn"
                         onClick={handleOpenTrashModal}
                         disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
                         title="Open Trash"
@@ -7059,6 +7206,7 @@ export default function HomePage() {
                       meta={`Workspace: ${activeWorkspace?.name || 'Unknown'} · Showing ${filteredDocuments.length} item(s) on page ${documentsPage} of ${documentsPageCount} (${documentsTotal} matched)${selectedDocumentCount ? ` · ${selectedDocumentCount} selected` : ''}`}
                       canEditMetadata={activeWorkspaceSettings.allow_note_editing}
                       canSummarize={activeWorkspaceSettings.allow_ai_tools}
+                      canRunImageOcr={activeWorkspaceSettings.allow_ai_tools && activeWorkspaceSettings.allow_ocr}
                       canShare={
                         activeWorkspaceSettings.link_sharing_mode !== 'restricted' &&
                         canCurrentUserManageShareLinks
@@ -7070,6 +7218,7 @@ export default function HomePage() {
                       onEditCategory={handleEditCategory}
                       onSummarize={handleUseDocumentForAI}
                       onSummarizeRefresh={handleRegenerateDocumentSummary}
+                      onRunImageOcr={handleRunDocumentImageOcr}
                       onToggleStar={handleToggleStarredNote}
                       onShare={handleShareDocument}
                       hasActiveFilters={hasActiveFilters}
@@ -7148,6 +7297,45 @@ export default function HomePage() {
         </div>
       )}
 
+      <input
+        ref={ocrImageInputRef}
+        type="file"
+        accept="image/*"
+        className="sr-only"
+        onChange={handleOcrImageChange}
+      />
+
+      <SummaryResultModal
+        open={summaryResultOpen}
+        onClose={closeSummaryResultModal}
+        title="Summary Result"
+        summaryTitle={summaryResultTitle}
+        analysisResult={analysisResult}
+        onCopySummary={handleCopySummary}
+        onExportSummary={handleExportSummary}
+        onExportSummaryPdf={handleExportSummaryPdf}
+        onEmailSummary={handleEmailSummary}
+        allowExport={activeWorkspaceSettings.allow_export}
+      />
+
+      <OcrResultModal
+        open={ocrResultOpen && !summaryResultOpen}
+        onClose={closeOcrResultModal}
+        sourceLabel={ocrSourceContext?.title || ''}
+        sourceDetail={ocrSourceContext?.detail || ''}
+        extractedText={extractedText}
+        onChangeExtractedText={setExtractedText}
+        saveFormat={ocrSaveFormat}
+        onSaveFormatChange={setOcrSaveFormat}
+        onSave={handleSaveOcrResult}
+        onSummarize={handleAnalyzeText}
+        isExtracting={isExtracting}
+        isAnalyzing={isAnalyzing}
+        isSaving={isSavingOcrResult}
+        canSave={isLoggedIn}
+        canSummarize={isLoggedIn && activeWorkspaceSettings.allow_ai_tools}
+      />
+
       <SummaryCenterModal
         open={summaryCenterOpen}
         onClose={() => setSummaryCenterOpen(false)}
@@ -7177,6 +7365,8 @@ export default function HomePage() {
         onExportJson={handleExportSummaryHistoryJson}
         onClearAll={handleClearSummaryHistory}
         onApplyItem={handleApplySummaryHistoryItem}
+        onCopyItem={handleCopySummaryHistoryItem}
+        onEmailItem={handleEmailSummaryHistoryItem}
         onOpenItemDocument={(entry) => {
           const targetId = toPositiveDocId(entry?.docId);
           if (!targetId) return;

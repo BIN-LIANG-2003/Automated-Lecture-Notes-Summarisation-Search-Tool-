@@ -8,8 +8,9 @@ test('login, search documents, and open document detail pane', async ({ page }) 
   await page.locator('#login-password').fill('password123');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
-  await expect(page.getByRole('button', { name: 'Open Files' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open Files' }).click();
+  await page.waitForURL('**/#/');
+  await expect(page.getByRole('button', { name: 'My Files' })).toBeVisible();
+  await page.getByRole('button', { name: 'My Files' }).click();
 
   const searchInput = page.locator('#search-input');
   await expect(searchInput).toBeVisible();

@@ -48,7 +48,8 @@ async function loginAsAlice(page) {
   await page.locator('#login-username').fill('alice');
   await page.locator('#login-password').fill('password123');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Open Files' })).toBeVisible();
+  await page.waitForURL('**/#/');
+  await expect(page.locator('.notion-top-summary-btn')).toBeVisible();
 }
 
 async function seedHomeStorage(page) {
@@ -66,27 +67,24 @@ async function seedHomeStorage(page) {
   );
 }
 
-test('home AI panel shows summary export actions and PDF export downloads', async ({ page }) => {
+test('home summary result modal shows export actions and PDF export downloads', async ({ page }) => {
   await seedHomeStorage(page);
   await loginAsAlice(page);
 
-  await page.getByRole('button', { name: 'AI Assistant' }).click();
-  const aiSection = page.locator('#ai-section');
-  await expect(aiSection.getByRole('button', { name: /Summary Center/ })).toBeVisible();
-
-  await aiSection.getByRole('button', { name: /Summary Center/ }).click();
+  await page.locator('.notion-top-summary-btn').click();
   await expect(page.getByRole('dialog', { name: 'Document Summary Center' })).toBeVisible();
-  await page.getByRole('button', { name: 'Use in AI Panel' }).click();
+  await page.getByRole('button', { name: 'Open Summary' }).click();
 
-  await expect(aiSection.getByRole('heading', { name: 'Summary Result' })).toBeVisible();
-  await expect(aiSection.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
-  await expect(aiSection.getByRole('button', { name: 'Export TXT' })).toBeVisible();
-  await expect(aiSection.getByRole('button', { name: 'Export PDF' })).toBeVisible();
-  await expect(aiSection.getByRole('button', { name: 'Share by Email' })).toBeVisible();
+  const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });
+  await expect(summaryModal).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Export TXT' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Export PDF' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Share by Email' })).toBeVisible();
 
   const [download] = await Promise.all([
     page.waitForEvent('download'),
-    aiSection.getByRole('button', { name: 'Export PDF' }).click(),
+    summaryModal.getByRole('button', { name: 'Export PDF' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
 });
@@ -123,8 +121,8 @@ test('public share link opens document view without sign in', async ({ page }) =
   await page.goto(`/#/shared/${SEEDED_SHARE_TOKEN}`);
 
   await expect(page.getByText('Shared Document')).toBeVisible();
-  await expect(page.locator('.document-share-title')).toHaveText('Graph Notes');
   await expect(page.getByRole('button', { name: 'Download Shared File' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Sign In For Full Access' })).toBeVisible();
   await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
+  await expect(page.locator('.document-detail-card')).toContainText('graph traversal bfs dfs shortest path');
 });

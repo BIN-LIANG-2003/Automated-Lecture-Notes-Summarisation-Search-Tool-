@@ -136,6 +136,7 @@ export default function DocumentsList({
   meta,
   canEditMetadata = true,
   canSummarize = true,
+  canRunImageOcr = true,
   canShare = true,
   starredDocIdSet = new Set(),
   onView,
@@ -144,6 +145,7 @@ export default function DocumentsList({
   onEditCategory,
   onSummarize,
   onSummarizeRefresh,
+  onRunImageOcr,
   onToggleStar,
   onShare,
   hasActiveFilters = false,
@@ -383,6 +385,27 @@ export default function DocumentsList({
                           >
                             {isStarred ? 'Remove from Starred' : 'Add to Starred'}
                           </button>
+                          {IMAGE_EXT_SET.has(getDocumentTypeToken(doc)) && (
+                            <button
+                              className="document-more-item"
+                              onClick={() => {
+                                setOpenMenuDocId('');
+                                if (isLoggedIn) onRunImageOcr?.(doc);
+                              }}
+                              title={
+                                !isLoggedIn
+                                  ? 'Please sign in'
+                                  : canRunImageOcr
+                                    ? undefined
+                                    : 'OCR is disabled in workspace settings'
+                              }
+                              disabled={!isLoggedIn || !canRunImageOcr}
+                              type="button"
+                              role="menuitem"
+                            >
+                              Image OCR
+                            </button>
+                          )}
                           <button
                             className="document-more-item"
                             onClick={() => {
