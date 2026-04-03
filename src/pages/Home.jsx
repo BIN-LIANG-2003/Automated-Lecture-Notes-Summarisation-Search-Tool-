@@ -1226,6 +1226,7 @@ export default function HomePage() {
   const [isSavingOcrResult, setIsSavingOcrResult] = useState(false);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [uploadCategory, setUploadCategory] = useState('');
+  const [uploadTrayCollapsed, setUploadTrayCollapsed] = useState(false);
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
   const [now, setNow] = useState(() => new Date());
@@ -1659,6 +1660,14 @@ export default function HomePage() {
     onUploadsCompleted: refreshDocumentsAfterUpload,
     resetKey: `${activeWorkspaceId || ''}:${username || ''}:${authToken || ''}`,
   });
+
+  const openUploadPicker = () => {
+    if (!activeWorkspaceSettings.allow_uploads) return;
+    setUploadTrayCollapsed(false);
+    window.requestAnimationFrame(() => {
+      fileInputRef.current?.click();
+    });
+  };
 
   const fetchTrashDocuments = async ({
     silent = false,
@@ -5732,7 +5741,7 @@ export default function HomePage() {
         if (!activeWorkspaceSettings.allow_uploads) return;
         event.preventDefault();
         setShowFiles(true);
-        fileInputRef.current?.click();
+        openUploadPicker();
         return;
       }
       if (withModifier && event.shiftKey && key === 's') {
@@ -6307,9 +6316,7 @@ export default function HomePage() {
                       onClick={() => {
                         closeDocumentPane();
                         setShowFiles(true);
-                        window.requestAnimationFrame(() => {
-                          fileInputRef.current?.click();
-                        });
+                        openUploadPicker();
                       }}
                       disabled={!activeWorkspaceSettings.allow_uploads}
                     >
@@ -6495,7 +6502,7 @@ export default function HomePage() {
                         <button
                           type="button"
                           className="btn btn-primary"
-                          onClick={() => fileInputRef.current?.click()}
+                          onClick={openUploadPicker}
                           disabled={!activeWorkspaceSettings.allow_uploads || uploadQueueRunning}
                         >
                           {uploadQueueRunning ? 'Uploading...' : 'Upload Files'}
@@ -6572,8 +6579,6 @@ export default function HomePage() {
 
                   <UploadPanel
                     embedded
-                    title="Upload Files"
-                    description="Keep uploads visible inside Files. New OCR saves and uploads land back in My Documents."
                     allowUploads={activeWorkspaceSettings.allow_uploads}
                     dragUploadActive={dragUploadActive}
                     onDragEnter={handleUploadDragEnter}
@@ -6596,6 +6601,8 @@ export default function HomePage() {
                     onClearCompletedUploads={handleClearCompletedUploads}
                     canClearUploadQueue={canClearUploadQueue}
                     uploadQueue={uploadQueue}
+                    collapsed={uploadTrayCollapsed}
+                    onToggleCollapsed={() => setUploadTrayCollapsed((prev) => !prev)}
                   />
 
                   <section className="notion-files-filter-shell" aria-labelledby="filters-title">
