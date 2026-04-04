@@ -1125,6 +1125,7 @@ export default function HomePage() {
   const [inputDialogDraft, setInputDialogDraft] = useState('');
   const [savedViews, setSavedViews] = useState([]);
   const [activeSavedViewId, setActiveSavedViewId] = useState('');
+  const [savedViewsMenuOpen, setSavedViewsMenuOpen] = useState(false);
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [trashModalOpen, setTrashModalOpen] = useState(false);
   const [trashItems, setTrashItems] = useState([]);
@@ -1145,6 +1146,7 @@ export default function HomePage() {
   const location = useLocation();
   const workspaceMenuRef = useRef(null);
   const recentMenuRef = useRef(null);
+  const savedViewsMenuRef = useRef(null);
   const searchInputRef = useRef(null);
   const savedViewsImportInputRef = useRef(null);
   const trashRequestSeqRef = useRef(0);
@@ -1226,7 +1228,7 @@ export default function HomePage() {
   const [isSavingOcrResult, setIsSavingOcrResult] = useState(false);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [uploadCategory, setUploadCategory] = useState('');
-  const [uploadTrayCollapsed, setUploadTrayCollapsed] = useState(false);
+  const [uploadTrayCollapsed, setUploadTrayCollapsed] = useState(true);
   const [usageMap, setUsageMap] = useState(() => loadUsageMap());
   const sessionStartRef = useRef(null);
   const [now, setNow] = useState(() => new Date());
@@ -1668,6 +1670,28 @@ export default function HomePage() {
       fileInputRef.current?.click();
     });
   };
+
+  const hasSelectedUploadFiles = useMemo(() => {
+    const hint = String(fileHint || '').trim().toLowerCase();
+    return Boolean(hint && hint !== 'no file selected yet');
+  }, [fileHint]);
+
+  useEffect(() => {
+    if (dragUploadActive || uploadQueueRunning || uploadQueueSummary.failed > 0 || hasSelectedUploadFiles) {
+      setUploadTrayCollapsed(false);
+      return;
+    }
+    if (uploadQueueSummary.total > 0 && uploadQueueSummary.uploading === 0) {
+      setUploadTrayCollapsed(true);
+    }
+  }, [
+    dragUploadActive,
+    uploadQueueRunning,
+    uploadQueueSummary.failed,
+    uploadQueueSummary.total,
+    uploadQueueSummary.uploading,
+    hasSelectedUploadFiles,
+  ]);
 
   const fetchTrashDocuments = async ({
     silent = false,
@@ -2151,11 +2175,15 @@ export default function HomePage() {
       if (recentMenuRef.current && !recentMenuRef.current.contains(event.target)) {
         setSidebarMenuDocId(null);
       }
+      if (savedViewsMenuRef.current && !savedViewsMenuRef.current.contains(event.target)) {
+        setSavedViewsMenuOpen(false);
+      }
     };
     const handleEscape = (event) => {
       if (event.key === 'Escape') {
         setWorkspaceMenuOpen(false);
         setSidebarMenuDocId(null);
+        setSavedViewsMenuOpen(false);
         setWorkspaceSettingsOpen(false);
         setWorkspaceInviteOpen(false);
         setAccountManagerOpen(false);
@@ -2367,6 +2395,10 @@ export default function HomePage() {
   );
   const visibleDocumentIdSet = useMemo(() => new Set(visibleDocumentIds), [visibleDocumentIds]);
   const selectedDocumentCount = selectedDocumentIds.length;
+  const activeSavedView = useMemo(
+    () => savedViews.find((item) => item.id === activeSavedViewId) || null,
+    [savedViews, activeSavedViewId]
+  );
   const selectedOnCurrentPageCount = useMemo(
     () => visibleDocumentIds.filter((id) => selectedDocumentIdSet.has(id)).length,
     [visibleDocumentIds, selectedDocumentIdSet]
@@ -2375,6 +2407,15 @@ export default function HomePage() {
   const allDocumentsSelectedOnPage =
     visibleDocumentIds.length > 0 &&
     visibleDocumentIds.every((id) => selectedDocumentIdSet.has(id));
+  const canResetFilesView =
+    Boolean(searchDraft.trim()) ||
+    Boolean(filters.query || filters.start || filters.end || filters.tag || filters.category || filters.fileType) ||
+    normalizeDocumentsSort(documentsSort) !== DEFAULT_DOCUMENTS_SORT ||
+    normalizeDocumentsPageSize(documentsPageSize) !== DEFAULT_DOCUMENTS_PAGE_SIZE ||
+    normalizeDocumentsLayout(documentsLayout) !== DEFAULT_DOCUMENTS_LAYOUT ||
+    documentsPage !== 1 ||
+    selectedDocumentCount > 0 ||
+    Boolean(activeSavedViewId);
   const trashSelectedIdSet = useMemo(
     () =>
       new Set(
@@ -5666,6 +5707,7 @@ export default function HomePage() {
   };
 
   const handleOpenSavedViewsImport = () => {
+    setSavedViewsMenuOpen(false);
     savedViewsImportInputRef.current?.click();
   };
 
@@ -6492,13 +6534,43 @@ export default function HomePage() {
                 <section className="notion-files-workbench notion-panel-block" aria-labelledby="files-workbench-title">
                   <div className="notion-files-workbench-head">
                     <div className="notion-files-workbench-copy">
-                      <h2 id="files-workbench-title" className="section-title">Files Workspace</h2>
-                      <p>
-                        Upload, filter, search, OCR, and manage your workspace documents from one integrated surface.
-                      </p>
+                      <h2 id="files-workbench-title" className="section-title">My Files</h2>
                     </div>
                     <div className="notion-files-actionbar">
-                      <div className="notion-files-actionbar-group">
+                      <div className="notion-files-toolbar-search">
+                        <label htmlFor="search-input" className="sr-only">
+                          Search
+                        </label>
+                        <div className="input-with-icon notion-files-searchbar-input">
+                          <svg aria-hidden="true" viewBox="0 0 24 24">
+                            <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
+                          </svg>
+                          <input
+                            id="search-input"
+                            ref={searchInputRef}
+                            type="search"
+                            placeholder="Search title, tags, category, or content"
+                            inputMode="search"
+                            value={searchDraft}
+                            onChange={(event) => setSearchDraft(event.target.value)}
+                            onKeyDown={(event) => {
+                              if (event.key === 'Enter') {
+                                event.preventDefault();
+                                applySearch();
+                              }
+                            }}
+                          />
+                        </div>
+                        <button
+                          id="search-btn"
+                          className="btn btn-primary"
+                          type="button"
+                          onClick={applySearch}
+                        >
+                          Search
+                        </button>
+                      </div>
+                      <div className="notion-files-toolbar-actions">
                         <button
                           type="button"
                           className="btn btn-primary"
@@ -6533,37 +6605,156 @@ export default function HomePage() {
                         </button>
                         <button
                           type="button"
+                          className={`btn${advancedFiltersOpen ? ' active' : ''}`}
+                          onClick={() => setAdvancedFiltersOpen((prev) => !prev)}
+                          aria-expanded={advancedFiltersOpen ? 'true' : 'false'}
+                          aria-controls="advanced-filters-panel"
+                        >
+                          Filters{advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ''}
+                        </button>
+                        <div className="notion-files-saved-views-menu" ref={savedViewsMenuRef}>
+                          <button
+                            type="button"
+                            className={`btn${savedViewsMenuOpen ? ' active' : ''}`}
+                            onClick={() => setSavedViewsMenuOpen((prev) => !prev)}
+                            aria-expanded={savedViewsMenuOpen ? 'true' : 'false'}
+                            aria-haspopup="dialog"
+                          >
+                            Saved Views{savedViews.length ? ` (${savedViews.length})` : ''}
+                          </button>
+                          {savedViewsMenuOpen && (
+                            <div className="notion-files-saved-views-popover" role="dialog" aria-label="Saved views">
+                              <div className="notion-files-saved-views-popover-head">
+                                <div>
+                                  <strong>Saved Views</strong>
+                                  <p>Reuse filters, sort, layout, and page size in one click.</p>
+                                </div>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  onClick={() => {
+                                    setSavedViewsMenuOpen(false);
+                                    void handleSaveCurrentView();
+                                  }}
+                                >
+                                  Save Current
+                                </button>
+                              </div>
+                              <div className="notion-files-saved-views-popover-actions">
+                                <button type="button" className="btn" onClick={handleOpenSavedViewsImport}>
+                                  Import
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  onClick={() => {
+                                    setSavedViewsMenuOpen(false);
+                                    handleExportSavedViews();
+                                  }}
+                                  disabled={!savedViews.length}
+                                >
+                                  Export
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  onClick={() => {
+                                    setSavedViewsMenuOpen(false);
+                                    setShortcutsOpen(true);
+                                  }}
+                                >
+                                  Shortcuts
+                                </button>
+                              </div>
+                              {savedViews.length ? (
+                                <div className="notion-saved-views-list">
+                                  {savedViews.map((view, index) => (
+                                    <div
+                                      key={view.id}
+                                      className={`notion-saved-view-item${activeSavedViewId === view.id ? ' active' : ''}`}
+                                    >
+                                      <button
+                                        type="button"
+                                        className="notion-saved-view-main"
+                                        onClick={() => {
+                                          setSavedViewsMenuOpen(false);
+                                          handleApplySavedView(view);
+                                        }}
+                                      >
+                                        {view.pinned ? '📌 ' : ''}
+                                        {view.name}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className={`notion-saved-view-icon${view.pinned ? ' is-active' : ''}`}
+                                        onClick={() => handleTogglePinSavedView(view)}
+                                        aria-label={view.pinned ? `Unpin ${view.name}` : `Pin ${view.name}`}
+                                        title={view.pinned ? 'Unpin' : 'Pin to Top'}
+                                      >
+                                        📌
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="notion-saved-view-icon"
+                                        onClick={() => handleMoveSavedView(view, -1)}
+                                        aria-label={`Move ${view.name} up`}
+                                        title="Move Up"
+                                        disabled={index === 0}
+                                      >
+                                        ↑
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="notion-saved-view-icon"
+                                        onClick={() => handleMoveSavedView(view, 1)}
+                                        aria-label={`Move ${view.name} down`}
+                                        title="Move Down"
+                                        disabled={index === savedViews.length - 1}
+                                      >
+                                        ↓
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="notion-saved-view-icon"
+                                        onClick={() => {
+                                          setSavedViewsMenuOpen(false);
+                                          void handleRenameSavedView(view);
+                                        }}
+                                        aria-label={`Rename ${view.name}`}
+                                        title="Rename"
+                                      >
+                                        ✎
+                                      </button>
+                                      <button
+                                        type="button"
+                                        className="notion-saved-view-icon"
+                                        onClick={() => {
+                                          setSavedViewsMenuOpen(false);
+                                          void handleDeleteSavedView(view);
+                                        }}
+                                        aria-label={`Delete ${view.name}`}
+                                        title="Delete"
+                                      >
+                                        ×
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <p className="notion-settings-help">
+                                  No saved views yet. Save the current search, filters, and layout to reuse it later.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        <button
+                          type="button"
                           className="btn"
                           onClick={() => fetchDocuments(documentsPage)}
                           disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
                         >
                           {documentsLoading ? 'Refreshing...' : 'Refresh'}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={handleOpenTrashModal}
-                          disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
-                          title="Open Trash"
-                        >
-                          Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
-                        </button>
-                      </div>
-                      <div className="notion-files-actionbar-group notion-files-actionbar-group-secondary">
-                        <span className="notion-files-actionbar-label">Saved Views</span>
-                        <button type="button" className="btn" onClick={() => void handleSaveCurrentView()}>
-                          Save Current
-                        </button>
-                        <button type="button" className="btn" onClick={handleOpenSavedViewsImport}>
-                          Import
-                        </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={handleExportSavedViews}
-                          disabled={!savedViews.length}
-                        >
-                          Export
                         </button>
                       </div>
                     </div>
@@ -6606,162 +6797,70 @@ export default function HomePage() {
                   />
 
                   <section className="notion-files-filter-shell" aria-labelledby="filters-title">
-                    <div className="notion-files-filter-head">
-                      <div className="notion-panel-head">
-                        <h2 id="filters-title" className="section-title">Smart Filters</h2>
-                        <p>
-                          {hasActiveFilters
-                            ? `${activeFilterCount} filter${activeFilterCount > 1 ? 's' : ''} active`
-                            : 'Search notes by keyword, date range, category, tag, and file type.'}
-                        </p>
+                    <h3 id="filters-title" className="sr-only">Filters</h3>
+                    <div className="notion-files-filter-strip">
+                      <div className="notion-quick-filter-presets" role="group" aria-label="Quick filter presets">
+                        {QUICK_FILTER_PRESET_OPTIONS.map((preset) => (
+                          <button
+                            key={`quick-preset-${preset.id}`}
+                            type="button"
+                            className={`notion-quick-preset-btn${
+                              activeQuickFilterPresetId === preset.id ? ' active' : ''
+                            }`}
+                            onClick={() => applyQuickFilterPreset(preset.id)}
+                            aria-pressed={activeQuickFilterPresetId === preset.id ? 'true' : 'false'}
+                          >
+                            {preset.label}
+                          </button>
+                        ))}
                       </div>
-                      <button type="button" className="btn" onClick={() => setShortcutsOpen(true)}>
-                        Shortcuts
-                      </button>
-                    </div>
-                    <div className="notion-saved-views-bar" aria-label="Saved views">
-                      <div className="notion-saved-views-head">
-                        <span>Saved Views</span>
-                        <p className="notion-settings-help">Reusable presets for filters, sort, layout, and page size.</p>
-                      </div>
-                      {savedViews.length ? (
-                        <div className="notion-saved-views-list">
-                          {savedViews.map((view, index) => (
-                            <div
-                              key={view.id}
-                              className={`notion-saved-view-item${activeSavedViewId === view.id ? ' active' : ''}`}
-                            >
-                              <button
-                                type="button"
-                                className="notion-saved-view-main"
-                                onClick={() => handleApplySavedView(view)}
-                              >
-                                {view.pinned ? '📌 ' : ''}
-                                {view.name}
-                              </button>
-                              <button
-                                type="button"
-                                className={`notion-saved-view-icon${view.pinned ? ' is-active' : ''}`}
-                                onClick={() => handleTogglePinSavedView(view)}
-                                aria-label={view.pinned ? `Unpin ${view.name}` : `Pin ${view.name}`}
-                                title={view.pinned ? 'Unpin' : 'Pin to Top'}
-                              >
-                                📌
-                              </button>
-                              <button
-                                type="button"
-                                className="notion-saved-view-icon"
-                                onClick={() => handleMoveSavedView(view, -1)}
-                                aria-label={`Move ${view.name} up`}
-                                title="Move Up"
-                                disabled={index === 0}
-                              >
-                                ↑
-                              </button>
-                              <button
-                                type="button"
-                                className="notion-saved-view-icon"
-                                onClick={() => handleMoveSavedView(view, 1)}
-                                aria-label={`Move ${view.name} down`}
-                                title="Move Down"
-                                disabled={index === savedViews.length - 1}
-                              >
-                                ↓
-                              </button>
-                              <button
-                                type="button"
-                                className="notion-saved-view-icon"
-                                onClick={() => void handleRenameSavedView(view)}
-                                aria-label={`Rename ${view.name}`}
-                                title="Rename"
-                              >
-                                ✎
-                              </button>
-                              <button
-                                type="button"
-                                className="notion-saved-view-icon"
-                                onClick={() => void handleDeleteSavedView(view)}
-                                aria-label={`Delete ${view.name}`}
-                                title="Delete"
-                              >
-                                ×
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <p className="notion-settings-help">
-                          Save your current filters and document layout to reopen this workbench state in one click.
-                        </p>
-                      )}
-                    </div>
-
-                    <div className="notion-quick-filter-presets" role="group" aria-label="Quick filter presets">
-                      {QUICK_FILTER_PRESET_OPTIONS.map((preset) => (
+                      <div className="notion-files-filter-strip-actions">
                         <button
-                          key={`quick-preset-${preset.id}`}
                           type="button"
-                          className={`notion-quick-preset-btn${
-                            activeQuickFilterPresetId === preset.id ? ' active' : ''
-                          }`}
-                          onClick={() => applyQuickFilterPreset(preset.id)}
-                          aria-pressed={activeQuickFilterPresetId === preset.id ? 'true' : 'false'}
+                          className="btn"
+                          onClick={resetDocumentsView}
+                          disabled={!canResetFilesView}
                         >
-                          {preset.label}
+                          Reset View
                         </button>
-                      ))}
-                    </div>
-
-                    <div className="filter-row notion-filter-search-row">
-                      <label htmlFor="search-input" className="sr-only">
-                        Search
-                      </label>
-                      <div className="input-with-icon">
-                        <svg aria-hidden="true" viewBox="0 0 24 24">
-                          <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
-                        </svg>
-                        <input
-                          id="search-input"
-                          ref={searchInputRef}
-                          type="search"
-                          placeholder="Search title, tags, category, or content"
-                          inputMode="search"
-                          value={searchDraft}
-                          onChange={(event) => setSearchDraft(event.target.value)}
-                          onKeyDown={(event) => {
-                            if (event.key === 'Enter') {
-                              event.preventDefault();
-                              applySearch();
-                            }
-                          }}
-                        />
                       </div>
-
-                      <button
-                        id="search-btn"
-                        className="btn btn-primary"
-                        type="button"
-                        onClick={applySearch}
-                      >
-                        Search
-                      </button>
-
-                      <button id="clear-filters" className="btn" type="button" onClick={clearFilters}>
-                        Clear All
-                      </button>
                     </div>
-                    <button
-                      type="button"
-                      className="notion-advanced-toggle"
-                      onClick={() => setAdvancedFiltersOpen((prev) => !prev)}
-                      aria-expanded={advancedFiltersOpen ? 'true' : 'false'}
-                      aria-controls="advanced-filters-panel"
-                    >
-                      {advancedFiltersOpen ? 'Hide Advanced Filters' : 'Show Advanced Filters'}
-                      {advancedFilterCount > 0 ? ` (${advancedFilterCount} active)` : ''}
-                    </button>
+
+                    {(activeSavedView || activeFilterChips.length > 0) && (
+                      <div className="notion-active-filters" aria-label="Active filters">
+                        {activeSavedView && (
+                          <span className="notion-active-filter-chip notion-active-filter-chip-accent">
+                            <span>View: {activeSavedView.name}</span>
+                            <button
+                              type="button"
+                              onClick={resetDocumentsView}
+                              aria-label={`Clear saved view ${activeSavedView.name}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        )}
+                        {activeFilterChips.map((chip) => (
+                          <span key={chip.id} className="notion-active-filter-chip">
+                            <span>{chip.label}</span>
+                            <button
+                              type="button"
+                              onClick={() => clearSingleFilter(chip.id)}
+                              aria-label={`Clear ${chip.label}`}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
                     {advancedFiltersOpen && (
                       <div id="advanced-filters-panel" className="notion-advanced-filters" aria-label="Advanced filters">
+                        <div className="notion-files-advanced-head">
+                          <strong>Advanced Filters</strong>
+                          <p>Date, type, category, and tag controls stay here until you need them.</p>
+                        </div>
                         <div className="filter-row notion-filter-date-row">
                           <div className="date-group notion-date-group">
                             <label htmlFor="start-date" className="notion-date-field">
@@ -6927,133 +7026,124 @@ export default function HomePage() {
                         </div>
                       </div>
                     )}
-                    {activeFilterChips.length > 0 && (
-                      <div className="notion-active-filters" aria-label="Active filters">
-                        {activeFilterChips.map((chip) => (
-                          <span key={chip.id} className="notion-active-filter-chip">
-                            <span>{chip.label}</span>
-                            <button
-                              type="button"
-                              onClick={() => clearSingleFilter(chip.id)}
-                              aria-label={`Clear ${chip.label}`}
-                            >
-                              ×
-                            </button>
-                          </span>
-                        ))}
-                      </div>
-                    )}
                   </section>
 
                   <section className="notion-files-results" aria-labelledby="docs-title">
-                  <div className="notion-files-results-head">
-                    <div className="list-head">
-                      <h2 id="docs-title" className="section-title">
-                        My Documents
-                      </h2>
-                    </div>
-                    <div className="notion-results-controls">
-                      <div className="notion-results-control notion-view-toggle" role="group" aria-label="Document layout">
-                        <span>Layout</span>
-                        <div className="notion-view-toggle-buttons">
-                          {DOCUMENTS_LAYOUT_OPTIONS.map((option) => (
-                            <button
-                              key={`layout-${option.value}`}
-                              type="button"
-                              className={`notion-view-toggle-btn ${
-                                documentsLayout === option.value ? 'active' : ''
-                              }`}
-                              onClick={() => setDocumentsLayout(option.value)}
-                              disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                              aria-pressed={documentsLayout === option.value ? 'true' : 'false'}
-                            >
-                              {option.label}
-                            </button>
-                          ))}
+                    <div className="notion-files-results-head">
+                      <div className="notion-files-results-summary">
+                        <h2 id="docs-title" className="notion-files-results-title">
+                          {documentsTotal} result{documentsTotal === 1 ? '' : 's'}
+                        </h2>
+                        <div className="notion-summary-chips" aria-live="polite">
+                          <span className="notion-summary-chip">This page {filteredDocuments.length}</span>
+                          <span className="notion-summary-chip">
+                            {activeFilterCount} filter{activeFilterCount === 1 ? '' : 's'}
+                          </span>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={handleOpenTrashModal}
+                            disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
+                            title="Open Trash"
+                          >
+                            Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
+                          </button>
                         </div>
                       </div>
-                      <label className="notion-results-control" htmlFor="documents-sort-select">
-                        <span>Sort</span>
-                        <select
-                          id="documents-sort-select"
-                          value={documentsSort}
-                          onChange={(event) => {
-                            setDocumentsSort(normalizeDocumentsSort(event.target.value));
-                            setDocumentsPage(1);
-                          }}
-                          disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                        >
-                          {DOCUMENTS_SORT_OPTIONS.map((item) => (
-                            <option key={item.value} value={item.value}>
-                              {item.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label className="notion-results-control" htmlFor="documents-page-size-select">
-                        <span>Per page</span>
-                        <select
-                          id="documents-page-size-select"
-                          value={documentsPageSize}
-                          onChange={(event) => {
-                            setDocumentsPageSize(
-                              normalizeDocumentsPageSize(Number(event.target.value) || DEFAULT_DOCUMENTS_PAGE_SIZE)
-                            );
-                            setDocumentsPage(1);
-                          }}
-                          disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                        >
-                          {DOCUMENTS_PAGE_SIZE_OPTIONS.map((size) => (
-                            <option key={`docs-page-size-${size}`} value={size}>
-                              {size}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
+                      <div className="notion-results-controls">
+                        <div className="notion-results-control notion-view-toggle" role="group" aria-label="Document layout">
+                          <span>Layout</span>
+                          <div className="notion-view-toggle-buttons">
+                            {DOCUMENTS_LAYOUT_OPTIONS.map((option) => (
+                              <button
+                                key={`layout-${option.value}`}
+                                type="button"
+                                className={`notion-view-toggle-btn ${
+                                  documentsLayout === option.value ? 'active' : ''
+                                }`}
+                                onClick={() => setDocumentsLayout(option.value)}
+                                disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
+                                aria-pressed={documentsLayout === option.value ? 'true' : 'false'}
+                              >
+                                {option.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                        <label className="notion-results-control" htmlFor="documents-sort-select">
+                          <span>Sort</span>
+                          <select
+                            id="documents-sort-select"
+                            value={documentsSort}
+                            onChange={(event) => {
+                              setDocumentsSort(normalizeDocumentsSort(event.target.value));
+                              setDocumentsPage(1);
+                            }}
+                            disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
+                          >
+                            {DOCUMENTS_SORT_OPTIONS.map((item) => (
+                              <option key={item.value} value={item.value}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                        <label className="notion-results-control" htmlFor="documents-page-size-select">
+                          <span>Per page</span>
+                          <select
+                            id="documents-page-size-select"
+                            value={documentsPageSize}
+                            onChange={(event) => {
+                              setDocumentsPageSize(
+                                normalizeDocumentsPageSize(Number(event.target.value) || DEFAULT_DOCUMENTS_PAGE_SIZE)
+                              );
+                              setDocumentsPage(1);
+                            }}
+                            disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
+                          >
+                            {DOCUMENTS_PAGE_SIZE_OPTIONS.map((size) => (
+                              <option key={`docs-page-size-${size}`} value={size}>
+                                {size}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+                      </div>
                     </div>
-                  </div>
-                  <div className="notion-files-summary-bar">
-                    <div className="notion-summary-chips" aria-live="polite">
-                      <span className="notion-summary-chip">Matched {documentsTotal}</span>
-                      <span className="notion-summary-chip">This page {filteredDocuments.length}</span>
-                      <span className="notion-summary-chip">{activeFilterCount} filter{activeFilterCount > 1 ? 's' : ''}</span>
-                      {!!selectedDocumentCount && (
+                    {!!selectedDocumentCount && (
+                      <div className="notion-summary-actions notion-files-selection-actions">
                         <span className="notion-summary-chip is-selected">{selectedDocumentCount} selected</span>
-                      )}
-                      {!!selectedOutsideCurrentPageCount && (
-                        <span className="notion-summary-chip">
-                          {selectedOutsideCurrentPageCount} from other page(s)
-                        </span>
-                      )}
-                    </div>
-                    <div className="notion-summary-actions">
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={handleSelectAllMatchedDocuments}
-                        disabled={
-                          !documentsTotal ||
-                          documentsLoading ||
-                          bulkActionLoading ||
-                          selectAllMatchedLoading
-                        }
-                      >
-                        {selectAllMatchedLoading ? 'Selecting Matched...' : 'Select Matched'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={toggleSelectAllDocumentsOnPage}
-                        disabled={
-                          !visibleDocumentIds.length ||
-                          documentsLoading ||
-                          bulkActionLoading ||
-                          selectAllMatchedLoading
-                        }
-                      >
-                        {allDocumentsSelectedOnPage ? 'Unselect Page' : 'Select Page'}
-                      </button>
-                      {!!selectedDocumentCount && (
+                        {!!selectedOutsideCurrentPageCount && (
+                          <span className="notion-summary-chip">
+                            {selectedOutsideCurrentPageCount} from other page(s)
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleSelectAllMatchedDocuments}
+                          disabled={
+                            !documentsTotal ||
+                            documentsLoading ||
+                            bulkActionLoading ||
+                            selectAllMatchedLoading
+                          }
+                        >
+                          {selectAllMatchedLoading ? 'Selecting Matched...' : 'Select Matched'}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={toggleSelectAllDocumentsOnPage}
+                          disabled={
+                            !visibleDocumentIds.length ||
+                            documentsLoading ||
+                            bulkActionLoading ||
+                            selectAllMatchedLoading
+                          }
+                        >
+                          {allDocumentsSelectedOnPage ? 'Unselect Page' : 'Select Page'}
+                        </button>
                         <button
                           type="button"
                           className="btn"
@@ -7062,17 +7152,8 @@ export default function HomePage() {
                         >
                           Clear Selection
                         </button>
-                      )}
-                      <button
-                        type="button"
-                        className="btn"
-                        onClick={resetDocumentsView}
-                        disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                      >
-                        Reset View
-                      </button>
-                    </div>
-                  </div>
+                      </div>
+                    )}
                   {!!selectedDocumentCount && (
                     <section className="notion-bulk-panel" aria-label="Bulk actions">
                       <div className="notion-bulk-panel-head">
