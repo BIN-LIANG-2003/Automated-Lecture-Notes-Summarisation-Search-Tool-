@@ -44,12 +44,19 @@ const SEEDED_SUMMARY_STORE = {
 
 async function loginAsAlice(page) {
   await page.goto('/#/login');
-  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+  await expect(page.locator('#login-username')).toBeVisible();
   await page.locator('#login-username').fill('alice');
   await page.locator('#login-password').fill('password123');
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   await page.waitForURL('**/#/');
   await expect(page.locator('.notion-top-summary-btn')).toBeVisible();
+}
+
+async function goToMyFiles(page) {
+  await expect(page.getByRole('button', { name: 'My Files' })).toBeVisible();
+  await page.getByRole('button', { name: 'My Files' }).click();
+  await expect(page.locator('#files-section')).toBeVisible();
+  await expect(page.locator('#search-input')).toBeVisible();
 }
 
 async function seedHomeStorage(page) {
@@ -67,13 +74,89 @@ async function seedHomeStorage(page) {
   );
 }
 
-test('home summary result modal shows export actions and PDF export downloads', async ({ page }) => {
+async function installWindowOpenSpy(page) {
+  await page.evaluate(() => {
+    window.__studyhubWindowOpenCalls = [];
+    window.open = (url, target, features) => {
+      window.__studyhubWindowOpenCalls.push({
+        url: String(url || ''),
+        target: String(target || ''),
+        features: String(features || ''),
+      });
+      return null;
+    };
+  });
+}
+
+async function expectMailtoOpen(page) {
+  await page.waitForFunction(() => Array.isArray(window.__studyhubWindowOpenCalls) && window.__studyhubWindowOpenCalls.length > 0);
+  return page.evaluate(() => window.__studyhubWindowOpenCalls[window.__studyhubWindowOpenCalls.length - 1]);
+}
+
+test('files workspace summary center opens summary result modal with export and email actions', async ({ page }) => {
   await seedHomeStorage(page);
   await loginAsAlice(page);
+  await goToMyFiles(page);
 
   await page.locator('.notion-top-summary-btn').click();
-  await expect(page.getByRole('dialog', { name: 'Document Summary Center' })).toBeVisible();
-  await page.getByRole('button', { name: 'Open Summary' }).click();
+  const summaryCenter = page.getByRole('dialog', { name: 'Document Summary Center' });
+  await expect(summaryCenter).toBeVisible();
+  await expect(summaryCenter.getByRole('button', { name: 'Open Summary' })).toBeVisible();
+  await expect(summaryCenter.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
+  await expect(summaryCenter.getByRole('button', { name: 'Share by Email' })).toBeVisible();
+
+  await installWindowOpenSpy(page);
+  await summaryCenter.getByRole('button', { name: 'Share by Email' }).click();
+  const summaryCenterMail = await expectMailtoOpen(page);
+  expect(summaryCenterMail.url).toContain('mailto:');
+  expect(summaryCenterMail.url).toContain('StudyHub%20Note%20Summary');
+
+  await summaryCenter.getByRole('button', { name: 'Open Summary' }).click();
+  const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });
+  await expect(summaryModal).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Export TXT' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Export PDF' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Share by Email' })).toBeVisible();
+
+  const [txtDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    summaryModal.getByRole('button', { name: 'Export TXT' }).click(),
+  ]);
+  expect(txtDownload.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.txt$/);
+
+  const [pdfDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    summaryModal.getByRole('button', { name: 'Export PDF' }).click(),
+  ]);
+  expect(pdfDownload.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
+
+  await summaryModal.getByRole('button', { name: 'Share by Email' }).click();
+  const summaryModalMail = await expectMailtoOpen(page);
+  expect(summaryModalMail.url).toContain('mailto:');
+  expect(summaryModalMail.url).toContain('StudyHub%20Note%20Summary');
+});
+
+test('files detail pane summarize flow opens the current summary result modal', async ({ page }) => {
+  await loginAsAlice(page);
+  await goToMyFiles(page);
+
+  await page.locator('#search-input').fill('graph');
+  await page.locator('#search-btn').click();
+
+  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
+  await expect(graphCard).toBeVisible();
+  await graphCard.getByRole('button', { name: 'View' }).click();
+  await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
+
+  const summarizeResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/analyze-text') &&
+      response.request().method() === 'POST' &&
+      response.ok()
+  );
+  await page.locator('.document-detail-card').getByRole('button', { name: 'Summarize Document' }).click();
+  await summarizeResponse;
 
   const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });
   await expect(summaryModal).toBeVisible();
@@ -82,37 +165,15 @@ test('home summary result modal shows export actions and PDF export downloads', 
   await expect(summaryModal.getByRole('button', { name: 'Export PDF' })).toBeVisible();
   await expect(summaryModal.getByRole('button', { name: 'Share by Email' })).toBeVisible();
 
+  await installWindowOpenSpy(page);
+  await summaryModal.getByRole('button', { name: 'Share by Email' }).click();
+  const modalMail = await expectMailtoOpen(page);
+  expect(modalMail.url).toContain('mailto:');
+  expect(modalMail.url).toContain('StudyHub%20Note%20Summary');
+
   const [download] = await Promise.all([
     page.waitForEvent('download'),
     summaryModal.getByRole('button', { name: 'Export PDF' }).click(),
-  ]);
-  expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
-});
-
-test('document detail summary actions stay available and PDF export downloads', async ({ page }) => {
-  await loginAsAlice(page);
-
-  await page.goto('/#/document/1');
-  await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
-
-  const summarizeResponse = page.waitForResponse(
-    (response) =>
-      response.url().includes('/api/analyze-text') &&
-      response.request().method() === 'POST' &&
-      response.ok()
-  );
-  await page.getByRole('button', { name: 'Summarize Document' }).click();
-  await summarizeResponse;
-
-  const detailCard = page.locator('.document-detail-card');
-  await expect(detailCard.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
-  await expect(detailCard.getByRole('button', { name: 'Export TXT' })).toBeVisible();
-  await expect(detailCard.getByRole('button', { name: 'Export PDF' })).toBeVisible();
-  await expect(detailCard.getByRole('button', { name: 'Share by Email' })).toBeVisible();
-
-  const [download] = await Promise.all([
-    page.waitForEvent('download'),
-    detailCard.getByRole('button', { name: 'Export PDF' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
 });

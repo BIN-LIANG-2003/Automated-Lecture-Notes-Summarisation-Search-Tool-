@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
+import OcrResultModal from '../components/OcrResultModal.jsx';
+import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
 import { authFetch } from '../lib/authFetch.js';
@@ -23,7 +25,7 @@ import {
   downloadTextFile,
   openSummaryEmailDraft,
 } from '../lib/summaryExport.js';
-import { buildSummaryDiagnostics, formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
+import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
@@ -37,6 +39,11 @@ const DEFAULT_SUMMARY_PROGRESS = {
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
 const isImageFileType = (value) => IMAGE_FILE_TYPE_SET.has(String(value || '').toLowerCase());
+const stripFileExtension = (value) => String(value || '').replace(/\.[a-z0-9]+$/i, '').trim();
+const buildOcrNoteTitle = (value) => {
+  const base = stripFileExtension(value) || 'Image';
+  return `${base} OCR Note`;
+};
 const getLinkSharingModeLabel = (mode) => {
   const safeMode = String(mode || '').trim().toLowerCase();
   if (safeMode === 'public') return 'Anyone With Link';
@@ -121,8 +128,12 @@ export default function DocumentDetail() {
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [ocrResultOpen, setOcrResultOpen] = useState(false);
+  const [ocrSaveFormat, setOcrSaveFormat] = useState('txt');
+  const [ocrSourceDetail, setOcrSourceDetail] = useState('');
   const [extractedText, setExtractedText] = useState('');
   const [analysisResult, setAnalysisResult] = useState(null);
+  const [summaryResultOpen, setSummaryResultOpen] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingOcr, setIsSavingOcr] = useState(false);
@@ -151,7 +162,6 @@ export default function DocumentDetail() {
   const canUseAiTools = Boolean(document?.allowAiTools);
   const canUseOcr = canUseAiTools && Boolean(document?.allowOcr);
   const canExportSummary = Boolean(document?.allowExport);
-  const summaryDiagnostics = buildSummaryDiagnostics(analysisResult);
 
   useEffect(() => {
     const fetchDoc = async () => {
@@ -197,7 +207,11 @@ export default function DocumentDetail() {
         const data = normalizeDocument(payload);
         setDocument(data);
         setExtractedText(isImageFileType(data?.fileType) ? (data?.content || '') : '');
+        setOcrSourceDetail('');
+        setOcrSaveFormat('txt');
+        setOcrResultOpen(false);
         setAnalysisResult(null);
+        setSummaryResultOpen(false);
       } catch (err) {
         setError(err.message);
       } finally {
@@ -334,6 +348,15 @@ export default function DocumentDetail() {
     }
   };
 
+  const closeSummaryResultModal = () => {
+    setSummaryResultOpen(false);
+  };
+
+  const closeOcrResultModal = () => {
+    setOcrResultOpen(false);
+    setOcrSaveFormat('txt');
+  };
+
   const handleExtractText = async () => {
     if (!canUseAiTools) {
       showToast('AI tools are disabled in this workspace settings.', 'warning');
@@ -362,7 +385,11 @@ export default function DocumentDetail() {
 
       const text = coerceOcrText(data?.text ?? data);
       setExtractedText(text);
+      setOcrSourceDetail(String(data?.source || '').trim());
+      setOcrSaveFormat('txt');
+      setOcrResultOpen(true);
       setAnalysisResult(null);
+      setSummaryResultOpen(false);
       if (!text) {
         const source = String(data?.source || '').trim();
         showToast(
@@ -466,6 +493,7 @@ export default function DocumentDetail() {
       } else {
         showToast('Summary is ready.', 'success');
       }
+      setSummaryResultOpen(true);
     } catch (err) {
       showToast(`Analysis failed: ${err.message || 'Unknown error'}`, 'error');
     } finally {
@@ -522,7 +550,7 @@ export default function DocumentDetail() {
     openSummaryEmailDraft(analysisResult);
   };
 
-  const handleSaveOcrText = async () => {
+  const handleSaveOcrResult = async () => {
     if (!username) {
       showToast('Please sign in to save OCR text as a note.', 'warning');
       return;
@@ -538,7 +566,8 @@ export default function DocumentDetail() {
       const payload = {
         username,
         text: safeText,
-        title: `${document?.title || 'Untitled'} OCR Note`,
+        title: buildOcrNoteTitle(document?.title),
+        file_format: ocrSaveFormat,
       };
       if (shareToken) payload.share_token = shareToken;
       const response = await authFetch(`/api/documents/${document.id}/import-text`, {
@@ -552,7 +581,9 @@ export default function DocumentDetail() {
       }
       const savedTitle = String(data?.document?.title || '').trim();
       showToast(
-        savedTitle ? `OCR text saved as "${savedTitle}".` : 'OCR text saved as a new note.',
+        savedTitle
+          ? `OCR text saved as "${savedTitle}".`
+          : `OCR text saved as a new ${String(ocrSaveFormat || 'txt').toUpperCase()} note.`,
         'success'
       );
     } catch (err) {
@@ -928,23 +959,46 @@ export default function DocumentDetail() {
                       {!canUseOcr ? 'OCR Disabled' : isExtracting ? 'Running image OCR...' : 'Image OCR'}
                     </button>
                   )}
-                  <button
-                    type="button"
-                    className="btn btn-primary notion-ai-action-chip"
-                    onClick={handleAnalyzeText}
-                    disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
-                  >
-                    {isAnalyzing ? 'Summarizing document...' : (isImage ? 'Summarize Text' : 'Summarize Document')}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn notion-ai-action-chip"
-                    onClick={() => handleAnalyzeText({ forceRefresh: true })}
-                    disabled={isAnalyzing || !canUseAiTools}
-                    title="Bypass cache and refresh document text before summarizing"
-                  >
-                    Rebuild (Refresh Text)
-                  </button>
+                  {!isImage && (
+                    <>
+                      <button
+                        type="button"
+                        className="btn btn-primary notion-ai-action-chip"
+                        onClick={handleAnalyzeText}
+                        disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
+                      >
+                        {isAnalyzing ? 'Summarizing document...' : 'Summarize Document'}
+                      </button>
+                      <button
+                        type="button"
+                        className="btn notion-ai-action-chip"
+                        onClick={() => handleAnalyzeText({ forceRefresh: true })}
+                        disabled={isAnalyzing || !canUseAiTools}
+                        title="Bypass cache and refresh document text before summarizing"
+                      >
+                        Rebuild (Refresh Text)
+                      </button>
+                    </>
+                  )}
+                  {isImage && Boolean(extractedText.trim()) && (
+                    <button
+                      type="button"
+                      className="btn notion-ai-action-chip"
+                      onClick={() => setOcrResultOpen(true)}
+                      disabled={isExtracting}
+                    >
+                      Open OCR Result
+                    </button>
+                  )}
+                  {analysisResult && (
+                    <button
+                      type="button"
+                      className="btn notion-ai-action-chip"
+                      onClick={() => setSummaryResultOpen(true)}
+                    >
+                      Open Summary Result
+                    </button>
+                  )}
                 </div>
               )}
               {summaryProgress.active && (
@@ -965,107 +1019,71 @@ export default function DocumentDetail() {
                 </div>
               )}
 
-              {isImage ? (
-                <article className="notion-ai-output">
-                  <h3>Text Content</h3>
-                  <div className="notion-ai-actions-simple">
-                    <button
-                      type="button"
-                      className="btn notion-ai-action-chip"
-                      onClick={handleSaveOcrText}
-                      disabled={isSavingOcr || !extractedText.trim() || !username}
-                    >
-                      {isSavingOcr ? 'Saving note...' : 'Save OCR As Note'}
-                    </button>
-                  </div>
-                  <textarea
-                    value={extractedText}
-                    onChange={(event) => setExtractedText(event.target.value)}
-                    rows={8}
-                    style={{ width: '100%' }}
-                    placeholder="OCR output will appear here. You can also edit it manually."
-                  />
+              <article className="notion-ai-output">
+                <h3>{isImage ? 'Image OCR Workflow' : 'Summary Workflow'}</h3>
+                {isImage ? (
+                  <>
+                    <p>
+                      Run Image OCR to open the OCR result modal, review the extracted text, save it as TXT, DOCX, or PDF,
+                      and generate a summary without leaving this page.
+                    </p>
+                    <p className="muted tiny">
+                      {extractedText.trim()
+                        ? `OCR text is ready${ocrSourceDetail ? ` (${ocrSourceDetail})` : ''}. Reopen the OCR result modal to edit, save, or summarize it.`
+                        : 'No OCR result yet. Use the Image OCR action above to start.'}
+                    </p>
+                    {!username && (
+                      <p className="muted tiny">Sign in with a workspace account before saving OCR text as a new note.</p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <p>Document summaries now open in the current Summary Result modal instead of rendering inline here.</p>
+                    <p className="muted tiny">
+                      Use Summarize Document to generate a result, then review copy, TXT export, PDF export, and email share actions in the modal.
+                    </p>
+                  </>
+                )}
+                {analysisResult && (
                   <p className="muted tiny">
-                    Saving creates a new text note in the same workspace so it can be reopened, edited, and downloaded later.
+                    Latest summary is ready. Use "Open Summary Result" to review it again.
                   </p>
-                  {!username && (
-                    <p className="muted tiny">Sign in with a workspace account before saving OCR text as a note.</p>
-                  )}
-                </article>
-              ) : (
-                <article className="notion-ai-output">
-                  <h3>Text Content</h3>
-                  <p className="muted tiny">Summary reads document content on server and only returns the summary result.</p>
-                </article>
-              )}
-
-              {analysisResult && (
-                <article className="notion-ai-output">
-                  <h3>Summary</h3>
-                  <p>{analysisResult.summary || 'No summary available.'}</p>
-                  {!!summaryDiagnostics.length && (
-                    <div className="notion-ai-diagnostics" aria-label="Summary diagnostics">
-                      {summaryDiagnostics.map((item) => (
-                        <div key={item.key} className="notion-ai-diagnostic-item">
-                          <span>{item.label}</span>
-                          <strong>{item.value}</strong>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  <h4>Keywords</h4>
-                  <ul>
-                    {(Array.isArray(analysisResult.keywords) ? analysisResult.keywords : []).map((keyword, index) => (
-                      <li key={`${keyword}-${index}`}>{keyword}</li>
-                    ))}
-                  </ul>
-                  <h4>Key Sentences</h4>
-                  <ul>
-                    {(Array.isArray(analysisResult.key_sentences) ? analysisResult.key_sentences : []).map((sentence, index) => (
-                      <li key={`sentence-${index}`}>{sentence}</li>
-                    ))}
-                  </ul>
-                  <div className="notion-ai-export-actions">
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={handleCopySummary}
-                      disabled={!canExportSummary}
-                    >
-                      Copy Summary
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={handleExportSummary}
-                      disabled={!canExportSummary}
-                    >
-                      Export TXT
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={handleExportSummaryPdf}
-                      disabled={!canExportSummary}
-                    >
-                      Export PDF
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={handleEmailSummary}
-                      disabled={!canExportSummary}
-                    >
-                      Share by Email
-                    </button>
-                  </div>
-                </article>
-              )}
+                )}
+              </article>
             </article>
           </section>
         </section>
       </article>
       </main>
+      <SummaryResultModal
+        open={summaryResultOpen}
+        onClose={closeSummaryResultModal}
+        title="Summary Result"
+        summaryTitle={document?.title || ''}
+        analysisResult={analysisResult}
+        onCopySummary={handleCopySummary}
+        onExportSummary={handleExportSummary}
+        onExportSummaryPdf={handleExportSummaryPdf}
+        onEmailSummary={handleEmailSummary}
+        allowExport={canExportSummary}
+      />
+      <OcrResultModal
+        open={ocrResultOpen && !summaryResultOpen}
+        onClose={closeOcrResultModal}
+        sourceLabel={document?.title || ''}
+        sourceDetail={ocrSourceDetail}
+        extractedText={extractedText}
+        onChangeExtractedText={setExtractedText}
+        saveFormat={ocrSaveFormat}
+        onSaveFormatChange={setOcrSaveFormat}
+        onSave={handleSaveOcrResult}
+        onSummarize={handleAnalyzeText}
+        isExtracting={isExtracting}
+        isAnalyzing={isAnalyzing}
+        isSaving={isSavingOcr}
+        canSave={Boolean(username)}
+        canSummarize={!isSharedView && canUseAiTools}
+      />
       <UiFeedbackLayer
         toastState={toastState}
         confirmDialogState={confirmDialogState}
