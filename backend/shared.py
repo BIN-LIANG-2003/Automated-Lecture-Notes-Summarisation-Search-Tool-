@@ -769,6 +769,113 @@ def normalize_ocr_text(payload, depth=0):
     return ''
 
 
+SUSPICIOUS_OCR_LATEX_PATTERNS = (
+    ('begin_align', re.compile(r'\\begin\{align\*?\}', re.IGNORECASE)),
+    ('end_align', re.compile(r'\\end\{align\*?\}', re.IGNORECASE)),
+    ('frac', re.compile(r'\\frac\b', re.IGNORECASE)),
+    ('mathfrak', re.compile(r'\\mathfrak\b', re.IGNORECASE)),
+    ('stackrel', re.compile(r'\\stackrel\b', re.IGNORECASE)),
+    ('underset', re.compile(r'\\underset\b', re.IGNORECASE)),
+    ('infty', re.compile(r'\\infty\b', re.IGNORECASE)),
+)
+
+
+def assess_ocr_text_quality(text):
+    normalized = re.sub(r'\s+', ' ', str(text or '').strip())
+    if not normalized:
+        return {
+            'ok': False,
+            'reason': 'OCR text is empty after normalization',
+            'metrics': {'char_count': 0},
+        }
+
+    lowered = normalized.lower()
+    word_tokens = re.findall(r'[a-z]{3,}', lowered)
+    unique_word_ratio = (
+        len(set(word_tokens)) / float(len(word_tokens))
+        if word_tokens else 1.0
+    )
+
+    structural_counts = {}
+    structural_total = 0
+    structural_max = 0
+    structural_top_label = ''
+    for label, pattern in SUSPICIOUS_OCR_LATEX_PATTERNS:
+        count = len(pattern.findall(lowered))
+        if count <= 0:
+            continue
+        structural_counts[label] = count
+        structural_total += count
+        if count > structural_max:
+            structural_max = count
+            structural_top_label = label
+
+    token_parts = re.findall(r'\\[a-z]+(?:\*?)?|[a-z]{2,}|\d+', lowered)
+    token_counts = {}
+    for token in token_parts[:4000]:
+        token_counts[token] = token_counts.get(token, 0) + 1
+    most_common_token = ''
+    most_common_count = 0
+    for token, count in token_counts.items():
+        if count > most_common_count:
+            most_common_token = token
+            most_common_count = count
+    repeated_token_ratio = (
+        most_common_count / float(len(token_parts))
+        if token_parts else 0.0
+    )
+
+    latex_command_tokens = re.findall(r'\\[a-z]+(?:\*?)?', lowered)
+    unique_latex_ratio = (
+        len(set(latex_command_tokens)) / float(len(latex_command_tokens))
+        if latex_command_tokens else 1.0
+    )
+
+    reasons = []
+    if len(normalized) >= 220 and structural_total >= 10 and structural_max >= 4:
+        reasons.append(
+            f"repeated LaTeX-style control sequences detected ({structural_top_label}:{structural_max}, total:{structural_total})"
+        )
+    if (
+        len(normalized) >= 400
+        and structural_total >= 6
+        and unique_word_ratio < 0.20
+        and repeated_token_ratio >= 0.18
+    ):
+        reasons.append(
+            f"very long OCR output has low language diversity (unique_word_ratio:{unique_word_ratio:.2f}, repeated_token_ratio:{repeated_token_ratio:.2f})"
+        )
+    if (
+        len(normalized) >= 500
+        and len(latex_command_tokens) >= 18
+        and unique_latex_ratio <= 0.45
+        and structural_total >= 6
+    ):
+        reasons.append(
+            f"runaway repeated LaTeX command pattern detected (latex_commands:{len(latex_command_tokens)}, unique_latex_ratio:{unique_latex_ratio:.2f})"
+        )
+
+    metrics = {
+        'char_count': len(normalized),
+        'word_count': len(word_tokens),
+        'unique_word_ratio': round(unique_word_ratio, 4),
+        'structural_token_total': structural_total,
+        'structural_token_max': structural_max,
+        'structural_token_top': structural_top_label,
+        'structural_counts': structural_counts,
+        'latex_command_count': len(latex_command_tokens),
+        'unique_latex_ratio': round(unique_latex_ratio, 4),
+        'most_common_token': most_common_token,
+        'most_common_token_count': most_common_count,
+        'repeated_token_ratio': round(repeated_token_ratio, 4),
+    }
+    return {
+        'ok': not reasons,
+        'reason': '; '.join(reasons),
+        'metrics': metrics,
+    }
+
+
 def get_ocr_runtime_status():
     ocrmypdf_path = shutil.which(OCRMYPDF_BINARY)
     status = {
@@ -913,11 +1020,32 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
         if not extracted_text and payload is None:
             extracted_text = str(response.text or '').strip()
         if extracted_text:
-            return True, extracted_text, ''
+            quality = assess_ocr_text_quality(extracted_text)
+            if quality.get('ok'):
+                return True, extracted_text, ''
+            print(
+                "OCR provider suspicious output:",
+                json.dumps(
+                    {
+                        'provider': 'external',
+                        'url': endpoint,
+                        'attempt': attempt_name,
+                        'filename': safe_filename,
+                        'reason': quality.get('reason') or 'Suspicious OCR output',
+                        'metrics': quality.get('metrics') or {},
+                        'sample': extracted_text[:180],
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+            attempt_errors.append(
+                f'{attempt_name}: suspicious OCR output - {quality.get("reason") or "unusable text"}'
+            )
+            continue
         attempt_errors.append(f'{attempt_name}: empty response')
 
     return False, '', (
-        'External OCR returned empty text'
+        'External OCR did not return usable text'
         + (f' ({"; ".join(attempt_errors)})' if attempt_errors else '')
     )
 
@@ -1060,7 +1188,26 @@ def extract_text_from_image(doc_id=None):
     if hf_headers:
         try:
             target_url = hf_model_url(OCR_MODEL_ID)
-            response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
+
+            if 'ngrok' in str(target_url or '').lower():
+                files = {
+                    'file': ('upload.png', img_bytes, mimetype),
+                }
+                safe_headers = {
+                    key: value
+                    for key, value in hf_headers.items()
+                    if str(key).lower() != 'content-type'
+                }
+                print(f"Routing OCR request to ngrok via multipart form: {target_url}")
+                response = requests.post(
+                    target_url,
+                    headers=safe_headers,
+                    files=files,
+                    timeout=90,
+                )
+            else:
+                print(f"Routing OCR request to HF via binary stream: {target_url}")
+                response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
             if response.status_code < 400:
                 try:
                     ocr_result = response.json()

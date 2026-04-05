@@ -12,6 +12,7 @@ from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend.security import create_auth_token
+from backend.shared import assess_ocr_text_quality
 from backend.utils import parse_int, row_to_dict, utcnow_iso
 from backend.workspace_domain import ensure_owner_membership, workspace_settings_to_json
 
@@ -418,6 +419,29 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         ]
         self.assertTrue(listed_items, 'Uploaded PDF should remain visible in the document listing.')
         self.assertEqual(str(listed_items[0]['file_type']).lower(), 'pdf')
+
+    def test_ocr_quality_check_allows_normal_text(self):
+        quality = assess_ocr_text_quality(
+            'Graph traversal notes explain how BFS and DFS visit nodes in a predictable order. '
+            'These OCR results include ordinary sentences, short keywords, and no runaway control syntax.'
+        )
+        self.assertTrue(quality['ok'])
+        self.assertEqual(quality['reason'], '')
+
+    def test_ocr_quality_check_rejects_runaway_latex_hallucination(self):
+        suspicious_text = ' '.join(
+            [
+                r'\begin{align*} \frac{a}{b} \mathfrak{A} \stackrel{x}{y} \underset{n}{m} \infty'
+                for _ in range(18)
+            ]
+        )
+        quality = assess_ocr_text_quality(suspicious_text)
+        self.assertFalse(quality['ok'])
+        self.assertIn('latex', quality['reason'].lower())
+        self.assertGreaterEqual(
+            parse_int(quality['metrics'].get('structural_token_total', 0), 0, 0),
+            10,
+        )
 
     def test_search_edge_case_queries_do_not_error(self):
         self._insert_document(
