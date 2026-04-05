@@ -1149,130 +1149,70 @@ def extract_text_from_image(doc_id=None):
     if not img_bytes:
         return jsonify({"error": "Empty image file"}), 400
 
-    external_error = ''
-    external_endpoint = str(EXTERNAL_OCR_SERVICE_URL or '').strip()
-    if external_endpoint:
-        external_ok, external_text, external_error = call_external_ocr_service(
-            img_bytes,
-            mimetype=mimetype,
-            source_filename=source_filename,
-        )
-        if external_ok and external_text:
-            print(
-                "OCR provider success:",
-                json.dumps(
-                    {
-                        "provider": "external",
-                        "url": external_endpoint,
-                        "filename": source_filename,
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-            return jsonify({"text": external_text, "source": "external"})
-        print(
-            "OCR provider failure:",
-            json.dumps(
-                {
-                    "provider": "external",
-                    "url": external_endpoint,
-                    "filename": source_filename,
-                    "message": external_error,
-                },
-                ensure_ascii=False,
-            ),
-        )
+    # ================== 👇 从这里开始向下覆盖 👇 ==================
+    import os
+    import requests
 
-    hf_error = ''
-    hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
-    if hf_headers:
+    # 1. 动态嗅探：去读取你在 Render 里配置的 ngrok 专属路线
+    custom_endpoint = os.environ.get("EXTERNAL_OCR_SERVICE_URL")
+
+    if custom_endpoint and custom_endpoint.strip() != "":
+        # 🟢 走私有算力中心 (Colab)
+        url = custom_endpoint.strip()
+        # 核心防坑：把水流装进标准文件盒子里！
+        files = {"file": ("upload.png", img_bytes, mimetype)}
+        print(f"🚀 [OCR路由] 正在将图片表单发送至私人算力中心: {url}")
+
         try:
-            target_url = hf_model_url(OCR_MODEL_ID)
-
-            if 'ngrok' in str(target_url or '').lower():
-                files = {
-                    'file': ('upload.png', img_bytes, mimetype),
-                }
-                safe_headers = {
-                    key: value
-                    for key, value in hf_headers.items()
-                    if str(key).lower() != 'content-type'
-                }
-                print(f"Routing OCR request to ngrok via multipart form: {target_url}")
-                response = requests.post(
-                    target_url,
-                    headers=safe_headers,
-                    files=files,
-                    timeout=90,
-                )
+            # 发送标准表单，不要自带 headers 里的 Content-Type
+            response = requests.post(url, files=files, timeout=90)
+            if response.status_code == 200:
+                ocr_result = response.json()
+                extracted_text = normalize_ocr_text(ocr_result)
+                if extracted_text:
+                    return jsonify({"text": extracted_text, "source": "private_ngrok"})
+                return jsonify({"error": "OCR failed: Private endpoint returned empty text"}), 502
             else:
-                print(f"Routing OCR request to HF via binary stream: {target_url}")
-                response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
-            if response.status_code < 400:
-                try:
-                    ocr_result = response.json()
-                    extracted_text = normalize_ocr_text(ocr_result)
-
-                    if extracted_text:
-                        return jsonify({"text": extracted_text, "source": "huggingface"})
-                    hf_error = "HF OCR returned empty text"
-                except Exception:
-                    hf_error = f"HF OCR returned non-JSON response: {hf_error_message(response)}"
-            else:
-                hf_error = f"HF OCR failed ({response.status_code}): {hf_error_message(response)}"
-                print(
-                    "OCR provider failure:",
-                    json.dumps(
-                        {
-                            "provider": "huggingface",
-                            "status_code": response.status_code,
-                            "model": OCR_MODEL_ID,
-                            "url": target_url,
-                            "content_type": str(response.headers.get('content-type') or '').strip(),
-                            "message": hf_error,
-                        },
-                        ensure_ascii=False,
-                    ),
-                )
+                return jsonify({"error": f"OCR failed: Private endpoint returned HTTP {response.status_code}"}), 502
         except Exception as e:
-            hf_error = f"HF OCR error: {e}"
-            print(
-                "OCR provider exception:",
-                json.dumps(
-                    {
-                        "provider": "huggingface",
-                        "model": OCR_MODEL_ID,
-                        "url": hf_model_url(OCR_MODEL_ID),
-                        "message": hf_error,
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-    else:
-        hf_error = "HF_API_TOKEN is not configured on server"
+            return jsonify({"error": f"OCR failed: Private endpoint error: {str(e)}"}), 502
 
-    runtime_status = get_ocr_runtime_status()
-
-    if '404' in hf_error:
-        hf_error = (
-            hf_error
-            + ". Hugging Face hf-inference currently has no OCR image endpoint for this model/account."
-        )
-    if external_error and not hf_error:
-        error_text = external_error
-    elif external_error and hf_error:
-        error_text = f"{external_error} | {hf_error}"
     else:
-        error_text = hf_error
-    return jsonify({
-        "error": f"OCR failed: {error_text}" if error_text else "OCR failed",
-        "details": {
-            "external": external_error,
-            "huggingface": hf_error,
-            "runtime": runtime_status,
-            "hint": "Configure EXTERNAL_OCR_SERVICE_URL or a valid Hugging Face OCR model to enable OCR."
-        }
-    }), 502
+        # 🔵 降级走 Hugging Face 官方免费通道
+        hf_error = ''
+        hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
+        if hf_headers:
+            try:
+                target_url = hf_model_url(OCR_MODEL_ID)
+                print(f"☁️ [OCR路由] 正在使用 Hugging Face 官方接口: {target_url}")
+                # 官方通道用二进制流
+                response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
+                if response.status_code < 400:
+                    try:
+                        ocr_result = response.json()
+                        extracted_text = normalize_ocr_text(ocr_result)
+                        if extracted_text:
+                            return jsonify({"text": extracted_text, "source": "huggingface"})
+                        hf_error = "HF OCR returned empty text"
+                    except Exception:
+                        hf_error = f"HF OCR returned non-JSON response: {hf_error_message(response)}"
+                else:
+                    hf_error = f"HF OCR failed ({response.status_code}): {hf_error_message(response)}"
+            except Exception as e:
+                hf_error = f"HF OCR error: {e}"
+        else:
+            hf_error = "HF_API_TOKEN is not configured on server"
+
+        runtime_status = get_ocr_runtime_status()
+        return jsonify({
+            "error": f"OCR failed: {hf_error}" if hf_error else "OCR failed",
+            "details": {
+                "huggingface": hf_error,
+                "runtime": runtime_status,
+                "hint": "Configure EXTERNAL_OCR_SERVICE_URL or HF_API_TOKEN."
+            }
+        }), 502
+    # ================== 👆 到此为止 👆 ==================
 
 
 # ==========================================
