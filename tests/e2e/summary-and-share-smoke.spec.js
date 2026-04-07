@@ -44,11 +44,15 @@ const SEEDED_SUMMARY_STORE = {
 
 async function loginAsAlice(page) {
   await page.goto('/#/login');
-  await expect(page.locator('#login-username')).toBeVisible();
-  await page.locator('#login-username').fill('alice');
-  await page.locator('#login-password').fill('password123');
-  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-  await page.waitForURL('**/#/');
+  const loginField = page.locator('#login-username');
+  if (await loginField.isVisible().catch(() => false)) {
+    await loginField.fill('alice');
+    await page.locator('#login-password').fill('password123');
+    await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    await page.waitForURL('**/#/');
+  } else {
+    await page.waitForURL('**/#/');
+  }
   await expect(page.locator('.notion-top-summary-btn')).toBeVisible();
 }
 

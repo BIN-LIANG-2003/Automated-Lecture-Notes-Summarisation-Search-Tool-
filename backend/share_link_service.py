@@ -1,14 +1,19 @@
+import html
+
+import requests
 from flask import jsonify, request
 
-from .config import DEFAULT_WORKSPACE_SETTINGS
+from .config import DEFAULT_WORKSPACE_SETTINGS, RESEND_API_KEY, RESEND_FROM_EMAIL
 from .db import get_db_connection
 from .document_domain import plaintext_to_html
 from .security import get_authenticated_username
-from .utils import parse_bool, parse_int, row_to_dict, utcnow_iso
+from .utils import normalize_email, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .share_domain import (
+    build_document_share_url,
     check_document_access,
     count_active_document_share_links,
     create_document_share_token,
+    expire_document_share_links,
     get_document_link_sharing_mode,
     list_document_share_link_payloads,
     serialize_document_share_link_row,
@@ -16,7 +21,250 @@ from .share_domain import (
     user_can_manage_document_share_links,
     validate_document_share_token,
 )
-from .workspace_domain import expires_at_for_days, get_workspace_settings
+from .workspace_domain import expires_at_for_days, get_workspace_settings, is_valid_email
+
+
+def _load_share_creation_context(conn, doc_id, username):
+    cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+    doc = cursor.fetchone()
+    if not doc:
+        return None, {'error': 'Document not found'}, 404
+
+    doc_data = row_to_dict(doc) or {}
+    workspace_id = str(doc_data.get('workspace_id') or '').strip()
+    workspace_settings = (
+        get_workspace_settings(conn, workspace_id)
+        if workspace_id
+        else dict(DEFAULT_WORKSPACE_SETTINGS)
+    )
+
+    if not user_can_manage_document_share_links(conn, doc, username):
+        return None, {'error': 'Only owner (or allowed members) can create share links'}, 403
+
+    link_mode = workspace_settings.get('link_sharing_mode', DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode'])
+    if link_mode == 'restricted':
+        return None, {'error': 'Link sharing is restricted in this workspace settings'}, 403
+
+    return {
+        'doc': doc,
+        'doc_data': doc_data,
+        'workspace_id': workspace_id,
+        'workspace_settings': workspace_settings,
+        'link_mode': link_mode,
+    }, None, 200
+
+
+def _find_reusable_document_share_link_payload(conn, doc_id):
+    expire_document_share_links(conn, doc_id)
+    cursor = conn.execute(
+        '''
+        SELECT *
+        FROM document_share_links
+        WHERE document_id = ?
+          AND status = 'active'
+        ORDER BY created_at DESC, id DESC
+        ''',
+        (doc_id,),
+    )
+    for row in cursor.fetchall():
+        payload = to_document_share_link_payload(row)
+        if payload.get('is_accessible'):
+            return payload
+    return None
+
+
+def _prepare_document_share_link_payload(
+    conn,
+    doc_id,
+    username,
+    requested_expiry=None,
+    *,
+    allow_reuse_when_limit=False,
+):
+    context, error_payload, error_status = _load_share_creation_context(conn, doc_id, username)
+    if error_payload:
+        return None, error_payload, error_status
+
+    workspace_settings = context['workspace_settings']
+    link_mode = context['link_mode']
+    workspace_id = context['workspace_id']
+
+    if requested_expiry is None or str(requested_expiry).strip() == '':
+        expiry_days = workspace_settings.get('default_share_expiry_days', 7)
+    else:
+        expiry_days = requested_expiry
+    expiry_days = parse_int(expiry_days, 7, 1, 30)
+    expires_at = expires_at_for_days(expiry_days)
+
+    max_active_share_links = parse_int(
+        workspace_settings.get('max_active_share_links_per_document', 5),
+        5,
+        1,
+        20,
+    )
+    auto_revoke_previous = parse_bool(
+        workspace_settings.get('auto_revoke_previous_share_links', False),
+        False,
+    )
+
+    active_count = count_active_document_share_links(conn, doc_id)
+    revoked_before_create = 0
+    if auto_revoke_previous and active_count > 0:
+        revoked_before_create = active_count
+        conn.execute(
+            '''
+            UPDATE document_share_links
+            SET status = 'revoked'
+            WHERE document_id = ? AND status = 'active'
+            ''',
+            (doc_id,),
+        )
+        active_count = 0
+
+    if active_count >= max_active_share_links:
+        if allow_reuse_when_limit:
+            reused_payload = _find_reusable_document_share_link_payload(conn, doc_id)
+            if reused_payload:
+                reused_payload['expiry_days'] = expiry_days
+                reused_payload['link_sharing_mode'] = link_mode
+                reused_payload['max_active_share_links_per_document'] = max_active_share_links
+                reused_payload['auto_revoke_previous_share_links'] = auto_revoke_previous
+                reused_payload['revoked_before_create'] = 0
+                reused_payload['reused_existing'] = True
+                return {'payload': reused_payload, 'context': context}, None, 200
+        return None, {
+            'error': (
+                f'Active share links reached limit ({max_active_share_links}). '
+                'Revoke existing links or enable auto-revoke in workspace settings.'
+            ),
+            'active_count': active_count,
+            'max_active_share_links_per_document': max_active_share_links,
+        }, 409
+
+    token = create_document_share_token()
+    try:
+        conn.execute(
+            '''
+            INSERT INTO document_share_links (
+                document_id, workspace_id, token, created_by, status, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                doc_id,
+                workspace_id,
+                token,
+                username,
+                'active',
+                expires_at,
+                utcnow_iso(),
+            ),
+        )
+    except Exception:
+        return None, {'error': 'Failed to generate share token'}, 500
+
+    share_cursor = conn.execute(
+        'SELECT * FROM document_share_links WHERE token = ? LIMIT 1',
+        (token,),
+    )
+    share_row = row_to_dict(share_cursor.fetchone())
+    payload = serialize_document_share_link_row(share_row)
+    payload['expiry_days'] = expiry_days
+    payload['link_sharing_mode'] = link_mode
+    payload['max_active_share_links_per_document'] = max_active_share_links
+    payload['auto_revoke_previous_share_links'] = auto_revoke_previous
+    payload['revoked_before_create'] = revoked_before_create
+    payload['reused_existing'] = False
+    return {'payload': payload, 'context': context}, None, 201
+
+
+def send_document_share_email(
+    to_email,
+    document_title,
+    sender_username,
+    share_url,
+    expires_at,
+    link_mode='workspace',
+    personal_message='',
+):
+    recipient = normalize_email(to_email)
+    safe_title = str(document_title or '').strip() or 'Untitled Note'
+    safe_sender = str(sender_username or '').strip() or 'A StudyHub classmate'
+    safe_share_url = str(share_url or '').strip()
+    safe_expires_at = str(expires_at or '').strip() or 'Unknown'
+    safe_message = str(personal_message or '').strip()
+    safe_link_mode = str(link_mode or '').strip().lower() or 'workspace'
+    if not recipient:
+        return False, 'Missing recipient email'
+    if not RESEND_API_KEY:
+        return False, 'RESEND_API_KEY is not configured'
+    if not safe_share_url:
+        return False, 'Share URL is unavailable'
+
+    access_note = (
+        'Anyone with this link can open the shared note.'
+        if safe_link_mode == 'public'
+        else 'This shared note follows workspace member access rules and may require StudyHub sign-in.'
+    )
+    escaped_message = html.escape(safe_message).replace('\n', '<br />') if safe_message else ''
+    message_block = (
+        f'''
+          <div style="margin: 12px 0 18px; padding: 12px 14px; border-radius: 10px; background: #f8fafc; border: 1px solid #e2e8f0;">
+            <strong style="display:block; margin-bottom: 6px;">Personal message</strong>
+            <div>{escaped_message}</div>
+          </div>
+        '''
+        if escaped_message
+        else ''
+    )
+    subject = f'StudyHub note from {safe_sender}: {safe_title}'
+    body_html = f'''
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto;">
+          <h2 style="margin-bottom: 12px;">A StudyHub note was shared with you</h2>
+          <p><strong>{html.escape(safe_sender)}</strong> sent you a note: <strong>{html.escape(safe_title)}</strong>.</p>
+          {message_block}
+          <p>{html.escape(access_note)}</p>
+          <p style="margin: 18px 0;">
+            <a href="{html.escape(safe_share_url)}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; text-decoration: none; background: #2563eb; color: #ffffff;">
+              Open Shared Note
+            </a>
+          </p>
+          <p style="margin-bottom: 8px;"><strong>Expires:</strong> {html.escape(safe_expires_at)}</p>
+          <p style="margin-bottom: 8px;"><strong>Direct link:</strong></p>
+          <p style="margin-top: 0; word-break: break-word;">
+            <a href="{html.escape(safe_share_url)}" style="color: #2563eb;">{html.escape(safe_share_url)}</a>
+          </p>
+          <p style="font-size: 12px; color: #6b7280;">If you did not expect this email, you can ignore it.</p>
+        </div>
+    '''
+    body_text = (
+        f'{safe_sender} sent you a StudyHub note: "{safe_title}".\n\n'
+        f'{safe_message}\n\n' if safe_message else f'{safe_sender} sent you a StudyHub note: "{safe_title}".\n\n'
+    ) + (
+        f'{access_note}\n\n'
+        f'Open shared note: {safe_share_url}\n'
+        f'Expires: {safe_expires_at}\n'
+    )
+    try:
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {RESEND_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': RESEND_FROM_EMAIL,
+                'to': [recipient],
+                'subject': subject,
+                'html': body_html,
+                'text': body_text,
+            },
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            return False, f'Resend failed ({response.status_code}): {response.text[:220]}'
+        return True, ''
+    except Exception as e:
+        return False, f'Resend request error: {e}'
 
 
 def create_document_share_link(doc_id):
@@ -30,104 +278,85 @@ def create_document_share_link(doc_id):
         return jsonify({'error': 'Database connection failed'}), 500
 
     try:
-        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
-        doc = cursor.fetchone()
-        if not doc:
-            return jsonify({'error': 'Document not found'}), 404
-
-        doc_data = row_to_dict(doc) or {}
-        workspace_id = str(doc_data.get('workspace_id') or '').strip()
-
-        if workspace_id:
-            workspace_settings = get_workspace_settings(conn, workspace_id)
-        else:
-            workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
-
-        if not user_can_manage_document_share_links(conn, doc, username):
-            return jsonify({'error': 'Only owner (or allowed members) can create share links'}), 403
-
-        link_mode = workspace_settings.get('link_sharing_mode', DEFAULT_WORKSPACE_SETTINGS['link_sharing_mode'])
-        if link_mode == 'restricted':
-            return jsonify({'error': 'Link sharing is restricted in this workspace settings'}), 403
-
-        requested_expiry = data.get('expiry_days', None)
-        if requested_expiry is None or str(requested_expiry).strip() == '':
-            expiry_days = workspace_settings.get('default_share_expiry_days', 7)
-        else:
-            expiry_days = requested_expiry
-        expiry_days = parse_int(expiry_days, 7, 1, 30)
-        expires_at = expires_at_for_days(expiry_days)
-
-        max_active_share_links = parse_int(
-            workspace_settings.get('max_active_share_links_per_document', 5),
-            5,
-            1,
-            20,
+        result, error_payload, status_code = _prepare_document_share_link_payload(
+            conn,
+            doc_id,
+            username,
+            data.get('expiry_days', None),
+            allow_reuse_when_limit=False,
         )
-        auto_revoke_previous = parse_bool(
-            workspace_settings.get('auto_revoke_previous_share_links', False),
-            False,
-        )
-
-        active_count = count_active_document_share_links(conn, doc_id)
-        revoked_before_create = 0
-        if auto_revoke_previous and active_count > 0:
-            revoked_before_create = active_count
-            conn.execute(
-                '''
-                UPDATE document_share_links
-                SET status = 'revoked'
-                WHERE document_id = ? AND status = 'active'
-                ''',
-                (doc_id,),
-            )
-            conn.commit()
-            active_count = 0
-
-        if active_count >= max_active_share_links:
-            return jsonify({
-                'error': (
-                    f'Active share links reached limit ({max_active_share_links}). '
-                    'Revoke existing links or enable auto-revoke in workspace settings.'
-                ),
-                'active_count': active_count,
-                'max_active_share_links_per_document': max_active_share_links,
-            }), 409
-
-        token = create_document_share_token()
+        if error_payload:
+            return jsonify(error_payload), status_code
+        conn.commit()
+        return jsonify(result['payload']), 201
+    except Exception:
         try:
-            conn.execute(
-                '''
-                INSERT INTO document_share_links (
-                    document_id, workspace_id, token, created_by, status, expires_at, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    doc_id,
-                    workspace_id,
-                    token,
-                    username,
-                    'active',
-                    expires_at,
-                    utcnow_iso(),
-                ),
-            )
+            conn.rollback()
         except Exception:
-            return jsonify({'error': 'Failed to generate share token'}), 500
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def send_document_share_link_email(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    recipient_email = normalize_email(data.get('recipient_email') or data.get('email'))
+    if not recipient_email or not is_valid_email(recipient_email):
+        return jsonify({'error': 'Please enter a valid recipient email address'}), 400
+
+    personal_message = str(data.get('message') or '').strip()
+    if len(personal_message) > 500:
+        return jsonify({'error': 'Message must be 500 characters or fewer'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        result, error_payload, status_code = _prepare_document_share_link_payload(
+            conn,
+            doc_id,
+            username,
+            data.get('expiry_days', None),
+            allow_reuse_when_limit=True,
+        )
+        if error_payload:
+            return jsonify(error_payload), status_code
+
+        payload = result['payload']
+        context = result['context']
+        share_url = str(payload.get('share_url') or build_document_share_url(payload.get('token'))).strip()
+        sent, send_error = send_document_share_email(
+            recipient_email,
+            context['doc_data'].get('title') or context['doc_data'].get('filename') or 'Untitled Note',
+            username,
+            share_url,
+            payload.get('expires_at'),
+            context.get('link_mode'),
+            personal_message,
+        )
+        if not sent:
+            conn.rollback()
+            return jsonify({'error': send_error or 'Failed to send share email'}), 503
 
         conn.commit()
-        share_cursor = conn.execute(
-            'SELECT * FROM document_share_links WHERE token = ? LIMIT 1',
-            (token,),
-        )
-        share_row = row_to_dict(share_cursor.fetchone())
-        payload = serialize_document_share_link_row(share_row)
-        payload['expiry_days'] = expiry_days
-        payload['link_sharing_mode'] = link_mode
-        payload['max_active_share_links_per_document'] = max_active_share_links
-        payload['auto_revoke_previous_share_links'] = auto_revoke_previous
-        payload['revoked_before_create'] = revoked_before_create
-        return jsonify(payload), 201
+        return jsonify({
+            'message': f'Shared note email sent to {recipient_email}.',
+            'recipient_email': recipient_email,
+            'share': payload,
+            'reused_existing': bool(payload.get('reused_existing')),
+        }), 200
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

@@ -63,6 +63,40 @@ export async function createDocumentShareLink(docId, { username = '', expiryDays
   };
 }
 
+export async function sendDocumentShareLinkEmail(
+  docId,
+  {
+    username = '',
+    recipientEmail = '',
+    message = '',
+    expiryDays = '',
+  } = {},
+) {
+  const safeDocId = toPositiveDocId(docId);
+  const safeUsername = String(username || '').trim();
+  const safeRecipientEmail = String(recipientEmail || '').trim();
+  const safeMessage = String(message || '').trim();
+  const payload = {
+    username: safeUsername,
+    recipient_email: safeRecipientEmail,
+    message: safeMessage,
+  };
+  if (String(expiryDays ?? '').trim() !== '') {
+    payload.expiry_days = Number(expiryDays) || 7;
+  }
+
+  const response = await authFetch(`/api/documents/${safeDocId}/share-links/email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const result = await readJsonSafely(response);
+  if (!response.ok) {
+    throw new Error(result.error || 'Failed to send note by email');
+  }
+  return result;
+}
+
 export async function revokeDocumentShareLink(docId, shareLinkId, { username = '' } = {}) {
   const safeDocId = toPositiveDocId(docId);
   const safeShareLinkId = toPositiveDocId(shareLinkId);

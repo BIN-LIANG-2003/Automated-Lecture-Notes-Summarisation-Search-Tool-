@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
+import SendNoteByEmailModal from '../components/SendNoteByEmailModal.jsx';
 import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
@@ -17,6 +18,7 @@ import {
   listDocumentShareLinks,
   revokeAllDocumentShareLinks,
   revokeDocumentShareLink,
+  sendDocumentShareLinkEmail,
 } from '../lib/shareLinks.js';
 import {
   buildSummaryExportFilename,
@@ -145,6 +147,11 @@ export default function DocumentDetail() {
   const [shareLinksError, setShareLinksError] = useState('');
   const [shareActionLoadingId, setShareActionLoadingId] = useState(0);
   const [shareActionLoadingType, setShareActionLoadingType] = useState('');
+  const [sendNoteEmailOpen, setSendNoteEmailOpen] = useState(false);
+  const [shareEmailRecipient, setShareEmailRecipient] = useState('');
+  const [shareEmailMessage, setShareEmailMessage] = useState('');
+  const [shareEmailExpiryDays, setShareEmailExpiryDays] = useState('');
+  const [isSendingShareEmail, setIsSendingShareEmail] = useState(false);
   const summaryProgressTimerRef = useRef(null);
   const {
     toastState,
@@ -311,11 +318,17 @@ export default function DocumentDetail() {
     canManageShareLinks,
   });
   const shareLinkDisabled = Boolean(shareLinkDisabledReason);
+  const shareEmailHint = shareLinkDisabled
+    ? shareLinkDisabledReason
+    : 'StudyHub sends an email with a button that opens this shared note.';
   const shareLinkHint = shareLinkDisabled
     ? shareLinkDisabledReason
     : isPdf
       ? 'PDF files support share links here. Creating one copies the new link to your clipboard.'
       : 'Create a share link from this detail page and copy it to your clipboard.';
+  const shareDeliveryHint = shareLinkDisabled
+    ? shareLinkDisabledReason
+    : 'Use Send by Email to let StudyHub deliver the shared note directly. Share Link still copies a manual link.';
   const shareAvailabilityLabel = shareLinkDisabled
     ? (document.linkSharingMode === 'restricted'
       ? 'Sharing blocked'
@@ -355,6 +368,22 @@ export default function DocumentDetail() {
   const closeOcrResultModal = () => {
     setOcrResultOpen(false);
     setOcrSaveFormat('txt');
+  };
+
+  const openSendNoteEmailModal = () => {
+    if (shareLinkDisabledReason) {
+      showToast(shareLinkDisabledReason, 'warning');
+      return;
+    }
+    setShareEmailRecipient('');
+    setShareEmailMessage('');
+    setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+    setSendNoteEmailOpen(true);
+  };
+
+  const closeSendNoteEmailModal = () => {
+    if (isSendingShareEmail) return;
+    setSendNoteEmailOpen(false);
   };
 
   const handleExtractText = async () => {
@@ -629,6 +658,36 @@ export default function DocumentDetail() {
     }
   };
 
+  const handleSendNoteByEmail = async (event) => {
+    event?.preventDefault?.();
+    if (shareLinkDisabledReason) {
+      showToast(shareLinkDisabledReason, 'warning');
+      return;
+    }
+    const recipientEmail = String(shareEmailRecipient || '').trim();
+    if (!recipientEmail) {
+      showToast('Please enter a recipient email address.', 'warning');
+      return;
+    }
+
+    setIsSendingShareEmail(true);
+    try {
+      const payload = await sendDocumentShareLinkEmail(document.id, {
+        username,
+        recipientEmail,
+        message: shareEmailMessage,
+        expiryDays: shareEmailExpiryDays,
+      });
+      await refreshShareLinks(document.id);
+      setSendNoteEmailOpen(false);
+      showToast(payload.message || `Shared note email sent to ${recipientEmail}.`, 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to send note by email.', 'error');
+    } finally {
+      setIsSendingShareEmail(false);
+    }
+  };
+
   const handleCopyExistingShareLink = async (shareUrl) => {
     const value = String(shareUrl || '').trim();
     if (!value) return;
@@ -824,6 +883,15 @@ export default function DocumentDetail() {
                 <button
                   type="button"
                   className="btn"
+                  onClick={openSendNoteEmailModal}
+                  disabled={shareLinkDisabled}
+                  title={shareEmailHint}
+                >
+                  Send by Email
+                </button>
+                <button
+                  type="button"
+                  className="btn"
                   onClick={handleCopyShareLink}
                   disabled={shareLinkDisabled}
                   title={shareLinkHint}
@@ -845,7 +913,7 @@ export default function DocumentDetail() {
                   {shareAvailabilityLabel}
                 </span>
               </div>
-              <p className="document-detail-share-hint">{shareLinkHint}</p>
+              <p className="document-detail-share-hint">{shareDeliveryHint}</p>
             </div>
           )}
         </header>
@@ -1055,6 +1123,20 @@ export default function DocumentDetail() {
         </section>
       </article>
       </main>
+      <SendNoteByEmailModal
+        open={sendNoteEmailOpen}
+        onClose={closeSendNoteEmailModal}
+        onSubmit={handleSendNoteByEmail}
+        recipientEmail={shareEmailRecipient}
+        onRecipientEmailChange={setShareEmailRecipient}
+        message={shareEmailMessage}
+        onMessageChange={setShareEmailMessage}
+        expiryDays={shareEmailExpiryDays}
+        onExpiryDaysChange={setShareEmailExpiryDays}
+        isSubmitting={isSendingShareEmail}
+        documentTitle={document?.title || document?.filename || 'Untitled Note'}
+        linkModeLabel={shareModeLabel}
+      />
       <SummaryResultModal
         open={summaryResultOpen}
         onClose={closeSummaryResultModal}

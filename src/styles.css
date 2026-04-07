@@ -1842,6 +1842,50 @@ body.notion-home-body .skip-link:focus-visible{
   gap:14px;
 }
 
+.notion-share-email-modal{
+  width:min(560px, 100%);
+  display:grid;
+  gap:14px;
+}
+
+.notion-share-email-form{
+  display:grid;
+  gap:12px;
+}
+
+.notion-share-email-field{
+  display:grid;
+  gap:6px;
+}
+
+.notion-share-email-field span{
+  font-size:13px;
+  font-weight:600;
+  color:#334155;
+}
+
+.notion-share-email-field input,
+.notion-share-email-field textarea{
+  width:100%;
+  border:1px solid #dbe2ec;
+  border-radius:12px;
+  padding:11px 13px;
+  font:inherit;
+  color:#233247;
+  background:#fff;
+}
+
+.notion-share-email-field input:focus,
+.notion-share-email-field textarea:focus{
+  outline:none;
+  border-color:#8eb4ff;
+  box-shadow:0 0 0 3px rgba(122, 162, 255, 0.18);
+}
+
+.notion-share-email-field-compact{
+  max-width:180px;
+}
+
 .notion-summary-result-head{
   display:flex;
   align-items:flex-start;
@@ -6784,6 +6828,10 @@ body.notion-home-body .skip-link:focus-visible{
   .notion-summary-history-actions .btn,
   .notion-ai-export-actions .btn{
     width:100%;
+  }
+
+  .notion-share-email-field-compact{
+    max-width:none;
   }
 
   .notion-settings-nav{

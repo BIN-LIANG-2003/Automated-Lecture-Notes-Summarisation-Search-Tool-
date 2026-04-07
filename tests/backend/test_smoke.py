@@ -227,6 +227,52 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'Protected Notes')
 
+    @patch('backend.share_link_service.send_document_share_email', return_value=(True, ''))
+    def test_send_note_by_email_creates_share_link_and_returns_share_payload(self, _mock_send_share_email):
+        document_id = self._insert_document(
+            'Email Share Notes',
+            'share by email smoke content',
+            filename='email-share-notes.txt',
+        )
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/share-links/email',
+            headers=self._auth_headers(),
+            json={
+                'username': self.username,
+                'recipient_email': 'classmate@example.com',
+                'message': 'Please review this note before class.',
+                'expiry_days': 5,
+            },
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('recipient_email'), 'classmate@example.com')
+        self.assertIn('share', payload)
+        self.assertTrue(str(payload['share'].get('token') or '').strip())
+        self.assertTrue(str(payload['share'].get('share_url') or '').strip())
+        self.assertEqual(payload['share'].get('expiry_days'), 5)
+        self.assertFalse(bool(payload.get('reused_existing')))
+
+        conn = self._connection()
+        try:
+            share_row = row_to_dict(
+                conn.execute(
+                    '''
+                    SELECT token, status, created_by
+                    FROM document_share_links
+                    WHERE document_id = ?
+                    ORDER BY id DESC
+                    LIMIT 1
+                    ''',
+                    (document_id,),
+                ).fetchone()
+            ) or {}
+        finally:
+            conn.close()
+        self.assertEqual(str(share_row.get('status') or '').strip().lower(), 'active')
+        self.assertEqual(str(share_row.get('created_by') or '').strip(), self.username)
+
     @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
     def test_register_requires_email_verification_before_password_login(self, _mock_send_email):
         register_response = self.client.post(
