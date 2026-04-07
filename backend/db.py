@@ -4,6 +4,8 @@ import sqlite3
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
+from .utils import utcnow_iso
+
 
 class DBWrapper:
     """
@@ -31,6 +33,9 @@ class DBWrapper:
 
     def commit(self):
         self.conn.commit()
+
+    def rollback(self):
+        self.conn.rollback()
 
     def close(self):
         self.conn.close()
@@ -112,6 +117,51 @@ def ensure_workspaces_columns(conn):
     ensure_workspaces_column(conn, 'settings_json', 'TEXT')
 
 
+def ensure_users_column(conn, column_name, column_type='TEXT'):
+    safe_column = str(column_name or '').strip()
+    safe_type = str(column_type or 'TEXT').strip()
+    if not safe_column:
+        return
+    if table_column_exists(conn, 'users', safe_column):
+        return
+    conn.execute(f'ALTER TABLE users ADD COLUMN {safe_column} {safe_type}')
+
+
+def ensure_users_columns(conn, timestamp_type='TEXT'):
+    email_verified_type = 'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'
+    ensure_users_column(conn, 'email_verified', email_verified_type)
+    ensure_users_column(conn, 'email_verification_token', 'TEXT')
+    ensure_users_column(conn, 'email_verification_expires_at', timestamp_type)
+    ensure_users_column(conn, 'verified_at', timestamp_type)
+
+    backfill_verified_at = utcnow_iso()
+    verified_value = True if conn.db_type == 'postgres' else 1
+    if conn.db_type == 'postgres':
+        conn.execute(
+            '''
+            UPDATE users
+            SET email_verified = ?,
+                verified_at = COALESCE(verified_at, ?)
+            WHERE (email_verified IS NULL OR email_verified = FALSE)
+              AND (email_verification_token IS NULL OR email_verification_token = '')
+              AND email_verification_expires_at IS NULL
+            ''',
+            (verified_value, backfill_verified_at),
+        )
+    else:
+        conn.execute(
+            '''
+            UPDATE users
+            SET email_verified = ?,
+                verified_at = COALESCE(verified_at, ?)
+            WHERE (email_verified IS NULL OR email_verified = 0)
+              AND (email_verification_token IS NULL OR email_verification_token = '')
+              AND email_verification_expires_at IS NULL
+            ''',
+            (verified_value, backfill_verified_at),
+        )
+
+
 def init_db():
     conn = get_db_connection()
     if not conn:
@@ -123,16 +173,22 @@ def init_db():
     if conn.db_type == 'postgres':
         id_type = 'SERIAL PRIMARY KEY'
         timestamp_type = 'TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+        optional_timestamp_type = 'TIMESTAMP'
     else:
         id_type = 'INTEGER PRIMARY KEY AUTOINCREMENT'
         timestamp_type = 'TEXT'
+        optional_timestamp_type = 'TEXT'
 
     users_sql = f'''
         CREATE TABLE IF NOT EXISTS users (
             id {id_type},
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE,
-            password_hash TEXT NOT NULL
+            password_hash TEXT NOT NULL,
+            email_verified {'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'},
+            email_verification_token TEXT,
+            email_verification_expires_at {optional_timestamp_type},
+            verified_at {optional_timestamp_type}
         );
     '''
 
@@ -235,6 +291,11 @@ def init_db():
         ON workspaces(owner_username);
     '''
 
+    users_email_verification_token_idx_sql = '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_verification_token
+        ON users(email_verification_token);
+    '''
+
     workspace_invitation_lookup_sql = '''
         CREATE INDEX IF NOT EXISTS idx_workspace_invitations_workspace_status
         ON workspace_invitations(workspace_id, status);
@@ -285,6 +346,7 @@ def init_db():
         conn.execute(document_summary_cache_sql)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
+        conn.execute(users_email_verification_token_idx_sql)
         conn.execute(workspace_invitation_lookup_sql)
         conn.execute(document_share_links_doc_idx_sql)
         conn.execute(document_summary_cache_lookup_idx_sql)
@@ -293,6 +355,7 @@ def init_db():
         conn.execute(documents_workspace_deleted_uploaded_idx_sql)
         conn.execute(documents_owner_category_idx_sql)
         conn.execute(documents_owner_file_type_idx_sql)
+        ensure_users_columns(conn, optional_timestamp_type)
         ensure_documents_columns(conn)
         ensure_workspaces_columns(conn)
 
@@ -304,6 +367,10 @@ def init_db():
         conn.commit()
         print('✅ Database tables initialized successfully.')
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         print(f'❌ Error initializing tables: {e}')
     finally:
         conn.close()

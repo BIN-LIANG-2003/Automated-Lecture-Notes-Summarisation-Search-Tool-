@@ -3,13 +3,17 @@ import io
 import sys
 import json
 import hashlib
+import html
 import re
+import secrets
 import shutil
 import subprocess
 import tempfile
 import uuid
 import requests
 from datetime import datetime, timedelta
+from urllib.parse import quote
+
 from flask import request, jsonify, send_from_directory, redirect
 from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -19,17 +23,22 @@ from google.oauth2 import id_token
 from google.auth.transport import requests as google_requests
 
 from .config import (
+    APP_BASE_URL,
     DEFAULT_WORKSPACE_SETTINGS,
+    EMAIL_VERIFICATION_TTL_HOURS,
     ENABLE_PDF_OCR_FALLBACK,
     EXTERNAL_OCR_SERVICE_URL,
     EXTERNAL_OCR_TIMEOUT_SECONDS,
     GOOGLE_CLIENT_ID,
     HF_MODEL_BASE_URL,
+    INVITE_BASE_URL,
     HF_TOKEN,
     OCR_MODEL_ID,
     OCRMYPDF_BINARY,
     OCRMYPDF_LANGUAGE,
     OCRMYPDF_TIMEOUT_SECONDS,
+    RESEND_API_KEY,
+    RESEND_FROM_EMAIL,
     S3_BUCKET,
     SUMMARY_CACHE_VERSION,
     SUMMARIZER_MODEL_ID,
@@ -54,14 +63,17 @@ from .storage import (
     read_file_bytes_from_storage,
 )
 from .utils import (
+    normalize_email,
     parse_bool,
     parse_float,
     parse_int,
+    parse_iso_datetime,
     row_to_dict,
     utcnow_iso,
 )
 from .workspace_domain import (
     get_workspace_settings,
+    is_valid_email,
     normalize_workspace_settings,
     workspace_belongs_to_user,
 )
@@ -202,48 +214,295 @@ def save_document_summary_cache(
         return False
 
 
+def create_email_verification_token():
+    return secrets.token_urlsafe(32)
+
+
+def email_verification_expires_at():
+    return (datetime.utcnow() + timedelta(hours=EMAIL_VERIFICATION_TTL_HOURS)).isoformat()
+
+
+def build_email_verification_url(token):
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return ''
+    return f'{INVITE_BASE_URL}/api/auth/verify-email?token={quote(safe_token)}'
+
+
+def _render_auth_message_page(title, message, *, status_code=200, success=False):
+    safe_title = html.escape(str(title or '').strip() or 'StudyHub')
+    safe_message = html.escape(str(message or '').strip() or 'No details available.')
+    login_url = f'{APP_BASE_URL}/#/login'
+    button_label = 'Open StudyHub'
+    accent = '#166534' if success else '#b91c1c'
+    page_html = f'''
+        <!doctype html>
+        <html lang="en">
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>{safe_title}</title>
+            <style>
+              body {{
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+                background: #f5f7fb;
+                color: #111827;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                min-height: 100vh;
+                padding: 24px;
+              }}
+              .card {{
+                width: min(100%, 520px);
+                background: #ffffff;
+                border-radius: 16px;
+                box-shadow: 0 18px 44px rgba(15, 23, 42, 0.12);
+                padding: 28px 24px;
+                border-top: 5px solid {accent};
+              }}
+              h1 {{
+                margin: 0 0 12px;
+                font-size: 24px;
+              }}
+              p {{
+                margin: 0 0 18px;
+                line-height: 1.6;
+              }}
+              a {{
+                display: inline-block;
+                padding: 10px 14px;
+                border-radius: 10px;
+                background: #2563eb;
+                color: #ffffff;
+                text-decoration: none;
+                font-weight: 600;
+              }}
+              .meta {{
+                margin-top: 14px;
+                font-size: 13px;
+                color: #6b7280;
+              }}
+            </style>
+          </head>
+          <body>
+            <main class="card">
+              <h1>{safe_title}</h1>
+              <p>{safe_message}</p>
+              <a href="{html.escape(login_url)}">{button_label}</a>
+              <div class="meta">You can close this tab after reading this message.</div>
+            </main>
+          </body>
+        </html>
+    '''
+    return page_html, status_code, {'Content-Type': 'text/html; charset=utf-8'}
+
+
+def send_registration_verification_email(to_email, username, verification_url, expires_at):
+    recipient = normalize_email(to_email)
+    safe_username = str(username or '').strip()
+    safe_verification_url = str(verification_url or '').strip()
+    safe_expiry_label = str(expires_at or '').strip() or 'Unknown'
+    if not recipient:
+        return False, 'Missing recipient email'
+    if not RESEND_API_KEY:
+        return False, 'RESEND_API_KEY is not configured'
+    if not safe_verification_url:
+        return False, 'Verification URL could not be generated'
+
+    subject = 'Verify your StudyHub account'
+    body_html = f'''
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto;">
+          <h2 style="margin-bottom: 12px;">Verify your StudyHub email</h2>
+          <p>Hello <strong>{html.escape(safe_username or recipient)}</strong>,</p>
+          <p>Thanks for creating a StudyHub account. Please verify your email address before signing in.</p>
+          <p style="margin: 18px 0;">
+            <a href="{html.escape(safe_verification_url)}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; text-decoration: none; background: #2563eb; color: #ffffff;">
+              Verify email
+            </a>
+          </p>
+          <p style="margin-bottom: 8px;"><strong>Expires:</strong> {html.escape(safe_expiry_label)}</p>
+          <p style="margin-bottom: 8px;"><strong>Direct link:</strong></p>
+          <p style="margin-top: 0; word-break: break-word;">
+            <a href="{html.escape(safe_verification_url)}" style="color: #2563eb;">{html.escape(safe_verification_url)}</a>
+          </p>
+          <p style="font-size: 12px; color: #6b7280;">If you did not create this account, you can ignore this email.</p>
+        </div>
+    '''
+    body_text = (
+        f'Hello {safe_username or recipient},\n\n'
+        'Thanks for creating a StudyHub account. Please verify your email address before signing in.\n\n'
+        f'Verification link: {safe_verification_url}\n'
+        f'Expires: {safe_expiry_label}\n'
+    )
+    try:
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {RESEND_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                'from': RESEND_FROM_EMAIL,
+                'to': [recipient],
+                'subject': subject,
+                'html': body_html,
+                'text': body_text,
+            },
+            timeout=15,
+        )
+        if response.status_code >= 400:
+            return False, f'Resend failed ({response.status_code}): {response.text[:220]}'
+        return True, ''
+    except Exception as e:
+        return False, f'Resend request error: {e}'
+
+
+def _persist_email_verification(conn, user_row):
+    user = row_to_dict(user_row) or {}
+    username = str(user.get('username') or '').strip()
+    email = normalize_email(user.get('email'))
+    if not username or not email:
+        return False, '', '', 'Account is missing username or email'
+
+    verification_token = create_email_verification_token()
+    expires_at = email_verification_expires_at()
+    conn.execute(
+        '''
+        UPDATE users
+        SET email_verified = ?,
+            email_verification_token = ?,
+            email_verification_expires_at = ?,
+            verified_at = NULL
+        WHERE username = ?
+        ''',
+        (
+            False if conn.db_type == 'postgres' else 0,
+            verification_token,
+            expires_at,
+            username,
+        ),
+    )
+    return True, verification_token, expires_at, ''
+
+
+def _find_user_for_verification_request(conn, identifier='', email=''):
+    safe_identifier = str(identifier or '').strip()
+    safe_email = normalize_email(email)
+    if safe_email:
+        cursor = conn.execute('SELECT * FROM users WHERE LOWER(email) = ? LIMIT 1', (safe_email,))
+        row = cursor.fetchone()
+        if row:
+            return row_to_dict(row)
+    if safe_identifier:
+        cursor = conn.execute(
+            'SELECT * FROM users WHERE username = ? OR LOWER(email) = ? LIMIT 1',
+            (safe_identifier, normalize_email(safe_identifier)),
+        )
+        return row_to_dict(cursor.fetchone())
+    return None
+
+
 # ================= API 路由接口 =================
 
 def register():
-    data = request.get_json()
-    username = data.get('username')
-    email = data.get('email')
+    data = request.get_json(silent=True) or {}
+    username = str(data.get('username') or '').strip()
+    email = normalize_email(data.get('email'))
     password = data.get('password')
 
-    if not username or not password:
+    if not username or not email or not password:
         return jsonify({'error': 'Missing fields'}), 400
+    if not is_valid_email(email):
+        return jsonify({'error': 'Please enter a valid email address'}), 400
 
     hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
     conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
     try:
-        # DBWrapper 会自动处理占位符 ?
-        conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-                     (username, email, hashed_pw))
+        existing = row_to_dict(
+            conn.execute(
+                'SELECT username, email FROM users WHERE username = ? OR LOWER(email) = ? LIMIT 1',
+                (username, email),
+            ).fetchone()
+        )
+        if existing:
+            if str(existing.get('username') or '').strip() == username:
+                return jsonify({'error': 'Username already exists'}), 409
+            return jsonify({'error': 'Email is already registered'}), 409
+
+        verification_token = create_email_verification_token()
+        expires_at = email_verification_expires_at()
+        verification_url = build_email_verification_url(verification_token)
+        conn.execute(
+            '''
+            INSERT INTO users (
+                username,
+                email,
+                password_hash,
+                email_verified,
+                email_verification_token,
+                email_verification_expires_at,
+                verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                username,
+                email,
+                hashed_pw,
+                False if conn.db_type == 'postgres' else 0,
+                verification_token,
+                expires_at,
+                None,
+            ),
+        )
+        sent, send_error = send_registration_verification_email(email, username, verification_url, expires_at)
+        if not sent:
+            conn.rollback()
+            return jsonify({'error': send_error or 'Failed to send verification email'}), 503
         conn.commit()
-        auth_token = create_auth_token(username)
         return jsonify({
-            'message': 'User created successfully',
+            'message': 'Account created. Please check your email to verify your account before signing in.',
             'username': username,
             'email': email,
-            'auth_token': auth_token,
+            'verification_required': True,
+            'verification_expires_at': expires_at,
         }), 201
     except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         return jsonify({'error': f'Registration failed (User may exist): {str(e)}'}), 409
     finally:
         conn.close()
 
 def login():
-    data = request.get_json()
-    username_or_email = data.get('username')
+    data = request.get_json(silent=True) or {}
+    username_or_email = str(data.get('username') or '').strip()
     password = data.get('password')
+    normalized_identifier = normalize_email(username_or_email)
+    if not username_or_email or not password:
+        return jsonify({'error': 'Username/email and password are required'}), 400
 
     conn = get_db_connection()
-    cursor = conn.execute('SELECT * FROM users WHERE username = ? OR email = ?', 
-                        (username_or_email, username_or_email))
-    user = cursor.fetchone()
+    cursor = conn.execute(
+        'SELECT * FROM users WHERE username = ? OR LOWER(email) = ?',
+        (username_or_email, normalized_identifier),
+    )
+    user = row_to_dict(cursor.fetchone())
     conn.close()
 
     if user and check_password_hash(user['password_hash'], password):
+        if not parse_bool(user.get('email_verified'), False):
+            return jsonify({
+                'error': 'Please verify your email address before signing in.',
+                'code': 'email_not_verified',
+                'email': normalize_email(user.get('email')),
+                'username': str(user.get('username') or '').strip(),
+            }), 403
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
         auth_token = create_auth_token(user['username'])
         return jsonify({
@@ -254,6 +513,146 @@ def login():
         }), 200
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
+
+
+def verify_email():
+    token = str(request.args.get('token') or '').strip()
+    if not token:
+        return _render_auth_message_page(
+            'Missing verification token',
+            'This verification link is incomplete. Please request a new verification email from the sign-in page.',
+            status_code=400,
+        )
+
+    conn = get_db_connection()
+    if not conn:
+        return _render_auth_message_page(
+            'Verification unavailable',
+            'StudyHub could not connect to the database. Please try again shortly.',
+            status_code=500,
+        )
+    try:
+        user = row_to_dict(
+            conn.execute(
+                '''
+                SELECT username, email, email_verified, email_verification_token, email_verification_expires_at
+                FROM users
+                WHERE email_verification_token = ?
+                LIMIT 1
+                ''',
+                (token,),
+            ).fetchone()
+        )
+        if not user:
+            return _render_auth_message_page(
+                'Verification link invalid',
+                'This verification link is invalid or has already been replaced. Request a new verification email and try again.',
+                status_code=400,
+            )
+
+        if parse_bool(user.get('email_verified'), False):
+            return _render_auth_message_page(
+                'Email already verified',
+                'This account has already been verified. You can return to StudyHub and sign in now.',
+                success=True,
+            )
+
+        expires_at = parse_iso_datetime(user.get('email_verification_expires_at'))
+        if expires_at is None or expires_at < datetime.utcnow():
+            return _render_auth_message_page(
+                'Verification link expired',
+                'This verification link has expired. Return to the sign-in page and request a new verification email.',
+                status_code=400,
+            )
+
+        now_iso = utcnow_iso()
+        conn.execute(
+            '''
+            UPDATE users
+            SET email_verified = ?,
+                verified_at = ?,
+                email_verification_expires_at = NULL
+            WHERE username = ?
+            ''',
+            (
+                True if conn.db_type == 'postgres' else 1,
+                now_iso,
+                user.get('username'),
+            ),
+        )
+        conn.commit()
+        return _render_auth_message_page(
+            'Email verified',
+            'Your email address has been verified. You can return to StudyHub and sign in now.',
+            success=True,
+        )
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'Email verification failed: {e}')
+        return _render_auth_message_page(
+            'Verification failed',
+            'StudyHub could not verify this email link right now. Please try again later.',
+            status_code=500,
+        )
+    finally:
+        conn.close()
+
+
+def resend_verification():
+    data = request.get_json(silent=True) or {}
+    identifier = str(data.get('identifier') or data.get('username') or '').strip()
+    email = normalize_email(data.get('email'))
+    if not identifier and not email:
+        return jsonify({'error': 'Username or email is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        user = _find_user_for_verification_request(conn, identifier=identifier, email=email)
+        if not user:
+            return jsonify({
+                'message': 'If an unverified account exists for that username or email, a new verification email has been sent.',
+            }), 200
+
+        if parse_bool(user.get('email_verified'), False):
+            return jsonify({'message': 'This account is already verified. You can sign in now.'}), 200
+
+        ok, verification_token, expires_at, persist_error = _persist_email_verification(conn, user)
+        if not ok:
+            conn.rollback()
+            return jsonify({'error': persist_error or 'Could not prepare verification email'}), 400
+
+        verification_url = build_email_verification_url(verification_token)
+        sent, send_error = send_registration_verification_email(
+            user.get('email'),
+            user.get('username'),
+            verification_url,
+            expires_at,
+        )
+        if not sent:
+            conn.rollback()
+            return jsonify({'error': send_error or 'Failed to send verification email'}), 503
+
+        conn.commit()
+        return jsonify({
+            'message': 'A fresh verification email has been sent if the account is still awaiting verification.',
+            'email': normalize_email(user.get('email')),
+            'verification_required': True,
+            'verification_expires_at': expires_at,
+        }), 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'Resend verification failed: {e}')
+        return jsonify({'error': 'Failed to resend verification email'}), 500
+    finally:
+        conn.close()
 
 
 def me():
@@ -296,30 +695,70 @@ def logout():
 
 def google_login():
     try:
-        data = request.get_json()
+        data = request.get_json(silent=True) or {}
         token = data.get('token')
         
         id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
-        email = id_info['email']
+        email = normalize_email(id_info['email'])
         name = id_info.get('name', email.split('@')[0])
+        now_iso = utcnow_iso()
         
         conn = get_db_connection()
-        cursor = conn.execute('SELECT * FROM users WHERE email = ?', (email,))
-        user = cursor.fetchone()
+        cursor = conn.execute('SELECT * FROM users WHERE LOWER(email) = ?', (email,))
+        user = row_to_dict(cursor.fetchone())
         
         if user is None:
             username = f"{name.split()[0]}_{uuid.uuid4().hex[:4]}"
             random_password = uuid.uuid4().hex
             hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
             try:
-                conn.execute('INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-                             (username, email, hashed_password))
+                conn.execute(
+                    '''
+                    INSERT INTO users (
+                        username,
+                        email,
+                        password_hash,
+                        email_verified,
+                        email_verification_token,
+                        email_verification_expires_at,
+                        verified_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        username,
+                        email,
+                        hashed_password,
+                        True if conn.db_type == 'postgres' else 1,
+                        None,
+                        None,
+                        now_iso,
+                    ),
+                )
                 conn.commit()
-                cursor = conn.execute('SELECT * FROM users WHERE email = ?', (email,))
-                user = cursor.fetchone()
+                cursor = conn.execute('SELECT * FROM users WHERE LOWER(email) = ?', (email,))
+                user = row_to_dict(cursor.fetchone())
             except Exception as e:
                 conn.close()
                 return jsonify({'error': f'Register failed: {str(e)}'}), 500
+        elif not parse_bool(user.get('email_verified'), False):
+            conn.execute(
+                '''
+                UPDATE users
+                SET email_verified = ?,
+                    verified_at = ?,
+                    email_verification_token = NULL,
+                    email_verification_expires_at = NULL
+                WHERE username = ?
+                ''',
+                (
+                    True if conn.db_type == 'postgres' else 1,
+                    now_iso,
+                    user.get('username'),
+                ),
+            )
+            conn.commit()
+            cursor = conn.execute('SELECT * FROM users WHERE LOWER(email) = ?', (email,))
+            user = row_to_dict(cursor.fetchone())
         conn.close()
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
         auth_token = create_auth_token(user['username'])
@@ -381,6 +820,26 @@ def get_hf_headers(content_type=None):
 
 def hf_model_url(model_id):
     return f"{HF_MODEL_BASE_URL}/{model_id}"
+
+
+def is_t5_family_summarizer_model(model_id=None):
+    safe_model_id = str(model_id or SUMMARIZER_MODEL_ID or '').strip().lower()
+    if not safe_model_id:
+        return False
+    return bool(
+        re.search(r'(^|[/-])(flan-?t5|t5|mt5|byt5)([-/]|$)', safe_model_id)
+    )
+
+
+def build_hf_summarizer_input(text_content, model_id=None):
+    safe_text = str(text_content or '').strip()
+    if not safe_text:
+        return ''
+    if not is_t5_family_summarizer_model(model_id):
+        return safe_text
+    if safe_text.lower().startswith('summarize:'):
+        return safe_text
+    return f'summarize: {safe_text}'
 
 
 def looks_like_html_error(text):
@@ -544,13 +1003,14 @@ def call_hf_summarizer_once(text_content, length_options):
     safe_text = str(text_content or '').strip()
     if not safe_text:
         return {'ok': False, 'summary': '', 'error': 'Empty input text'}
+    model_input = build_hf_summarizer_input(safe_text, SUMMARIZER_MODEL_ID)
 
     hf_headers = get_hf_headers('application/json')
     if not hf_headers:
         return {'ok': False, 'summary': '', 'error': 'HF_API_TOKEN is not configured on server.'}
 
     payload = {
-        "inputs": safe_text,
+        "inputs": model_input,
         "parameters": {
             "max_new_tokens": length_options['max_new_tokens'],
             "min_new_tokens": length_options['min_new_tokens'],

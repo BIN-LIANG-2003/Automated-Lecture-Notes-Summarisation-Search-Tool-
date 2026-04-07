@@ -13,7 +13,7 @@ StudyHub is a full-stack coursework project for managing study documents in one 
 
 | Requirement Area | StudyHub Implementation |
 | --- | --- |
-| User accounts and authentication | Register/login flows, Google login, session verification, logout, Bearer token auth for protected API routes |
+| User accounts and authentication | Email/password registration with email verification, Google login, session verification, logout, Bearer token auth for protected API routes |
 | Persistent data management | Users, documents, workspaces, invitations, share links, and summary cache stored in SQLite or PostgreSQL |
 | CRUD and file handling | Upload, list, read, edit, trash/restore, permanent delete, file preview, and download |
 | Search and filtering | Keyword search, category/tag/file-type/date/workspace filters, facets, pagination, stable sorting |
@@ -24,7 +24,7 @@ StudyHub is a full-stack coursework project for managing study documents in one 
 
 ## Feature List
 
-- Email/password authentication with optional Google sign-in.
+- Email/password authentication with required email verification, plus optional Google sign-in.
 - Document upload for `pdf`, `docx`, `txt`, `png`, `jpg`, `jpeg`, `gif`, and `webp`.
 - Workspace-based organisation with configurable permissions and defaults.
 - Soft delete / trash retention with restore and permanent delete.
@@ -96,12 +96,13 @@ See [.env.example](.env.example) for the documented template. The main variables
 - `AUTH_TOKEN_SECRET`: required strong token secret in production
 - `AUTH_TOKEN_TTL_SECONDS`: token lifetime
 - `DATABASE_URL`: enables PostgreSQL; if unset, the app uses local SQLite `database.db`
-- `APP_BASE_URL`: base URL used in invite/share link generation
+- `APP_BASE_URL`: public app origin used in invite/share link generation and email-verification links
+- `EMAIL_VERIFICATION_TTL_HOURS`: verification-link lifetime for newly registered accounts
 - `S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`: optional object storage
 - `HF_API_TOKEN`, `HF_MODEL_BASE_URL`, `HF_OCR_MODEL`, `HF_SUMMARIZER_MODEL`: optional Hugging Face OCR/summarisation
 - `EXTERNAL_OCR_SERVICE_URL`, `EXTERNAL_OCR_TIMEOUT_SECONDS`: optional external OCR service
 - `OCRMYPDF_BINARY`, `OCRMYPDF_LANGUAGE`, `ENABLE_PDF_OCR_FALLBACK`, `OCRMYPDF_TIMEOUT_SECONDS`: optional PDF OCR fallback
-- `RESEND_API_KEY`, `RESEND_FROM_EMAIL`: optional invite email delivery
+- `RESEND_API_KEY`, `RESEND_FROM_EMAIL`: email delivery for workspace invitations and account verification
 - `TRASH_RETENTION_DAYS`: trash expiry window
 
 ## Local Development Notes
@@ -155,9 +156,12 @@ python scripts/rebuild_document_search.py
 - Public flows intentionally left available:
   - register/login
   - Google auth
+  - email verification and verification resend
   - public share-link reads
   - invitation-token read page
   - OCR health check
+- Password-based login is blocked until the registered email address has been verified.
+- Existing users are backfilled as verified during schema migration so current accounts are not locked out on deploy.
 - Protected routes derive the authenticated user from the token instead of trusting request usernames.
 - If `username` is still supplied by older callers, it is treated as a compatibility claim and must match the authenticated user.
 - Query-string auth is retained only for `/api/documents/:id/file?auth_token=...` as transitional compatibility for inline preview.
@@ -184,7 +188,7 @@ python scripts/rebuild_document_search.py
 
 Use this sequence for a full walkthrough:
 
-1. Open the app and register or log in with a normal account.
+1. Open the app and register a new account, then verify the email link before signing in.
 2. Show the Home page listing documents and workspaces.
 3. Upload a sample PDF or TXT file.
 4. Open the document detail page and show inline preview / content editing.

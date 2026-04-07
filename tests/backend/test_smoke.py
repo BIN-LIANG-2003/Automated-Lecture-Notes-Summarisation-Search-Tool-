@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from docx import Document as DocxDocument
 from reportlab.pdfgen import canvas
@@ -12,7 +13,7 @@ from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend.security import create_auth_token
-from backend.shared import assess_ocr_text_quality
+from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input
 from backend.utils import parse_int, row_to_dict, utcnow_iso
 from backend.workspace_domain import ensure_owner_membership, workspace_settings_to_json
 
@@ -48,11 +49,25 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         conn = self._connection()
         try:
             conn.execute(
-                'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
+                '''
+                INSERT INTO users (
+                    username,
+                    email,
+                    password_hash,
+                    email_verified,
+                    email_verification_token,
+                    email_verification_expires_at,
+                    verified_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
                 (
                     self.username,
                     self.email,
                     generate_password_hash(self.password, method='pbkdf2:sha256'),
+                    1,
+                    None,
+                    None,
+                    utcnow_iso(),
                 ),
             )
             conn.commit()
@@ -211,6 +226,60 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         payload = ok_response.get_json()
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'Protected Notes')
+
+    @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
+    def test_register_requires_email_verification_before_password_login(self, _mock_send_email):
+        register_response = self.client.post(
+            '/api/auth/register',
+            json={
+                'username': 'newuser',
+                'email': 'newuser@example.com',
+                'password': 'password123',
+            },
+        )
+        self.assertEqual(register_response.status_code, 201)
+        register_payload = register_response.get_json()
+        self.assertTrue(register_payload.get('verification_required'))
+        self.assertNotIn('auth_token', register_payload)
+
+        login_before_verify = self.client.post(
+            '/api/auth/login',
+            json={'username': 'newuser@example.com', 'password': 'password123'},
+        )
+        self.assertEqual(login_before_verify.status_code, 403)
+        self.assertEqual(login_before_verify.get_json().get('code'), 'email_not_verified')
+
+        conn = self._connection()
+        try:
+            user_row = row_to_dict(
+                conn.execute(
+                    '''
+                    SELECT username, email_verified, email_verification_token, email_verification_expires_at
+                    FROM users
+                    WHERE username = ?
+                    ''',
+                    ('newuser',),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+        self.assertIsNotNone(user_row)
+        self.assertFalse(bool(user_row.get('email_verified')))
+        verification_token = str(user_row.get('email_verification_token') or '').strip()
+        self.assertTrue(verification_token)
+        self.assertTrue(str(user_row.get('email_verification_expires_at') or '').strip())
+
+        verify_response = self.client.get(f'/api/auth/verify-email?token={verification_token}')
+        self.assertEqual(verify_response.status_code, 200)
+        self.assertIn('Email verified', verify_response.get_data(as_text=True))
+
+        login_after_verify = self.client.post(
+            '/api/auth/login',
+            json={'username': 'newuser@example.com', 'password': 'password123'},
+        )
+        self.assertEqual(login_after_verify.status_code, 200)
+        self.assertTrue(str(login_after_verify.get_json().get('auth_token') or '').strip())
 
     def test_keyword_search_returns_ranked_results_and_facets(self):
         self._insert_document(
@@ -442,6 +511,21 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             parse_int(quality['metrics'].get('structural_token_total', 0), 0, 0),
             10,
         )
+
+    def test_hf_summarizer_input_prefixes_t5_family_models(self):
+        payload = build_hf_summarizer_input(
+            'Graph traversal notes explain BFS and DFS.',
+            'google/flan-t5-base',
+        )
+        self.assertTrue(payload.startswith('summarize: '))
+        self.assertIn('Graph traversal notes explain BFS and DFS.', payload)
+
+    def test_hf_summarizer_input_keeps_non_t5_models_unchanged(self):
+        payload = build_hf_summarizer_input(
+            'Graph traversal notes explain BFS and DFS.',
+            'facebook/bart-large-cnn',
+        )
+        self.assertEqual(payload, 'Graph traversal notes explain BFS and DFS.')
 
     def test_search_edge_case_queries_do_not_error(self):
         self._insert_document(

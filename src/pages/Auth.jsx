@@ -37,6 +37,7 @@ export default function AuthPage() {
     password: '',
     confirm: ''
   });
+  const [verificationPrompt, setVerificationPrompt] = useState(null);
 
   const existingUser = sessionStorage.getItem('username');
   const existingToken = sessionStorage.getItem('auth_token');
@@ -202,6 +203,7 @@ export default function AuthPage() {
       const data = await response.json();
 
       if (response.ok) {
+        setVerificationPrompt(null);
         storeAuthSession({
           username: data.username,
           email: data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''),
@@ -213,6 +215,13 @@ export default function AuthPage() {
         });
         navigate(postAuthRedirect, { replace: true });
       } else {
+        if (data.code === 'email_not_verified') {
+          setVerificationPrompt({
+            email: String(data.email || '').trim(),
+            username: String(data.username || loginUsername.trim()).trim(),
+            message: data.error || 'Please verify your email address before signing in.',
+          });
+        }
         showToast(data.error || 'Login failed', 'error');
       }
     } catch (error) {
@@ -252,15 +261,63 @@ export default function AuthPage() {
       const data = await response.json();
 
       if (response.ok) {
-        showToast('Account created! Please sign in.', 'success');
+        setVerificationPrompt({
+          email: String(data.email || email.trim()).trim(),
+          username: String(data.username || username.trim()).trim(),
+          message: data.message || 'Account created. Please verify your email address before signing in.',
+        });
+        showToast(data.message || 'Account created. Please verify your email address before signing in.', 'success');
         setMode('login');
-        setLoginUsername(username.trim());
+        setLoginUsername((data.email || email.trim()).trim());
+        setLoginPassword('');
         setSignupData({ username: '', email: '', password: '', confirm: '' });
       } else {
         showToast(data.error || 'Registration failed', 'error');
       }
     } catch (error) {
       console.error('Signup error:', error);
+      showToast('Network error. Is the backend running?', 'error');
+    }
+  };
+
+  const handleResendVerification = async () => {
+    const identifier = String(
+      verificationPrompt?.email || verificationPrompt?.username || loginUsername.trim()
+    ).trim();
+    if (!identifier) {
+      showToast('Enter the account email or username first.', 'warning');
+      return;
+    }
+
+    try {
+      const response = await fetch('/api/auth/resend-verification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          identifier,
+          email: verificationPrompt?.email || '',
+          username: verificationPrompt?.username || '',
+        }),
+      });
+      const data = await response.json();
+      if (response.ok) {
+        showToast(
+          data.message || 'If the account is still awaiting verification, a new email has been sent.',
+          'success',
+        );
+        setVerificationPrompt((prev) => (
+          prev
+            ? {
+                ...prev,
+                message: data.message || prev.message,
+              }
+            : prev
+        ));
+        return;
+      }
+      showToast(data.error || 'Failed to resend verification email', 'error');
+    } catch (error) {
+      console.error('Resend verification error:', error);
       showToast('Network error. Is the backend running?', 'error');
     }
   };
@@ -366,6 +423,14 @@ export default function AuthPage() {
                 </>
               )}
             </p>
+            {verificationPrompt && (
+              <p className="auth-form-footer muted tiny" role="status">
+                {verificationPrompt.message || 'Please verify your email address before signing in.'}{' '}
+                <button type="button" className="linklike" onClick={handleResendVerification}>
+                  Resend verification email
+                </button>
+              </p>
+            )}
           </form>
 
           {/* ----- 注册表单 ----- */}
@@ -425,7 +490,15 @@ export default function AuthPage() {
             </button>
             <p className="auth-form-footer muted tiny">
               Already have an account?{' '}
-              <button type="button" id="goto-login" className="linklike" onClick={() => setMode('login')}>
+              <button
+                type="button"
+                id="goto-login"
+                className="linklike"
+                onClick={() => {
+                  setMode('login');
+                  setLoginUsername(String(signupData.email || '').trim());
+                }}
+              >
                 Back to sign in
               </button>
             </p>

@@ -16,8 +16,26 @@ def seed_app_data():
     now_iso = utcnow_iso()
     try:
         conn.execute(
-            'INSERT INTO users (username, email, password_hash) VALUES (?, ?, ?)',
-            ('alice', 'alice@example.com', generate_password_hash('password123', method='pbkdf2:sha256')),
+            '''
+            INSERT INTO users (
+                username,
+                email,
+                password_hash,
+                email_verified,
+                email_verification_token,
+                email_verification_expires_at,
+                verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                'alice',
+                'alice@example.com',
+                generate_password_hash('password123', method='pbkdf2:sha256'),
+                1,
+                None,
+                None,
+                now_iso,
+            ),
         )
         conn.execute(
             '''

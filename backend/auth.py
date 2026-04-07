@@ -20,6 +20,16 @@ def google_login():
     return shared.google_login()
 
 
+@auth_bp.route('/api/auth/verify-email', methods=['GET'])
+def verify_email():
+    return shared.verify_email()
+
+
+@auth_bp.route('/api/auth/resend-verification', methods=['POST'])
+def resend_verification():
+    return shared.resend_verification()
+
+
 @auth_bp.route('/api/auth/me', methods=['GET'])
 def get_current_user():
     return shared.me()

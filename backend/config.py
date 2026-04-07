@@ -74,10 +74,20 @@ AUTH_BYPASS_ENDPOINTS = {
     'register',
     'login',
     'google_login',
+    'verify_email',
+    'resend_verification',
     'get_document_by_share_token',
     'get_invitation_by_token',
     'ocr_health',
 }
+
+try:
+    EMAIL_VERIFICATION_TTL_HOURS = max(
+        1,
+        min(168, int((os.environ.get('EMAIL_VERIFICATION_TTL_HOURS') or '24').strip())),
+    )
+except Exception:
+    EMAIL_VERIFICATION_TTL_HOURS = 24
 
 HF_TOKEN = (os.environ.get('HF_API_TOKEN') or '').strip()
 HF_MODEL_BASE_URL = (os.environ.get('HF_MODEL_BASE_URL') or 'https://router.huggingface.co/hf-inference/models').rstrip('/')
@@ -229,7 +239,8 @@ S3_SECRET = os.environ.get('AWS_SECRET_ACCESS_KEY')
 S3_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
 DEFAULT_INVITE_BASE_URL = 'https://automated-lecture-notes-summarisation.onrender.com'
-INVITE_BASE_URL = (os.environ.get('APP_BASE_URL') or DEFAULT_INVITE_BASE_URL).rstrip('/')
+APP_BASE_URL = (os.environ.get('APP_BASE_URL') or DEFAULT_INVITE_BASE_URL).rstrip('/')
+INVITE_BASE_URL = APP_BASE_URL
 RESEND_API_KEY = (os.environ.get('RESEND_API_KEY') or '').strip()
 RESEND_FROM_EMAIL = (os.environ.get('RESEND_FROM_EMAIL') or 'StudyHub <onboarding@resend.dev>').strip()
 INVITE_EXPIRY_DAYS = 7

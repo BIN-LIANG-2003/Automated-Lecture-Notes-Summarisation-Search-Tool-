@@ -423,22 +423,33 @@ def ensure_document_search_support(conn):
             return result
 
     if getattr(conn, 'db_type', '') == 'postgres':
+        savepoint_name = 'studyhub_document_search_bootstrap'
         try:
+            conn.execute(f'SAVEPOINT {savepoint_name}')
             conn.execute(
                 f'''
                 CREATE INDEX IF NOT EXISTS {POSTGRES_SEARCH_INDEX}
                 ON documents
                 USING GIN (
                     (
-                        {_postgres_search_vector_sql()}
+                        {_postgres_search_vector_sql('')}
                     )
                 );
                 '''
             )
+            conn.execute(f'RELEASE SAVEPOINT {savepoint_name}')
             result['mode'] = 'postgres_fts'
             result['available'] = True
             return result
         except Exception as exc:
+            try:
+                conn.execute(f'ROLLBACK TO SAVEPOINT {savepoint_name}')
+                conn.execute(f'RELEASE SAVEPOINT {savepoint_name}')
+            except Exception:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
             print(f'⚠️ PostgreSQL full-text search unavailable, falling back to LIKE search: {exc}')
             return result
 
