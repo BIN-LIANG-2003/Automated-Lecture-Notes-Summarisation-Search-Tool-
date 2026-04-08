@@ -236,7 +236,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
 
         response = self.client.post(
-            f'/api/documents/{document_id}/share-links/email',
+            f'/api/documents/{document_id}/email-share',
             headers=self._auth_headers(),
             json={
                 'username': self.username,
@@ -247,7 +247,9 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 200)
         payload = response.get_json()
+        self.assertTrue(payload.get('sent'))
         self.assertEqual(payload.get('recipient_email'), 'classmate@example.com')
+        self.assertTrue(str(payload.get('expires_at') or '').strip())
         self.assertIn('share', payload)
         self.assertTrue(str(payload['share'].get('token') or '').strip())
         self.assertTrue(str(payload['share'].get('share_url') or '').strip())

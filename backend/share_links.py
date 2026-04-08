@@ -11,6 +11,7 @@ def create_document_share_link(doc_id):
 
 
 @share_links_bp.route('/api/documents/<int:doc_id>/share-links/email', methods=['POST'])
+@share_links_bp.route('/api/documents/<int:doc_id>/email-share', methods=['POST'])
 def send_document_share_link_email(doc_id):
     return share_link_service.send_document_share_link_email(doc_id)
 

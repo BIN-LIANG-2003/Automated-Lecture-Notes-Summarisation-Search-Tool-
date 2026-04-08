@@ -85,7 +85,7 @@ export async function sendDocumentShareLinkEmail(
     payload.expiry_days = Number(expiryDays) || 7;
   }
 
-  const response = await authFetch(`/api/documents/${safeDocId}/share-links/email`, {
+  const response = await authFetch(`/api/documents/${safeDocId}/email-share`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),

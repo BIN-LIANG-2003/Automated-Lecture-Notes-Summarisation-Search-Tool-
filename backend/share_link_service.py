@@ -303,19 +303,19 @@ def send_document_share_link_email(doc_id):
     data = request.get_json(silent=True) or {}
     username = get_authenticated_username()
     if not username:
-        return jsonify({'error': 'username is required'}), 400
+        return jsonify({'sent': False, 'error': 'username is required'}), 400
 
     recipient_email = normalize_email(data.get('recipient_email') or data.get('email'))
     if not recipient_email or not is_valid_email(recipient_email):
-        return jsonify({'error': 'Please enter a valid recipient email address'}), 400
+        return jsonify({'sent': False, 'error': 'Please enter a valid recipient email address'}), 400
 
     personal_message = str(data.get('message') or '').strip()
     if len(personal_message) > 500:
-        return jsonify({'error': 'Message must be 500 characters or fewer'}), 400
+        return jsonify({'sent': False, 'error': 'Message must be 500 characters or fewer'}), 400
 
     conn = get_db_connection()
     if not conn:
-        return jsonify({'error': 'Database connection failed'}), 500
+        return jsonify({'sent': False, 'error': 'Database connection failed'}), 500
 
     try:
         result, error_payload, status_code = _prepare_document_share_link_payload(
@@ -326,6 +326,10 @@ def send_document_share_link_email(doc_id):
             allow_reuse_when_limit=True,
         )
         if error_payload:
+            error_payload = dict(error_payload)
+            error_payload.setdefault('sent', False)
+            if recipient_email:
+                error_payload.setdefault('recipient_email', recipient_email)
             return jsonify(error_payload), status_code
 
         payload = result['payload']
@@ -342,12 +346,19 @@ def send_document_share_link_email(doc_id):
         )
         if not sent:
             conn.rollback()
-            return jsonify({'error': send_error or 'Failed to send share email'}), 503
+            return jsonify({
+                'sent': False,
+                'recipient_email': recipient_email,
+                'expires_at': payload.get('expires_at'),
+                'error': send_error or 'Failed to send share email',
+            }), 503
 
         conn.commit()
         return jsonify({
+            'sent': True,
             'message': f'Shared note email sent to {recipient_email}.',
             'recipient_email': recipient_email,
+            'expires_at': payload.get('expires_at'),
             'share': payload,
             'reused_existing': bool(payload.get('reused_existing')),
         }), 200
