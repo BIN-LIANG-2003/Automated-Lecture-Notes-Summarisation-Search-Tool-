@@ -94,6 +94,20 @@ def build_summary_cache_text_hash(text):
     return hashlib.sha256(payload.encode('utf-8')).hexdigest()
 
 
+def mask_email_for_log(email):
+    safe_email = normalize_email(email)
+    if not safe_email or '@' not in safe_email:
+        return 'unknown'
+    local_part, domain_part = safe_email.split('@', 1)
+    if len(local_part) <= 1:
+        masked_local = '*'
+    elif len(local_part) == 2:
+        masked_local = f'{local_part[0]}*'
+    else:
+        masked_local = f"{local_part[0]}{'*' * (len(local_part) - 2)}{local_part[-1]}"
+    return f'{masked_local}@{domain_part}'
+
+
 def load_document_summary_cache(conn, document_id, content_hash, summary_length, keyword_limit):
     safe_doc_id = parse_int(document_id, 0, 0)
     safe_hash = str(content_hash or '').strip()
@@ -301,14 +315,24 @@ def _render_auth_message_page(title, message, *, status_code=200, success=False)
 
 def send_registration_verification_email(to_email, username, verification_url, expires_at):
     recipient = normalize_email(to_email)
+    masked_recipient = mask_email_for_log(recipient)
     safe_username = str(username or '').strip()
     safe_verification_url = str(verification_url or '').strip()
     safe_expiry_label = str(expires_at or '').strip() or 'Unknown'
     if not recipient:
+        print('Registration verification email send skipped: missing recipient email')
         return False, 'Missing recipient email'
     if not RESEND_API_KEY:
+        print(
+            f'Registration verification email send failed for {masked_recipient}: '
+            'RESEND_API_KEY is not configured'
+        )
         return False, 'RESEND_API_KEY is not configured'
     if not safe_verification_url:
+        print(
+            f'Registration verification email send failed for {masked_recipient}: '
+            'verification URL could not be generated'
+        )
         return False, 'Verification URL could not be generated'
 
     subject = 'Verify your StudyHub account'
@@ -353,9 +377,18 @@ def send_registration_verification_email(to_email, username, verification_url, e
             timeout=15,
         )
         if response.status_code >= 400:
-            return False, f'Resend failed ({response.status_code}): {response.text[:220]}'
+            error_message = f'Resend failed ({response.status_code}): {response.text[:220]}'
+            print(
+                f'Registration verification email send failed for {masked_recipient} '
+                f'using sender "{RESEND_FROM_EMAIL}": {error_message}'
+            )
+            return False, error_message
         return True, ''
     except Exception as e:
+        print(
+            f'Registration verification email request error for {masked_recipient} '
+            f'using sender "{RESEND_FROM_EMAIL}": {e}'
+        )
         return False, f'Resend request error: {e}'
 
 
@@ -571,6 +604,7 @@ def verify_email():
             UPDATE users
             SET email_verified = ?,
                 verified_at = ?,
+                email_verification_token = NULL,
                 email_verification_expires_at = NULL
             WHERE username = ?
             ''',

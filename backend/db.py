@@ -344,6 +344,9 @@ def init_db():
         conn.execute(workspace_invitations_sql)
         conn.execute(document_share_links_sql)
         conn.execute(document_summary_cache_sql)
+        ensure_users_columns(conn, optional_timestamp_type)
+        ensure_documents_columns(conn)
+        ensure_workspaces_columns(conn)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(users_email_verification_token_idx_sql)
@@ -355,9 +358,6 @@ def init_db():
         conn.execute(documents_workspace_deleted_uploaded_idx_sql)
         conn.execute(documents_owner_category_idx_sql)
         conn.execute(documents_owner_file_type_idx_sql)
-        ensure_users_columns(conn, optional_timestamp_type)
-        ensure_documents_columns(conn)
-        ensure_workspaces_columns(conn)
 
         from .document_search import ensure_document_search_support
         from .workspace_domain import backfill_documents_workspace_ids
@@ -372,5 +372,6 @@ def init_db():
         except Exception:
             pass
         print(f'❌ Error initializing tables: {e}')
+        raise
     finally:
         conn.close()
