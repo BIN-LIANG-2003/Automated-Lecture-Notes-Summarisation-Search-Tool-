@@ -9,8 +9,8 @@ test('login, search documents, and open document detail pane', async ({ page }) 
   await page.getByRole('button', { name: 'Sign in', exact: true }).click();
 
   await page.waitForURL('**/#/');
-  await expect(page.getByRole('button', { name: 'My Files' })).toBeVisible();
-  await page.getByRole('button', { name: 'My Files' }).click();
+  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Notes', exact: true }).click();
 
   const searchInput = page.locator('#search-input');
   await expect(searchInput).toBeVisible();
@@ -19,7 +19,7 @@ test('login, search documents, and open document detail pane', async ({ page }) 
 
   const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
   await expect(graphCard).toBeVisible();
-  await graphCard.getByRole('button', { name: 'View' }).click();
+  await graphCard.getByRole('button', { name: 'Open' }).click();
 
   await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
   await expect(page.locator('.document-detail-card')).toContainText('graph traversal bfs dfs');

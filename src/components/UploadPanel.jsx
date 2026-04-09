@@ -29,7 +29,7 @@ export default function UploadPanel({
   canClearUploadQueue,
   uploadQueue,
   embedded = false,
-  title = 'Upload Files',
+  title = 'Upload',
   description = 'Add new notes to this workspace and auto-index them for search.',
   collapsed = false,
   onToggleCollapsed,
@@ -38,7 +38,7 @@ export default function UploadPanel({
   const normalizedFileHint = String(fileHint || '').trim();
   const hasSelectedFile = normalizedFileHint && normalizedFileHint.toLowerCase() !== 'no file selected yet';
   const compactSummaryItems = [
-    hasSelectedFile ? normalizedFileHint : (allowUploads ? 'Choose files or drop them into Files.' : 'Uploads disabled'),
+    hasSelectedFile ? normalizedFileHint : (allowUploads ? 'Ready for PDF, DOCX, TXT, and image files.' : 'Uploads disabled'),
     hasQueue ? `Queue ${uploadQueueSummary.total}` : '',
     hasQueue && uploadQueueSummary.uploading ? `Running ${uploadQueueSummary.uploading}` : '',
     hasQueue && uploadQueueSummary.failed ? `Failed ${uploadQueueSummary.failed}` : '',
@@ -64,7 +64,7 @@ export default function UploadPanel({
         <div className="notion-upload-tray-inline-head">
           <div className="notion-upload-tray-meta">
             <span id="uploader-title" className="notion-upload-tray-label">
-              Upload tray
+              Uploads
             </span>
             {collapsed ? (
               <div className="notion-upload-tray-summary" aria-live="polite">
@@ -79,12 +79,12 @@ export default function UploadPanel({
               </div>
             ) : (
               <p className="notion-upload-tray-copy">
-                Drop files here or choose files to add them straight into My Documents.
+                Choose files or drop them here to add notes straight into your study space.
               </p>
             )}
           </div>
           <button type="button" className="btn" onClick={onToggleCollapsed}>
-            {collapsed ? 'Expand Tray' : 'Collapse Tray'}
+            {collapsed ? 'Show Uploads' : 'Hide Uploads'}
           </button>
         </div>
       ) : (
@@ -197,14 +197,14 @@ export default function UploadPanel({
           )}
           </form>
           <p className="notion-upload-drop-hint">
-            Drag & drop files here for quick upload.
+            Drag files here for quick upload.
           </p>
         </div>
       )}
       {(!embedded || !collapsed) && (
         <p className="muted tiny">
           {allowUploads
-            ? 'Supports PDF / DOCX / TXT / images, up to 20MB per file. Empty category will be auto-assigned.'
+            ? 'Supports PDF, DOCX, TXT, and images up to 20MB. Empty category is auto-assigned.'
             : 'Uploads are currently disabled by workspace settings.'}
         </p>
       )}

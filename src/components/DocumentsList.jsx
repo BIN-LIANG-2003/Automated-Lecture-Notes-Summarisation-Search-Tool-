@@ -286,7 +286,7 @@ export default function DocumentsList({
                     disabled={!isLoggedIn}
                     type="button"
                   >
-                    View
+                    Open
                   </button>
                   <button
                     className="btn btn-primary document-primary-summarize"
@@ -372,7 +372,7 @@ export default function DocumentsList({
 
                         <div className="document-more-separator" role="separator" />
 
-                        <div className="document-more-group" role="group" aria-label="Document actions">
+                        <div className="document-more-group" role="group" aria-label="Note actions">
                           <p className="document-more-group-title">Actions</p>
                           <button
                             className="document-more-item"
@@ -403,7 +403,7 @@ export default function DocumentsList({
                               type="button"
                               role="menuitem"
                             >
-                              Image OCR
+                              Scan Image
                             </button>
                           )}
                           <button
@@ -423,7 +423,7 @@ export default function DocumentsList({
                             type="button"
                             role="menuitem"
                           >
-                            Summarize Document
+                            Summarize Note
                           </button>
                           <button
                             className="document-more-item"
@@ -493,7 +493,7 @@ export default function DocumentsList({
         </div>
       ) : (
         <div id="empty-state" className="empty notion-empty-state">
-          <strong>{hasActiveFilters ? 'No matching documents' : 'No documents yet'}</strong>
+          <strong>{hasActiveFilters ? 'No matching notes' : 'No notes yet'}</strong>
           <p>
             {hasActiveFilters
               ? 'Try adjusting your search, date range, category, or tag filters.'

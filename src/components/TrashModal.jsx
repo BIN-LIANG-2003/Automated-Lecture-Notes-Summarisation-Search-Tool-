@@ -123,7 +123,7 @@ export default function TrashModal({
         </div>
 
         <p className="muted tiny">
-          Showing {trashRangeStart}-{trashRangeEnd} of {trashTotal} item(s)
+          Showing {trashRangeStart}-{trashRangeEnd} of {trashTotal} note{trashTotal === 1 ? '' : 's'}
           {trashQuery.trim() ? ` for "${trashQuery.trim()}"` : ''}.
         </p>
 
@@ -189,7 +189,7 @@ export default function TrashModal({
         )}
 
         {!!trashItems.length && (
-          <ul className="notion-trash-list" aria-label="Trashed documents">
+          <ul className="notion-trash-list" aria-label="Trashed notes">
             {trashItems.map((item) => {
               const docId = toPositiveId(item?.id);
               const checked = selectedIdSet.has(docId);

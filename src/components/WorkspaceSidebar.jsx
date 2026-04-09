@@ -183,7 +183,7 @@ export default function WorkspaceSidebar({
         </button>
         <button type="button" className={`notion-nav-item ${filesActive ? 'active' : ''}`} onClick={onGoFiles}>
           <span aria-hidden="true">📄</span>
-          <span>My Files</span>
+          <span>Notes</span>
         </button>
       </nav>
 

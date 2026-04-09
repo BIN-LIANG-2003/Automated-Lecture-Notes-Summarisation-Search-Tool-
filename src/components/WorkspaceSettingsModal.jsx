@@ -228,7 +228,7 @@ export default function WorkspaceSettingsModal({
                 </section>
 
                 <section className="notion-settings-block">
-                  <h4>File view defaults</h4>
+                  <h4>Notes view defaults</h4>
                   <div className="notion-settings-row">
                     <label htmlFor="workspace-default-home-tab-select">Default Landing Page</label>
                     <select
@@ -240,11 +240,11 @@ export default function WorkspaceSettingsModal({
                       disabled={workspaceActionLoading}
                     >
                       <option value="home">Home overview</option>
-                      <option value="files">My Files</option>
+                      <option value="files">Notes</option>
                     </select>
                   </div>
                   <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-layout-select">Default Files Layout</label>
+                    <label htmlFor="workspace-default-layout-select">Default Notes Layout</label>
                     <select
                       id="workspace-default-layout-select"
                       value={workspaceSettingsDraft.default_documents_layout}
@@ -261,7 +261,7 @@ export default function WorkspaceSettingsModal({
                     </select>
                   </div>
                   <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-sort-select">Default Files Sort</label>
+                    <label htmlFor="workspace-default-sort-select">Default Notes Sort</label>
                     <select
                       id="workspace-default-sort-select"
                       value={workspaceSettingsDraft.default_documents_sort}
@@ -278,7 +278,7 @@ export default function WorkspaceSettingsModal({
                     </select>
                   </div>
                   <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-page-size-select">Default Files Per Page</label>
+                    <label htmlFor="workspace-default-page-size-select">Notes Per Page</label>
                     <select
                       id="workspace-default-page-size-select"
                       value={workspaceSettingsDraft.default_documents_page_size}
@@ -670,7 +670,7 @@ export default function WorkspaceSettingsModal({
                     {getLinkSharingModeHelp(workspaceSettingsDraft.link_sharing_mode)}
                   </p>
                   <div className="notion-settings-row">
-                    <label htmlFor="workspace-share-expiry-input">Document Share Link Expiry (days)</label>
+                    <label htmlFor="workspace-share-expiry-input">Share Link Expiry (days)</label>
                     <input
                       id="workspace-share-expiry-input"
                       type="number"
@@ -686,7 +686,7 @@ export default function WorkspaceSettingsModal({
                     />
                   </div>
                   <div className="notion-settings-row">
-                    <label htmlFor="workspace-share-link-limit-input">Max Active Share Links Per Document</label>
+                    <label htmlFor="workspace-share-link-limit-input">Max Active Links Per Note</label>
                     <input
                       id="workspace-share-link-limit-input"
                       type="number"

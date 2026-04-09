@@ -57,8 +57,8 @@ async function loginAsAlice(page) {
 }
 
 async function goToMyFiles(page) {
-  await expect(page.getByRole('button', { name: 'My Files' })).toBeVisible();
-  await page.getByRole('button', { name: 'My Files' }).click();
+  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Notes', exact: true }).click();
   await expect(page.locator('#files-section')).toBeVisible();
   await expect(page.locator('#search-input')).toBeVisible();
 }
@@ -103,7 +103,7 @@ test('files workspace summary center opens summary result modal with export and 
   await goToMyFiles(page);
 
   await page.locator('.notion-top-summary-btn').click();
-  const summaryCenter = page.getByRole('dialog', { name: 'Document Summary Center' });
+  const summaryCenter = page.getByRole('dialog', { name: 'Summaries' });
   await expect(summaryCenter).toBeVisible();
   await expect(summaryCenter.getByRole('button', { name: 'Open Summary' })).toBeVisible();
   await expect(summaryCenter.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
@@ -150,7 +150,7 @@ test('files detail pane summarize flow opens the current summary result modal', 
 
   const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
   await expect(graphCard).toBeVisible();
-  await graphCard.getByRole('button', { name: 'View' }).click();
+  await graphCard.getByRole('button', { name: 'Open' }).click();
   await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
 
   const summarizeResponse = page.waitForResponse(
@@ -159,7 +159,7 @@ test('files detail pane summarize flow opens the current summary result modal', 
       response.request().method() === 'POST' &&
       response.ok()
   );
-  await page.locator('.document-detail-card').getByRole('button', { name: 'Summarize Document' }).click();
+  await page.locator('.document-detail-card').getByRole('button', { name: 'Summarize' }).click();
   await summarizeResponse;
 
   const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });

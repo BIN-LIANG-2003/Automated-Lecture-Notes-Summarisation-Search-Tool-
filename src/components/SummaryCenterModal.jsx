@@ -59,9 +59,9 @@ export default function SummaryCenterModal({
       >
         <div className="notion-summary-center-head">
           <div>
-            <h3 id="summary-center-title">Document Summary Center</h3>
+            <h3 id="summary-center-title">Summaries</h3>
             <p className="notion-settings-help">
-              Summaries generated from uploaded PDF / DOCX / TXT content in this workspace.
+              Saved summaries from notes in this workspace.
             </p>
           </div>
           <div className="notion-summary-center-head-actions">
@@ -70,7 +70,7 @@ export default function SummaryCenterModal({
               type="button"
               className="notion-modal-close"
               onClick={onClose}
-              aria-label="Close Summary Center"
+              aria-label="Close summaries"
             >
               ×
             </button>
@@ -270,7 +270,7 @@ export default function SummaryCenterModal({
             })}
           </ul>
         ) : (
-          <p className="muted">No summary history yet. Use "Summarize Document" on any note to generate one.</p>
+          <p className="muted">No summaries yet. Use "Summarize Note" on any note to generate one.</p>
         )}
         <div className="notion-modal-actions">
           <button type="button" className="btn" onClick={onClose}>

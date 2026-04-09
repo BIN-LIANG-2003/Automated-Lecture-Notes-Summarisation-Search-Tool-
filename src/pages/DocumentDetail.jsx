@@ -127,6 +127,7 @@ const normalizeDocument = (raw) => {
 export default function DocumentDetail() {
   const { docId, shareToken } = useParams();
   const navigate = useNavigate();
+  const shareToolsRef = useRef(null);
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -328,7 +329,7 @@ export default function DocumentDetail() {
       : 'Create a share link from this detail page and copy it to your clipboard.';
   const shareDeliveryHint = shareLinkDisabled
     ? shareLinkDisabledReason
-    : 'Use Send by Email to let StudyHub deliver the shared note directly. Share Link still copies a manual link.';
+    : 'Use Send by Email to let StudyHub deliver the shared note directly. Copy Link still puts a share link on your clipboard.';
   const shareAvailabilityLabel = shareLinkDisabled
     ? (document.linkSharingMode === 'restricted'
       ? 'Sharing blocked'
@@ -336,6 +337,40 @@ export default function DocumentDetail() {
         ? 'Sign-in required'
         : 'Owner-only')
     : 'Share link available';
+  const detailMetaPills = [
+    document?.fileType ? String(document.fileType).toUpperCase() : 'NOTE',
+    document?.category || DEFAULT_NOTE_CATEGORY,
+    document?.tags?.length ? `${document.tags.length} tag${document.tags.length === 1 ? '' : 's'}` : 'No tags',
+  ];
+  const primaryStudyActionLabel = isImage
+    ? (isExtracting ? 'Scanning...' : 'Scan Image')
+    : (isAnalyzing ? 'Summarizing...' : 'Summarize');
+  const primaryStudyActionDisabled = isSharedView
+    ? true
+    : isImage
+      ? (isExtracting || !canUseOcr)
+      : (isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools);
+  const primaryStudyActionTitle = isSharedView
+    ? 'Study tools stay in the original workspace view.'
+    : isImage
+      ? (!canUseAiTools
+          ? 'AI tools are disabled in workspace settings.'
+          : !canUseOcr
+            ? 'OCR is disabled in workspace settings.'
+            : 'Extract editable text from this image.')
+      : (!canUseAiTools
+          ? 'AI tools are disabled in workspace settings.'
+          : 'Generate a focused summary for this note.');
+  const readingSurfaceTitle = isImage
+    ? 'Image Preview'
+    : isPdf
+      ? 'Document Text Preview'
+      : 'Note Content';
+  const readingSurfaceNote = isImage
+    ? 'Review the source image here, then use the tools rail for OCR and follow-up actions.'
+    : isPdf
+      ? 'This is the searchable text StudyHub uses for review, search, and summaries.'
+      : 'Read the note first. Review and sharing tools stay in the side rail.';
 
   const refreshShareLinks = async (targetDocId = document?.id) => {
     const id = Number(targetDocId);
@@ -795,6 +830,11 @@ export default function DocumentDetail() {
     }
   };
 
+  const focusShareTools = () => {
+    if (!shareToolsRef.current) return;
+    shareToolsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <>
       <main
@@ -871,41 +911,102 @@ export default function DocumentDetail() {
 
       <article className="document-detail-card">
         <header className="document-detail-head">
-          <div>
+          <div className="document-detail-hero-copy">
+            <span className="document-detail-kicker">{isSharedView ? 'Shared Note' : 'Reading View'}</span>
             <h1>{document.title}</h1>
-            <div className="document-meta document-detail-meta">Uploaded: {new Date(document.uploadedAt).toLocaleString()}</div>
-            <div className="document-meta document-detail-meta">Category: {document.category}</div>
-            <div className="document-meta document-detail-meta">Tags: {document.tags?.length ? document.tags.join(', ') : 'None'}</div>
+            <div className="document-detail-meta-pills" aria-label="Document metadata">
+              {detailMetaPills.map((item) => (
+                <span key={`detail-meta-${item}`} className="document-detail-meta-pill">
+                  {item}
+                </span>
+              ))}
+            </div>
+            <div className="document-meta document-detail-meta document-detail-meta-subtle">
+              Uploaded: {new Date(document.uploadedAt).toLocaleString()}
+            </div>
           </div>
           {!isSharedView && (
             <div className="document-detail-head-side">
-              <div className="document-detail-head-actions">
+              <div className="document-detail-primary-actions">
                 <button
                   type="button"
                   className="btn"
-                  onClick={openSendNoteEmailModal}
+                  onClick={focusShareTools}
                   disabled={shareLinkDisabled}
-                  title={shareEmailHint}
+                  title={shareDeliveryHint}
                 >
-                  Send by Email
+                  Share
                 </button>
                 <button
                   type="button"
                   className="btn"
-                  onClick={handleCopyShareLink}
-                  disabled={shareLinkDisabled}
-                  title={shareLinkHint}
+                  onClick={handleDownloadFile}
+                  disabled={isDownloadingFile}
                 >
-                  Share Link
+                  {isDownloadingFile ? 'Exporting...' : 'Export'}
                 </button>
                 <button
                   type="button"
                   className="btn btn-primary"
-                  onClick={handleDownloadFile}
-                  disabled={isDownloadingFile}
+                  onClick={isImage ? handleExtractText : () => handleAnalyzeText()}
+                  disabled={primaryStudyActionDisabled}
+                  title={primaryStudyActionTitle}
                 >
-                  {isDownloadingFile ? 'Downloading...' : 'Download'}
+                  {primaryStudyActionLabel}
                 </button>
+                <details className="document-detail-more-menu">
+                  <summary className="btn document-detail-more-trigger">More</summary>
+                  <div className="document-detail-more-popover">
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={openSendNoteEmailModal}
+                      disabled={shareLinkDisabled}
+                      title={shareEmailHint}
+                    >
+                      Send by Email
+                    </button>
+                    <button
+                      type="button"
+                      className="btn"
+                      onClick={handleCopyShareLink}
+                      disabled={shareLinkDisabled}
+                      title={shareLinkHint}
+                    >
+                      Copy Link
+                    </button>
+                    {!isImage && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => handleAnalyzeText({ forceRefresh: true })}
+                        disabled={isAnalyzing || !canUseAiTools}
+                        title="Bypass cache and refresh document text before summarizing"
+                      >
+                        Rebuild Summary
+                      </button>
+                    )}
+                    {isImage && Boolean(extractedText.trim()) && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setOcrResultOpen(true)}
+                        disabled={isExtracting}
+                      >
+                        Open OCR Result
+                      </button>
+                    )}
+                    {analysisResult && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={() => setSummaryResultOpen(true)}
+                      >
+                        Open Summary Result
+                      </button>
+                    )}
+                  </div>
+                </details>
               </div>
               <div className="document-detail-share-status" aria-live="polite">
                 <span className="document-share-pill">{shareModeLabel}</span>
@@ -917,210 +1018,271 @@ export default function DocumentDetail() {
             </div>
           )}
         </header>
-
-        {username && canManageShareLinks && (
-          <section className="notion-doc-share-manager" aria-label="Document share links">
-            <div className="notion-doc-share-manager-head">
-              <h3>Share Links</h3>
-              <div className="notion-doc-share-actions">
-                <button
-                  type="button"
-                  className="btn btn-delete"
-                  onClick={handleRevokeAllShareLinks}
-                  disabled={shareLinksLoading || shareActionLoadingId !== 0 || !shareLinks.length}
-                >
-                  {shareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
-                </button>
-                <button
-                  type="button"
-                  className="btn btn-delete"
-                  onClick={handleDeleteInactiveShareLinks}
-                  disabled={
-                    shareLinksLoading ||
-                    shareActionLoadingId !== 0 ||
-                    !shareLinks.some((item) => !isActiveShareLink(item))
-                  }
-                >
-                  {shareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
-                </button>
-                <button
-                  type="button"
-                  className="btn"
-                  onClick={() => refreshShareLinks(document.id)}
-                  disabled={shareLinksLoading || shareActionLoadingId !== 0}
-                >
-                  Refresh
-                </button>
+        <div className="document-detail-layout">
+          <section className="document-detail-main">
+            <section className="document-body document-detail-reading-panel" aria-labelledby="document-reading-title">
+              <div className="document-detail-reading-head">
+                <div>
+                  <span className="document-detail-reading-kicker">{readingSurfaceTitle}</span>
+                  <h3 id="document-reading-title" className="document-detail-section-title">
+                    {isImage ? 'Focus on the source image' : 'Focus on the note'}
+                  </h3>
+                </div>
+                <p className="document-detail-reading-note">{readingSurfaceNote}</p>
               </div>
-            </div>
-            {shareLinksError && <p className="muted tiny">Load failed: {shareLinksError}</p>}
-            {shareLinksLoading && !shareLinksError && <p className="muted tiny">Loading share links...</p>}
-            {!shareLinksLoading && !shareLinksError && !shareLinks.length && (
-              <p className="muted tiny">No share links yet. Click "Share Link" to create one.</p>
-            )}
-            {shareLinks.length > 0 && (
-              <ul className="notion-doc-share-list">
-                {shareLinks.map((item, index) => {
-                  const status = String(item?.status || 'unknown').toLowerCase();
-                  const isActive = isActiveShareLink(item);
-                  const loading = Number(item?.id) === shareActionLoadingId;
-                  return (
-                    <li key={`detail-share-${item?.id || item?.token || index}`}>
-                      <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
-                        {item?.share_url || 'Invalid link'}
-                      </a>
-                      <span className="notion-doc-share-meta">
-                        Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
+              {isImage ? (
+                <div className="document-detail-image-frame">
+                  <img src={fileUrl} alt="Preview" className="document-detail-preview-image" />
+                </div>
+              ) : (
+                <pre className="document-detail-pre">
+                  {document.content || 'No text content extracted.'}
+                </pre>
+              )}
+            </section>
+          </section>
+
+          <aside className="document-detail-sidebar" aria-label="Document tools">
+            <section className="document-detail-sidebar-card document-detail-info-card">
+              <div className="document-detail-sidebar-head">
+                <span className="document-detail-sidebar-kicker">Document Info</span>
+                <strong>At a glance</strong>
+              </div>
+              <dl className="document-detail-fact-list">
+                <div>
+                  <dt>Type</dt>
+                  <dd>{document.fileType ? String(document.fileType).toUpperCase() : 'NOTE'}</dd>
+                </div>
+                <div>
+                  <dt>Uploaded</dt>
+                  <dd>{formatDateTimeLabel(document.uploadedAt)}</dd>
+                </div>
+                <div>
+                  <dt>Category</dt>
+                  <dd>{document.category}</dd>
+                </div>
+              </dl>
+              <div className="document-detail-tag-group">
+                <span>Tags</span>
+                <div className="document-detail-tag-list">
+                  {document.tags?.length ? (
+                    document.tags.map((tag) => (
+                      <span key={`detail-tag-${tag}`} className="document-detail-tag-chip">
+                        {tag}
                       </span>
-                      <div className="notion-doc-share-actions">
+                    ))
+                  ) : (
+                    <span className="document-detail-tag-empty">No tags</span>
+                  )}
+                </div>
+              </div>
+            </section>
+
+            {!isSharedView && (
+              <section className="document-detail-sidebar-card document-detail-study-card">
+                <div className="document-detail-sidebar-head">
+                  <span className="document-detail-sidebar-kicker">Study Tools</span>
+                  <strong>{isImage ? 'OCR and review' : 'Summary and review'}</strong>
+                </div>
+                {!canUseAiTools ? (
+                  <p className="muted tiny">AI tools are disabled in this workspace settings.</p>
+                ) : (
+                  <>
+                    <p className="document-detail-sidebar-note">
+                      {isImage
+                        ? 'Scan the image to extract editable text, then open the OCR result modal to save or summarize it.'
+                        : 'Summaries open in a modal so the note stays central while review actions remain easy to revisit.'}
+                    </p>
+                    <div className="document-detail-study-actions">
+                      {!isImage && (
                         <button
                           type="button"
                           className="btn"
-                          onClick={() => handleCopyExistingShareLink(item?.share_url)}
+                          onClick={() => handleAnalyzeText({ forceRefresh: true })}
+                          disabled={isAnalyzing || !canUseAiTools}
+                          title="Bypass cache and refresh document text before summarizing"
                         >
-                          Copy
+                          Rebuild Summary
                         </button>
+                      )}
+                      {isImage && Boolean(extractedText.trim()) && (
                         <button
                           type="button"
-                          className="btn btn-delete"
-                          onClick={() => (isActive ? handleRevokeShareLink(item) : handleDeleteShareLink(item))}
-                          disabled={loading || shareActionLoadingId < 0}
+                          className="btn"
+                          onClick={() => setOcrResultOpen(true)}
+                          disabled={isExtracting}
                         >
-                          {loading
-                            ? (shareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
-                            : (isActive ? 'Revoke' : 'Delete')}
+                          Open OCR Result
                         </button>
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            )}
-          </section>
-        )}
-        <section className="document-body">
-          {isImage ? (
-            <img src={fileUrl} alt="Preview" className="document-detail-preview-image" />
-          ) : (
-            <>
-              <h3 className="document-detail-section-title">Document Content:</h3>
-              <pre className="document-detail-pre">
-                {document.content || "No text content extracted."}
-              </pre>
-            </>
-          )}
-
-          <section className="notion-ai-section document-detail-ai-section">
-            <article className="notion-ai-shell">
-              {!canUseAiTools && (
-                <p className="muted tiny">AI tools are disabled in this workspace settings.</p>
-              )}
-              {!isSharedView && (
-                <div className="notion-ai-actions-simple">
-                  {isImage && (
-                    <button
-                      type="button"
-                      className="btn notion-ai-action-chip"
-                      onClick={handleExtractText}
-                      disabled={isExtracting || !canUseOcr}
-                    >
-                      {!canUseOcr ? 'OCR Disabled' : isExtracting ? 'Running image OCR...' : 'Image OCR'}
-                    </button>
-                  )}
-                  {!isImage && (
-                    <>
-                      <button
-                        type="button"
-                        className="btn btn-primary notion-ai-action-chip"
-                        onClick={handleAnalyzeText}
-                        disabled={isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools}
-                      >
-                        {isAnalyzing ? 'Summarizing document...' : 'Summarize Document'}
-                      </button>
-                      <button
-                        type="button"
-                        className="btn notion-ai-action-chip"
-                        onClick={() => handleAnalyzeText({ forceRefresh: true })}
-                        disabled={isAnalyzing || !canUseAiTools}
-                        title="Bypass cache and refresh document text before summarizing"
-                      >
-                        Rebuild (Refresh Text)
-                      </button>
-                    </>
-                  )}
-                  {isImage && Boolean(extractedText.trim()) && (
-                    <button
-                      type="button"
-                      className="btn notion-ai-action-chip"
-                      onClick={() => setOcrResultOpen(true)}
-                      disabled={isExtracting}
-                    >
-                      Open OCR Result
-                    </button>
-                  )}
-                  {analysisResult && (
-                    <button
-                      type="button"
-                      className="btn notion-ai-action-chip"
-                      onClick={() => setSummaryResultOpen(true)}
-                    >
-                      Open Summary Result
-                    </button>
-                  )}
-                </div>
-              )}
-              {summaryProgress.active && (
-                <div className="notion-summary-progress" aria-live="polite">
-                  <div className="notion-summary-progress-head">
-                    <strong>{summaryProgressLabel}</strong>
-                  </div>
-                  {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
-                    <div className="notion-summary-progress-steps" role="status">
-                      <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
-                        1. Refresh full PDF text
-                      </span>
-                      <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
-                        2. Chunk and summarize
-                      </span>
+                      )}
+                      {analysisResult && (
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setSummaryResultOpen(true)}
+                        >
+                          Open Summary Result
+                        </button>
+                      )}
                     </div>
-                  )}
-                </div>
-              )}
-
-              <article className="notion-ai-output">
-                <h3>{isImage ? 'Image OCR Workflow' : 'Summary Workflow'}</h3>
-                {isImage ? (
-                  <>
-                    <p>
-                      Run Image OCR to open the OCR result modal, review the extracted text, save it as TXT, DOCX, or PDF,
-                      and generate a summary without leaving this page.
-                    </p>
-                    <p className="muted tiny">
-                      {extractedText.trim()
-                        ? `OCR text is ready${ocrSourceDetail ? ` (${ocrSourceDetail})` : ''}. Reopen the OCR result modal to edit, save, or summarize it.`
-                        : 'No OCR result yet. Use the Image OCR action above to start.'}
-                    </p>
-                    {!username && (
-                      <p className="muted tiny">Sign in with a workspace account before saving OCR text as a new note.</p>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <p>Document summaries now open in the current Summary Result modal instead of rendering inline here.</p>
-                    <p className="muted tiny">
-                      Use Summarize Document to generate a result, then review copy, TXT export, PDF export, and email share actions in the modal.
-                    </p>
                   </>
                 )}
-                {analysisResult && (
+                {summaryProgress.active && (
+                  <div className="notion-summary-progress" aria-live="polite">
+                    <div className="notion-summary-progress-head">
+                      <strong>{summaryProgressLabel}</strong>
+                    </div>
+                    {summaryProgress.forceRefresh && summaryProgress.docId > 0 && (
+                      <div className="notion-summary-progress-steps" role="status">
+                        <span className={summaryProgress.phase === 'refreshing' ? 'is-active' : 'is-done'}>
+                          1. Refresh full PDF text
+                        </span>
+                        <span className={summaryProgress.phase === 'summarizing' ? 'is-active' : ''}>
+                          2. Chunk and summarize
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+                {isImage && !username && (
+                  <p className="muted tiny">Sign in with a workspace account before saving OCR text as a new note.</p>
+                )}
+                {isImage && extractedText.trim() && (
                   <p className="muted tiny">
-                    Latest summary is ready. Use "Open Summary Result" to review it again.
+                    OCR text is ready{ocrSourceDetail ? ` (${ocrSourceDetail})` : ''}. Open the result modal to edit,
+                    save, or summarize it.
                   </p>
                 )}
-              </article>
-            </article>
-          </section>
-        </section>
+                {!isImage && analysisResult && (
+                  <p className="muted tiny">Latest summary is ready. Open the modal anytime to review it again.</p>
+                )}
+              </section>
+            )}
+
+            {!isSharedView && (
+              <section ref={shareToolsRef} className="document-detail-sidebar-card document-detail-share-card">
+                <div className="document-detail-sidebar-head">
+                  <span className="document-detail-sidebar-kicker">Share</span>
+                  <strong>Send or manage access</strong>
+                </div>
+                <div className="document-detail-share-status" aria-live="polite">
+                  <span className="document-share-pill">{shareModeLabel}</span>
+                  <span className={`document-share-pill${shareLinkDisabled ? ' muted' : ' success'}`}>
+                    {shareAvailabilityLabel}
+                  </span>
+                </div>
+                <p className="document-detail-sidebar-note">{shareDeliveryHint}</p>
+                <div className="document-detail-share-card-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={openSendNoteEmailModal}
+                    disabled={shareLinkDisabled}
+                    title={shareEmailHint}
+                  >
+                    Send by Email
+                  </button>
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={handleCopyShareLink}
+                    disabled={shareLinkDisabled}
+                    title={shareLinkHint}
+                  >
+                    Copy Link
+                  </button>
+                </div>
+
+                {username && canManageShareLinks && (
+                  <details className="document-detail-share-links-disclosure">
+                    <summary>
+                      <span>Manage Links</span>
+                      <span>{shareLinks.length}</span>
+                    </summary>
+                    <div className="document-detail-share-links-body">
+                      <div className="notion-doc-share-manager-head">
+                        <h3>Existing Links</h3>
+                        <div className="notion-doc-share-actions">
+                          <button
+                            type="button"
+                            className="btn btn-delete"
+                            onClick={handleRevokeAllShareLinks}
+                            disabled={shareLinksLoading || shareActionLoadingId !== 0 || !shareLinks.length}
+                          >
+                            {shareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn btn-delete"
+                            onClick={handleDeleteInactiveShareLinks}
+                            disabled={
+                              shareLinksLoading ||
+                              shareActionLoadingId !== 0 ||
+                              !shareLinks.some((item) => !isActiveShareLink(item))
+                            }
+                          >
+                            {shareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => refreshShareLinks(document.id)}
+                            disabled={shareLinksLoading || shareActionLoadingId !== 0}
+                          >
+                            Refresh
+                          </button>
+                        </div>
+                      </div>
+                      {shareLinksError && <p className="muted tiny">Load failed: {shareLinksError}</p>}
+                      {shareLinksLoading && !shareLinksError && <p className="muted tiny">Loading share links...</p>}
+                      {!shareLinksLoading && !shareLinksError && !shareLinks.length && (
+                        <p className="muted tiny">No share links yet. Use the actions above to create one.</p>
+                      )}
+                      {shareLinks.length > 0 && (
+                        <ul className="notion-doc-share-list">
+                          {shareLinks.map((item, index) => {
+                            const status = String(item?.status || 'unknown').toLowerCase();
+                            const isActive = isActiveShareLink(item);
+                            const loading = Number(item?.id) === shareActionLoadingId;
+                            return (
+                              <li key={`detail-share-${item?.id || item?.token || index}`}>
+                                <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
+                                  {item?.share_url || 'Invalid link'}
+                                </a>
+                                <span className="notion-doc-share-meta">
+                                  Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
+                                </span>
+                                <div className="notion-doc-share-actions">
+                                  <button
+                                    type="button"
+                                    className="btn"
+                                    onClick={() => handleCopyExistingShareLink(item?.share_url)}
+                                  >
+                                    Copy
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-delete"
+                                    onClick={() => (isActive ? handleRevokeShareLink(item) : handleDeleteShareLink(item))}
+                                    disabled={loading || shareActionLoadingId < 0}
+                                  >
+                                    {loading
+                                      ? (shareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
+                                      : (isActive ? 'Revoke' : 'Delete')}
+                                  </button>
+                                </div>
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                    </div>
+                  </details>
+                )}
+              </section>
+            )}
+          </aside>
+        </div>
       </article>
       </main>
       <SendNoteByEmailModal
