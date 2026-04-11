@@ -90,12 +90,11 @@ body{
 .notion-overview-hero{
   margin:0 0 16px;
   display:grid;
-  grid-template-columns:minmax(0, 1.7fr) minmax(280px, .95fr);
+  grid-template-columns:minmax(0, 1fr);
   gap:16px;
 }
 
-.notion-overview-hero-main,
-.notion-overview-command-panel{
+.notion-overview-hero-main{
   border:1px solid #e1e7f2;
   border-radius:18px;
   background:#fff;
@@ -134,76 +133,6 @@ body{
   color:#5f6671;
   line-height:1.6;
   font-size:15px;
-}
-
-.notion-overview-chip-row{
-  display:flex;
-  gap:8px;
-  flex-wrap:wrap;
-}
-
-.notion-overview-hero-actions{
-  display:flex;
-  gap:10px;
-  flex-wrap:wrap;
-}
-
-.notion-overview-command-panel{
-  padding:16px;
-  display:grid;
-  gap:14px;
-}
-
-.notion-overview-command-head{
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:10px;
-}
-
-.notion-overview-command-head h3{
-  margin:0;
-  font-size:16px;
-  color:#303945;
-}
-
-.notion-overview-command-head span{
-  color:#7c8796;
-  font-size:12px;
-}
-
-.notion-overview-command-list{
-  display:grid;
-  gap:10px;
-}
-
-.notion-overview-command-btn{
-  border:1px solid #e4e9f1;
-  border-radius:14px;
-  background:#fbfcff;
-  padding:14px;
-  text-align:left;
-  display:grid;
-  gap:5px;
-  cursor:pointer;
-  transition:transform .14s ease, border-color .14s ease, box-shadow .14s ease;
-}
-
-.notion-overview-command-btn:hover:not(:disabled){
-  transform:translateY(-1px);
-  border-color:var(--workspace-accent-border);
-  box-shadow:0 12px 24px rgba(35,51,77,0.08);
-}
-
-.notion-overview-command-btn strong{
-  color:#2b3542;
-  font-size:14px;
-}
-
-.notion-overview-command-btn span{
-  color:#667080;
-  font-size:12px;
-  line-height:1.45;
 }
 
 .notion-overview-activity-grid{
@@ -400,11 +329,6 @@ body{
 
   .notion-overview-hero-main h2{
     font-size:30px;
-  }
-
-  .notion-overview-hero-actions{
-    flex-direction:column;
-    align-items:stretch;
   }
 
   .notion-settings-header{
@@ -4505,21 +4429,13 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .notion-files-actionbar{
-  display:grid;
-  grid-template-columns:minmax(320px, 1.3fr) minmax(0, auto);
+  display:flex;
   gap:12px;
   align-items:center;
   border:1px solid #e2e8f3;
   border-radius:16px;
   background:#f9fbfe;
   padding:12px;
-}
-
-.notion-files-toolbar-search{
-  display:flex;
-  align-items:center;
-  gap:10px;
-  min-width:0;
 }
 
 .notion-files-searchbar-input{
@@ -4536,17 +4452,13 @@ body.notion-home-body .skip-link:focus-visible{
   align-items:center;
   gap:8px;
   flex-wrap:wrap;
-  justify-content:flex-end;
+  justify-content:flex-start;
 }
 
 .notion-files-toolbar-actions .btn.active{
   border-color:#b9cdf2;
   background:#eaf2ff;
   color:#274f96;
-}
-
-.notion-files-toolbar-search .btn{
-  min-width:96px;
 }
 
 .notion-files-secondary-trigger{
@@ -4563,6 +4475,12 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-files-saved-views-menu{
   position:relative;
+}
+
+.notion-files-views-trigger{
+  min-height:34px;
+  padding:6px 12px;
+  font-size:13px;
 }
 
 #upload-form{
@@ -4583,33 +4501,6 @@ body.notion-home-body .skip-link:focus-visible{
   padding:12px;
   display:grid;
   gap:10px;
-}
-
-.notion-files-saved-views-popover-head{
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:12px;
-}
-
-.notion-files-saved-views-popover-head strong{
-  display:block;
-  color:#233754;
-  margin-bottom:4px;
-}
-
-.notion-files-saved-views-popover-head p{
-  margin:0;
-  color:#65758f;
-  font-size:12px;
-  line-height:1.45;
-}
-
-.notion-files-secondary-actions{
-  display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
 }
 
 .notion-files-saved-views-section-head{
@@ -4750,10 +4641,6 @@ body.notion-home-body .skip-link:focus-visible{
   gap:8px;
 }
 
-.notion-upload-tray.is-collapsed{
-  gap:6px;
-}
-
 .notion-upload-tray-head{
   margin-bottom:8px;
 }
@@ -4785,30 +4672,6 @@ body.notion-home-body .skip-link:focus-visible{
   font-size:12px;
   color:#6b7991;
   line-height:1.45;
-}
-
-.notion-upload-tray-summary{
-  display:flex;
-  align-items:center;
-  gap:6px;
-  flex-wrap:wrap;
-}
-
-.notion-upload-tray-summary-item{
-  border:1px solid #dce4f1;
-  border-radius:999px;
-  background:#fff;
-  color:#53627b;
-  padding:4px 9px;
-  font-size:11px;
-  font-weight:600;
-}
-
-.notion-upload-tray-summary-item.is-primary{
-  max-width:min(520px, 100%);
-  overflow:hidden;
-  text-overflow:ellipsis;
-  white-space:nowrap;
 }
 
 .notion-upload-panel{
@@ -4846,6 +4709,7 @@ body.notion-home-body .skip-link:focus-visible{
   align-items:center;
   gap:8px;
   flex-wrap:wrap;
+  justify-content:flex-end;
 }
 
 .notion-files-filter-toggle.active{
@@ -4890,6 +4754,8 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-filter-search-row{
   align-items:stretch;
+  display:flex;
+  gap:10px;
 }
 
 .notion-filter-search-row .input-with-icon{
@@ -4897,10 +4763,8 @@ body.notion-home-body .skip-link:focus-visible{
   min-width:0;
 }
 
-.notion-filter-search-row #search-btn,
-.notion-filter-search-row #clear-filters{
-  min-height:38px;
-  white-space:nowrap;
+.notion-filter-search-row .notion-files-searchbar-input input{
+  min-height:46px;
 }
 
 .notion-quick-filter-presets{
@@ -6581,10 +6445,6 @@ body.notion-home-body .skip-link:focus-visible{
     align-items:stretch;
   }
 
-  .notion-files-toolbar-search{
-    width:100%;
-  }
-
   .notion-files-toolbar-actions{
     width:100%;
     justify-content:flex-start;
@@ -6608,13 +6468,11 @@ body.notion-home-body .skip-link:focus-visible{
     width:min(100%, 520px);
   }
 
-  .notion-files-secondary-actions,
   .notion-files-saved-views-section-head{
     flex-direction:column;
     align-items:stretch;
   }
 
-  .notion-files-secondary-actions .btn,
   .notion-files-saved-views-section-head .btn{
     width:100%;
   }
@@ -6653,11 +6511,6 @@ body.notion-home-body .skip-link:focus-visible{
     width:100%;
   }
 
-  .notion-files-saved-views-popover-head{
-    flex-direction:column;
-    align-items:stretch;
-  }
-
   .notion-files-saved-views-popover-actions{
     width:100%;
   }
@@ -6676,11 +6529,6 @@ body.notion-home-body .skip-link:focus-visible{
 
   .notion-filter-search-row .input-with-icon{
     flex:1 1 100%;
-  }
-
-  .notion-filter-search-row #search-btn,
-  .notion-filter-search-row #clear-filters{
-    flex:1 1 calc(50% - 4px);
   }
 
   .notion-advanced-toggle{

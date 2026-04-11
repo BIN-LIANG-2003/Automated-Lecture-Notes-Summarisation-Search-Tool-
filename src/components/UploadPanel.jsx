@@ -31,24 +31,10 @@ export default function UploadPanel({
   embedded = false,
   title = 'Upload',
   description = 'Add new notes to this workspace and auto-index them for search.',
-  collapsed = false,
-  onToggleCollapsed,
 }) {
-  const hasQueue = Number(uploadQueueSummary?.total || 0) > 0;
-  const normalizedFileHint = String(fileHint || '').trim();
-  const hasSelectedFile = normalizedFileHint && normalizedFileHint.toLowerCase() !== 'no file selected yet';
-  const compactSummaryItems = [
-    hasSelectedFile ? normalizedFileHint : (allowUploads ? 'Ready for PDF, DOCX, TXT, and image files.' : 'Uploads disabled'),
-    hasQueue ? `Queue ${uploadQueueSummary.total}` : '',
-    hasQueue && uploadQueueSummary.uploading ? `Running ${uploadQueueSummary.uploading}` : '',
-    hasQueue && uploadQueueSummary.failed ? `Failed ${uploadQueueSummary.failed}` : '',
-  ].filter(Boolean);
-
   return (
     <section
-      className={`uploader${embedded ? ' notion-upload-tray' : ' notion-panel-block notion-upload-panel'}${
-        embedded && collapsed ? ' is-collapsed' : ''
-      }`}
+      className={`uploader${embedded ? ' notion-upload-tray' : ' notion-panel-block notion-upload-panel'}`}
       aria-labelledby="uploader-title"
     >
       <input
@@ -66,26 +52,10 @@ export default function UploadPanel({
             <span id="uploader-title" className="notion-upload-tray-label">
               Uploads
             </span>
-            {collapsed ? (
-              <div className="notion-upload-tray-summary" aria-live="polite">
-                {compactSummaryItems.map((item, index) => (
-                  <span
-                    key={`upload-tray-summary-${index}`}
-                    className={`notion-upload-tray-summary-item${index === 0 ? ' is-primary' : ''}`}
-                  >
-                    {item}
-                  </span>
-                ))}
-              </div>
-            ) : (
-              <p className="notion-upload-tray-copy">
-                Choose files or drop them here to add notes straight into your study space.
-              </p>
-            )}
+            <p className="notion-upload-tray-copy">
+              Choose files or drop them here to add notes straight into your study space.
+            </p>
           </div>
-          <button type="button" className="btn" onClick={onToggleCollapsed}>
-            {collapsed ? 'Show Uploads' : 'Hide Uploads'}
-          </button>
         </div>
       ) : (
         <div className="notion-panel-head">
@@ -93,17 +63,16 @@ export default function UploadPanel({
           <p>{description}</p>
         </div>
       )}
-      {(!embedded || !collapsed) && (
-        <div
-          className={`notion-upload-dropzone${dragUploadActive ? ' is-active' : ''}${
-            !allowUploads ? ' is-disabled' : ''
-          }${embedded ? ' is-embedded' : ''}`}
-          onDragEnter={onDragEnter}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onDrop={onDrop}
-        >
-          <form id="upload-form" className={embedded ? 'notion-upload-form-embedded' : ''} onSubmit={onSubmit} noValidate>
+      <div
+        className={`notion-upload-dropzone${dragUploadActive ? ' is-active' : ''}${
+          !allowUploads ? ' is-disabled' : ''
+        }${embedded ? ' is-embedded' : ''}`}
+        onDragEnter={onDragEnter}
+        onDragOver={onDragOver}
+        onDragLeave={onDragLeave}
+        onDrop={onDrop}
+      >
+        <form id="upload-form" className={embedded ? 'notion-upload-form-embedded' : ''} onSubmit={onSubmit} noValidate>
           <label htmlFor="upload-category-input">Category (optional)</label>
           <input
             id="upload-category-input"
@@ -199,15 +168,12 @@ export default function UploadPanel({
           <p className="notion-upload-drop-hint">
             Drag files here for quick upload.
           </p>
-        </div>
-      )}
-      {(!embedded || !collapsed) && (
-        <p className="muted tiny">
-          {allowUploads
-            ? 'Supports PDF, DOCX, TXT, and images up to 20MB. Empty category is auto-assigned.'
-            : 'Uploads are currently disabled by workspace settings.'}
-        </p>
-      )}
+      </div>
+      <p className="muted tiny">
+        {allowUploads
+          ? 'Supports PDF, DOCX, TXT, and images up to 20MB. Empty category is auto-assigned.'
+          : 'Uploads are currently disabled by workspace settings.'}
+      </p>
     </section>
   );
 }

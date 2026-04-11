@@ -261,12 +261,6 @@ const FILTER_DATE_RANGE_OPTIONS = [
   { id: '30d', label: 'Last 30 Days', daysBack: 29 },
   { id: 'all', label: 'All Time', daysBack: null },
 ];
-const QUICK_FILTER_PRESET_OPTIONS = [
-  { id: 'recent7', label: 'Recent 7 Days' },
-  { id: 'images', label: 'Images' },
-  { id: 'editable', label: 'Editable' },
-  { id: 'uncategorized', label: 'Uncategorized' },
-];
 const FILE_TYPE_FILTER_OPTIONS = [
   { value: '', label: 'All' },
   { value: 'pdf', label: 'PDF' },
@@ -1460,9 +1454,7 @@ export default function HomePage() {
     activeFilterCount,
     hasActiveFilters,
     advancedFilterCount,
-    hasAdvancedFilters,
     activeDateRangePresetId,
-    activeQuickFilterPresetId,
     activeFilterChips,
     currentViewSnapshot,
     resetDocumentsData,
@@ -1665,19 +1657,11 @@ export default function HomePage() {
 
   const openUploadPicker = () => {
     if (!activeWorkspaceSettings.allow_uploads) return;
-    setUploadTrayCollapsed(false);
-    window.requestAnimationFrame(() => {
-      fileInputRef.current?.click();
-    });
+    setUploadTrayCollapsed((prev) => !prev);
   };
 
-  const hasSelectedUploadFiles = useMemo(() => {
-    const hint = String(fileHint || '').trim().toLowerCase();
-    return Boolean(hint && hint !== 'no file selected yet');
-  }, [fileHint]);
-
   useEffect(() => {
-    if (dragUploadActive || uploadQueueRunning || uploadQueueSummary.failed > 0 || hasSelectedUploadFiles) {
+    if (dragUploadActive || uploadQueueRunning || uploadQueueSummary.failed > 0) {
       setUploadTrayCollapsed(false);
       return;
     }
@@ -1690,7 +1674,6 @@ export default function HomePage() {
     uploadQueueSummary.failed,
     uploadQueueSummary.total,
     uploadQueueSummary.uploading,
-    hasSelectedUploadFiles,
   ]);
 
   const fetchTrashDocuments = async ({
@@ -2361,11 +2344,6 @@ export default function HomePage() {
     ]
   );
 
-  useEffect(() => {
-    if (hasAdvancedFilters) {
-      setAdvancedFiltersOpen(true);
-    }
-  }, [hasAdvancedFilters]);
   useEffect(() => {
     if (!savedViews.length) {
       if (activeSavedViewId) setActiveSavedViewId('');
@@ -5287,6 +5265,24 @@ export default function HomePage() {
     setFilters((prev) => ({ ...prev, query: searchDraft.trim() }));
   };
 
+  useEffect(() => {
+    const nextQuery = searchDraft.trim();
+    const currentQuery = String(filters.query || '').trim();
+    if (nextQuery === currentQuery) return;
+
+    const timeoutId = window.setTimeout(() => {
+      setSelectedDocumentIds([]);
+      setDocumentsPage(1);
+      setFilters((prev) => {
+        const prevQuery = String(prev.query || '').trim();
+        if (prevQuery === nextQuery) return prev;
+        return { ...prev, query: nextQuery };
+      });
+    }, 280);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [filters.query, searchDraft]);
+
   const applyQuickDateRange = (daysBack) => {
     setSelectedDocumentIds([]);
     setDocumentsPage(1);
@@ -5296,53 +5292,6 @@ export default function HomePage() {
     }
     const range = getQuickDateRange(daysBack);
     setFilters((prev) => ({ ...prev, start: range.start, end: range.end }));
-  };
-
-  const buildQuickFilterPreset = (presetId) => {
-    const safeId = String(presetId || '').trim().toLowerCase();
-    if (safeId === 'recent7') {
-      const range = getQuickDateRange(6);
-      return {
-        ...DEFAULT_FILTERS,
-        start: range.start,
-        end: range.end,
-      };
-    }
-    if (safeId === 'images') {
-      return {
-        ...DEFAULT_FILTERS,
-        fileType: 'image',
-      };
-    }
-    if (safeId === 'editable') {
-      return {
-        ...DEFAULT_FILTERS,
-        fileType: 'editable',
-      };
-    }
-    if (safeId === 'uncategorized') {
-      return {
-        ...DEFAULT_FILTERS,
-        category: DEFAULT_NOTE_CATEGORY,
-      };
-    }
-    return { ...DEFAULT_FILTERS };
-  };
-
-  const applyQuickFilterPreset = (presetId) => {
-    const safeId = String(presetId || '').trim().toLowerCase();
-    if (!safeId) return;
-    const target = buildQuickFilterPreset(safeId);
-    const isActive = activeQuickFilterPresetId === safeId;
-    setSelectedDocumentIds([]);
-    setDocumentsPage(1);
-    if (isActive) {
-      setFilters({ ...DEFAULT_FILTERS });
-      setSearchDraft('');
-      return;
-    }
-    setFilters(target);
-    setSearchDraft(target.query || '');
   };
 
   const clearSingleFilter = (filterKey) => {
@@ -6302,119 +6251,7 @@ export default function HomePage() {
                   {activeWorkspaceSettings.description ||
                     'Keep lecture files, summaries, and collaboration rules in one workspace that feels closer to modern study tools.'}
                 </p>
-                <div className="notion-overview-chip-row" aria-label="Workspace highlights">
-                  <span className="notion-summary-chip">Notes {dashboardStats.total}</span>
-                  <span className="notion-summary-chip">Members {workspaceMemberCount || 1}</span>
-                  <span className="notion-summary-chip">
-                    Share {activeWorkspaceSettings.link_sharing_mode}
-                  </span>
-                  <span className="notion-summary-chip">
-                    Alerts {enabledWorkspaceNotificationCount}/3
-                  </span>
-                </div>
-                <div className="notion-overview-hero-actions">
-                  <button
-                    type="button"
-                    className="btn btn-primary"
-                    onClick={() => {
-                      closeDocumentPane();
-                      setShowFiles(true);
-                    }}
-                  >
-                    Open Notes
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={() => {
-                      closeDocumentPane();
-                      setShowFiles(true);
-                      openImageOcrPicker();
-                    }}
-                    disabled={!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr || isExtracting}
-                  >
-                    {isExtracting ? 'Scanning...' : 'Scan Image'}
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={handleOpenSummaryCenter}
-                    disabled={!activeWorkspaceSettings.allow_ai_tools}
-                  >
-                    Summaries
-                  </button>
-                </div>
               </div>
-              {activeWorkspaceSettings.show_quick_actions && (
-                <aside className="notion-overview-command-panel" aria-label="Quick actions">
-                  <div className="notion-overview-command-head">
-                    <h3>Quick actions</h3>
-                    <span>{nowLabel}</span>
-                  </div>
-                  <div className="notion-overview-command-list">
-                    <button
-                      type="button"
-                      className="notion-overview-command-btn"
-                      onClick={() => {
-                        closeDocumentPane();
-                        setShowFiles(true);
-                        openUploadPicker();
-                      }}
-                      disabled={!activeWorkspaceSettings.allow_uploads}
-                    >
-                      <strong>Upload note</strong>
-                      <span>Jump into Notes and open the picker immediately.</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="notion-overview-command-btn"
-                      onClick={openWorkspaceSettingsPanel}
-                      disabled={
-                        !activeWorkspace ||
-                        workspaceLoading ||
-                        workspaceActionLoading ||
-                        (isLoggedIn && activeWorkspace?.is_owner === false)
-                      }
-                    >
-                      <strong>Workspace settings</strong>
-                      <span>Adjust defaults, layout, sharing, and notifications.</span>
-                    </button>
-                    <button
-                      type="button"
-                      className="notion-overview-command-btn"
-                      onClick={openWorkspaceInvitePanel}
-                      disabled={
-                        !activeWorkspace ||
-                        workspaceLoading ||
-                        workspaceActionLoading ||
-                        (isLoggedIn &&
-                          activeWorkspace?.is_owner === false &&
-                          !activeWorkspaceSettings.allow_member_invites)
-                      }
-                    >
-                      <strong>Invite members</strong>
-                      <span>
-                        {trustedInviteDomains.length
-                          ? `Restricted to ${trustedInviteDomains.join(', ')}`
-                          : 'Share collaboration access with your study group.'}
-                      </span>
-                    </button>
-                    <button
-                      type="button"
-                      className="notion-overview-command-btn"
-                      onClick={() => {
-                        closeDocumentPane();
-                        setShowFiles(true);
-                        openImageOcrPicker();
-                      }}
-                      disabled={!activeWorkspaceSettings.allow_ai_tools || !activeWorkspaceSettings.allow_ocr || isExtracting}
-                    >
-                      <strong>Scan image</strong>
-                      <span>Pick an image, review extracted text, then save a new TXT, DOCX, or PDF note.</span>
-                    </button>
-                  </div>
-                </aside>
-              )}
             </section>
           )}
 
@@ -6537,39 +6374,6 @@ export default function HomePage() {
                       <h2 id="files-workbench-title" className="section-title">Notes</h2>
                     </div>
                     <div className="notion-files-actionbar">
-                      <div className="notion-files-toolbar-search">
-                        <label htmlFor="search-input" className="sr-only">
-                          Search
-                        </label>
-                        <div className="input-with-icon notion-files-searchbar-input">
-                          <svg aria-hidden="true" viewBox="0 0 24 24">
-                            <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
-                          </svg>
-                          <input
-                            id="search-input"
-                            ref={searchInputRef}
-                            type="search"
-                            placeholder="Search notes by title, tag, category, or content"
-                            inputMode="search"
-                            value={searchDraft}
-                            onChange={(event) => setSearchDraft(event.target.value)}
-                            onKeyDown={(event) => {
-                              if (event.key === 'Enter') {
-                                event.preventDefault();
-                                applySearch();
-                              }
-                            }}
-                          />
-                        </div>
-                        <button
-                          id="search-btn"
-                          className="btn btn-primary"
-                          type="button"
-                          onClick={applySearch}
-                        >
-                          Search
-                        </button>
-                      </div>
                       <div className="notion-files-toolbar-actions">
                         <button
                           type="button"
@@ -6616,58 +6420,166 @@ export default function HomePage() {
                         >
                           Summaries
                         </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={handleOpenTrashModal}
+                          disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
+                        >
+                          Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+
+                  <input
+                    ref={savedViewsImportInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    className="sr-only"
+                    onChange={handleImportSavedViewsFromFile}
+                  />
+
+                  {!uploadTrayCollapsed && (
+                    <UploadPanel
+                      embedded
+                      allowUploads={activeWorkspaceSettings.allow_uploads}
+                      dragUploadActive={dragUploadActive}
+                      onDragEnter={handleUploadDragEnter}
+                      onDragOver={handleUploadDragOver}
+                      onDragLeave={handleUploadDragLeave}
+                      onDrop={handleUploadDrop}
+                      onSubmit={handleUpload}
+                      fileInputRef={fileInputRef}
+                      onFileChange={handleFileChange}
+                      uploadCategory={uploadCategory}
+                      onUploadCategoryChange={setUploadCategory}
+                      categorySuggestions={categorySuggestions}
+                      uploadQueueRunning={uploadQueueRunning}
+                      fileHint={fileHint}
+                      uploadQueueSummary={uploadQueueSummary}
+                      uploadQueueExpanded={uploadQueueExpanded}
+                      onToggleUploadQueueExpanded={() => setUploadQueueExpanded((prev) => !prev)}
+                      onRetryFailedUploads={handleRetryFailedUploads}
+                      canRetryFailedUploads={canRetryFailedUploads}
+                      onClearCompletedUploads={handleClearCompletedUploads}
+                      canClearUploadQueue={canClearUploadQueue}
+                      uploadQueue={uploadQueue}
+                    />
+                  )}
+
+                  <section className="notion-files-filter-shell" aria-labelledby="filters-title">
+                    <h3 id="filters-title" className="sr-only">Filters</h3>
+                    <div className="notion-filter-search-row">
+                      <label htmlFor="search-input" className="sr-only">
+                        Search
+                      </label>
+                      <div className="input-with-icon notion-files-searchbar-input">
+                        <svg aria-hidden="true" viewBox="0 0 24 24">
+                          <path d="M21 21l-4.3-4.3m1.3-4.7a7 7 0 11-14 0 7 7 0 0114 0z" />
+                        </svg>
+                        <input
+                          id="search-input"
+                          ref={searchInputRef}
+                          type="search"
+                          placeholder="Search notes by title, tag, category, or content"
+                          inputMode="search"
+                          value={searchDraft}
+                          onChange={(event) => setSearchDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') {
+                              event.preventDefault();
+                              applySearch();
+                            }
+                          }}
+                        />
+                      </div>
+                    </div>
+                    <div className="notion-files-filter-strip">
+                      <div className="notion-files-filter-main">
+                        <div className="notion-quick-filter-presets" role="group" aria-label="Quick date filters">
+                          {FILTER_DATE_RANGE_OPTIONS.map((option) => (
+                            <button
+                              key={`quick-range-${option.id}`}
+                              type="button"
+                              className={`notion-quick-preset-btn${
+                                activeDateRangePresetId === option.id ? ' active' : ''
+                              }`}
+                              onClick={() => applyQuickDateRange(option.daysBack)}
+                              aria-pressed={activeDateRangePresetId === option.id ? 'true' : 'false'}
+                            >
+                              {option.label}
+                            </button>
+                          ))}
+                        </div>
+                        {(activeSavedView || activeFilterChips.length > 0) && (
+                          <div className="notion-active-filters" aria-label="Active filters">
+                            {activeSavedView && (
+                              <span className="notion-active-filter-chip notion-active-filter-chip-accent">
+                                <span>View: {activeSavedView.name}</span>
+                                <button
+                                  type="button"
+                                  onClick={resetDocumentsView}
+                                  aria-label={`Clear saved view ${activeSavedView.name}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            )}
+                            {activeFilterChips.map((chip) => (
+                              <span key={chip.id} className="notion-active-filter-chip">
+                                <span>{chip.label}</span>
+                                <button
+                                  type="button"
+                                  onClick={() => clearSingleFilter(chip.id)}
+                                  aria-label={`Clear ${chip.label}`}
+                                >
+                                  ×
+                                </button>
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                      <div className="notion-files-filter-strip-actions">
+                        <button
+                          type="button"
+                          className="btn notion-files-reset-view-btn"
+                          onClick={() => void fetchDocuments(documentsPage)}
+                          disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
+                        >
+                          {documentsLoading ? 'Refreshing...' : 'Refresh'}
+                        </button>
+                        <button
+                          type="button"
+                          className={`btn notion-files-filter-toggle${advancedFiltersOpen ? ' active' : ''}`}
+                          onClick={() => setAdvancedFiltersOpen((prev) => !prev)}
+                          aria-expanded={advancedFiltersOpen ? 'true' : 'false'}
+                          aria-controls="advanced-filters-panel"
+                        >
+                          {advancedFiltersOpen ? 'Hide Filters' : 'Advanced Filters'}
+                          {advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ''}
+                        </button>
+                        <button
+                          type="button"
+                          className="btn notion-files-reset-view-btn"
+                          onClick={resetDocumentsView}
+                          disabled={!canResetFilesView}
+                        >
+                          Reset View
+                        </button>
                         <div className="notion-files-saved-views-menu" ref={savedViewsMenuRef}>
                           <button
                             type="button"
-                            className={`btn notion-files-secondary-trigger${savedViewsMenuOpen ? ' active' : ''}`}
+                            className={`btn notion-files-secondary-trigger notion-files-views-trigger${savedViewsMenuOpen ? ' active' : ''}`}
                             onClick={() => setSavedViewsMenuOpen((prev) => !prev)}
                             aria-expanded={savedViewsMenuOpen ? 'true' : 'false'}
                             aria-haspopup="dialog"
                           >
-                            More
+                            Views
                           </button>
                           {savedViewsMenuOpen && (
-                            <div className="notion-files-saved-views-popover" role="dialog" aria-label="Views and tools">
-                              <div className="notion-files-saved-views-popover-head">
-                                <div>
-                                  <strong>Views & Tools</strong>
-                                  <p>Keep quieter actions here so your notes stay front and center.</p>
-                                </div>
-                              </div>
-                              <div className="notion-files-secondary-actions">
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={() => {
-                                    setSavedViewsMenuOpen(false);
-                                    void fetchDocuments(documentsPage);
-                                  }}
-                                  disabled={documentsLoading || bulkActionLoading || selectAllMatchedLoading}
-                                >
-                                  {documentsLoading ? 'Refreshing...' : 'Refresh'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={() => {
-                                    setSavedViewsMenuOpen(false);
-                                    handleOpenTrashModal();
-                                  }}
-                                  disabled={!isLoggedIn || bulkActionLoading || selectAllMatchedLoading}
-                                >
-                                  Trash{trashTotal > 0 ? ` (${trashTotal})` : ''}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn"
-                                  onClick={() => {
-                                    setSavedViewsMenuOpen(false);
-                                    setShortcutsOpen(true);
-                                  }}
-                                >
-                                  Shortcuts
-                                </button>
-                              </div>
+                            <div className="notion-files-saved-views-popover" role="dialog" aria-label="Saved views">
                               <div className="notion-files-saved-views-section-head">
                                 <div>
                                   <strong>Saved Views</strong>
@@ -6685,7 +6597,14 @@ export default function HomePage() {
                                 </button>
                               </div>
                               <div className="notion-files-saved-views-popover-actions">
-                                <button type="button" className="btn" onClick={handleOpenSavedViewsImport}>
+                                <button
+                                  type="button"
+                                  className="btn"
+                                  onClick={() => {
+                                    setSavedViewsMenuOpen(false);
+                                    handleOpenSavedViewsImport();
+                                  }}
+                                >
                                   Import
                                 </button>
                                 <button
@@ -6784,113 +6703,6 @@ export default function HomePage() {
                         </div>
                       </div>
                     </div>
-                  </div>
-
-                  <input
-                    ref={savedViewsImportInputRef}
-                    type="file"
-                    accept=".json,application/json"
-                    className="sr-only"
-                    onChange={handleImportSavedViewsFromFile}
-                  />
-
-                  <UploadPanel
-                    embedded
-                    allowUploads={activeWorkspaceSettings.allow_uploads}
-                    dragUploadActive={dragUploadActive}
-                    onDragEnter={handleUploadDragEnter}
-                    onDragOver={handleUploadDragOver}
-                    onDragLeave={handleUploadDragLeave}
-                    onDrop={handleUploadDrop}
-                    onSubmit={handleUpload}
-                    fileInputRef={fileInputRef}
-                    onFileChange={handleFileChange}
-                    uploadCategory={uploadCategory}
-                    onUploadCategoryChange={setUploadCategory}
-                    categorySuggestions={categorySuggestions}
-                    uploadQueueRunning={uploadQueueRunning}
-                    fileHint={fileHint}
-                    uploadQueueSummary={uploadQueueSummary}
-                    uploadQueueExpanded={uploadQueueExpanded}
-                    onToggleUploadQueueExpanded={() => setUploadQueueExpanded((prev) => !prev)}
-                    onRetryFailedUploads={handleRetryFailedUploads}
-                    canRetryFailedUploads={canRetryFailedUploads}
-                    onClearCompletedUploads={handleClearCompletedUploads}
-                    canClearUploadQueue={canClearUploadQueue}
-                    uploadQueue={uploadQueue}
-                    collapsed={uploadTrayCollapsed}
-                    onToggleCollapsed={() => setUploadTrayCollapsed((prev) => !prev)}
-                  />
-
-                  <section className="notion-files-filter-shell" aria-labelledby="filters-title">
-                    <h3 id="filters-title" className="sr-only">Filters</h3>
-                    <div className="notion-files-filter-strip">
-                      <div className="notion-files-filter-main">
-                        <div className="notion-quick-filter-presets" role="group" aria-label="Quick filter presets">
-                          {QUICK_FILTER_PRESET_OPTIONS.map((preset) => (
-                            <button
-                              key={`quick-preset-${preset.id}`}
-                              type="button"
-                              className={`notion-quick-preset-btn${
-                                activeQuickFilterPresetId === preset.id ? ' active' : ''
-                              }`}
-                              onClick={() => applyQuickFilterPreset(preset.id)}
-                              aria-pressed={activeQuickFilterPresetId === preset.id ? 'true' : 'false'}
-                            >
-                              {preset.label}
-                            </button>
-                          ))}
-                        </div>
-                        {(activeSavedView || activeFilterChips.length > 0) && (
-                          <div className="notion-active-filters" aria-label="Active filters">
-                            {activeSavedView && (
-                              <span className="notion-active-filter-chip notion-active-filter-chip-accent">
-                                <span>View: {activeSavedView.name}</span>
-                                <button
-                                  type="button"
-                                  onClick={resetDocumentsView}
-                                  aria-label={`Clear saved view ${activeSavedView.name}`}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            )}
-                            {activeFilterChips.map((chip) => (
-                              <span key={chip.id} className="notion-active-filter-chip">
-                                <span>{chip.label}</span>
-                                <button
-                                  type="button"
-                                  onClick={() => clearSingleFilter(chip.id)}
-                                  aria-label={`Clear ${chip.label}`}
-                                >
-                                  ×
-                                </button>
-                              </span>
-                            ))}
-                          </div>
-                        )}
-                      </div>
-                      <div className="notion-files-filter-strip-actions">
-                        <button
-                          type="button"
-                          className={`btn notion-files-filter-toggle${advancedFiltersOpen ? ' active' : ''}`}
-                          onClick={() => setAdvancedFiltersOpen((prev) => !prev)}
-                          aria-expanded={advancedFiltersOpen ? 'true' : 'false'}
-                          aria-controls="advanced-filters-panel"
-                        >
-                          {advancedFiltersOpen ? 'Hide Filters' : 'Advanced Filters'}
-                          {advancedFilterCount > 0 ? ` (${advancedFilterCount})` : ''}
-                        </button>
-                        <button
-                          type="button"
-                          className="btn notion-files-reset-view-btn"
-                          onClick={resetDocumentsView}
-                          disabled={!canResetFilesView}
-                        >
-                          Reset View
-                        </button>
-                      </div>
-                    </div>
 
                     {advancedFiltersOpen && (
                       <div id="advanced-filters-panel" className="notion-advanced-filters" aria-label="Advanced filters">
@@ -6932,21 +6744,6 @@ export default function HomePage() {
                                 <span className="date-faux">{formatDisplayDate(filters.end)}</span>
                               </div>
                             </label>
-                          </div>
-                          <div className="notion-quick-range" role="group" aria-label="Quick date ranges">
-                            {FILTER_DATE_RANGE_OPTIONS.map((option) => (
-                              <button
-                                key={option.id}
-                                type="button"
-                                className={`notion-quick-range-btn${
-                                  activeDateRangePresetId === option.id ? ' active' : ''
-                                }`}
-                                onClick={() => applyQuickDateRange(option.daysBack)}
-                                aria-pressed={activeDateRangePresetId === option.id ? 'true' : 'false'}
-                              >
-                                {option.label}
-                              </button>
-                            ))}
                           </div>
                         </div>
                         <div className="notion-type-quick-switch" role="group" aria-label="Quick type filter">

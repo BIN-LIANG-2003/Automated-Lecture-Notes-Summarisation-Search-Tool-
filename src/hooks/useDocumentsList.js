@@ -282,8 +282,6 @@ export default function useDocumentsList({
     return count;
   }, [filters.start, filters.end, filters.category, filters.tag, filters.fileType]);
 
-  const hasAdvancedFilters = advancedFilterCount > 0;
-
   const activeFilterCount = useMemo(() => {
     let count = 0;
     if (filters.query) count += 1;
@@ -318,80 +316,11 @@ export default function useDocumentsList({
     return matched?.id || '';
   }, [filters.start, filters.end, filterDateRangeOptions, getQuickDateRange]);
 
-  const activeQuickFilterPresetId = useMemo(() => {
-    const normalized = {
-      query: String(filters.query || '').trim(),
-      start: String(filters.start || '').trim(),
-      end: String(filters.end || '').trim(),
-      tag: String(filters.tag || '').trim(),
-      category: String(filters.category || '').trim(),
-      fileType: normalizeFileTypeFilter(filters.fileType),
-    };
-    const recent7 = getQuickDateRange(6);
-    if (
-      !normalized.query &&
-      !normalized.tag &&
-      !normalized.category &&
-      !normalized.fileType &&
-      normalized.start === recent7.start &&
-      normalized.end === recent7.end
-    ) {
-      return 'recent7';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.category &&
-      normalized.fileType === 'image'
-    ) {
-      return 'images';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.category &&
-      normalized.fileType === 'editable'
-    ) {
-      return 'editable';
-    }
-    if (
-      !normalized.query &&
-      !normalized.start &&
-      !normalized.end &&
-      !normalized.tag &&
-      !normalized.fileType &&
-      normalized.category === defaultNoteCategory
-    ) {
-      return 'uncategorized';
-    }
-    return '';
-  }, [
-    filters.query,
-    filters.start,
-    filters.end,
-    filters.tag,
-    filters.category,
-    filters.fileType,
-    normalizeFileTypeFilter,
-    getQuickDateRange,
-    defaultNoteCategory,
-  ]);
-
   const activeFilterChips = useMemo(() => {
     const chips = [];
     const query = String(filters.query || '').trim();
     if (query) {
       chips.push({ id: 'query', label: `Keyword: ${query}` });
-    }
-    if (filters.start || filters.end) {
-      chips.push({
-        id: 'date',
-        label: `Date: ${formatDisplayDateValue(filters.start)} - ${formatDisplayDateValue(filters.end)}`,
-      });
     }
     if (filters.category) {
       chips.push({ id: 'category', label: `Category: ${filters.category}` });
@@ -406,7 +335,7 @@ export default function useDocumentsList({
       });
     }
     return chips;
-  }, [filters.query, filters.start, filters.end, filters.category, filters.tag, filters.fileType, formatDisplayDateValue, getFileTypeFilterLabel]);
+  }, [filters.query, filters.category, filters.tag, filters.fileType, getFileTypeFilterLabel]);
 
   const currentViewSnapshot = useMemo(
     () => ({
@@ -497,9 +426,7 @@ export default function useDocumentsList({
     activeFilterCount,
     hasActiveFilters,
     advancedFilterCount,
-    hasAdvancedFilters,
     activeDateRangePresetId,
-    activeQuickFilterPresetId,
     activeFilterChips,
     currentViewSnapshot,
     resetDocumentsData,
