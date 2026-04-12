@@ -45,7 +45,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         safe_username = str(username or self.username).strip()
         return {'Authorization': f'Bearer {create_auth_token(safe_username)}'}
 
-    def _seed_user(self):
+    def _insert_user(self, username, email):
         conn = self._connection()
         try:
             conn.execute(
@@ -61,8 +61,8 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
-                    self.username,
-                    self.email,
+                    username,
+                    email,
                     generate_password_hash(self.password, method='pbkdf2:sha256'),
                     1,
                     None,
@@ -73,6 +73,9 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def _seed_user(self):
+        self._insert_user(self.username, self.email)
 
     def _seed_workspace(self):
         conn = self._connection()
@@ -663,6 +666,132 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
 
         self.assertEqual(totals, [3, 3, 3])
         self.assertEqual(titles, ['Graph A', 'Graph B', 'Graph C'])
+
+    @patch('backend.feedback_service.send_resend_email', return_value=(True, ''))
+    def test_feedback_submit_and_mine_are_private(self, _mock_send_email):
+        submit_response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers(),
+            json={
+                'type': 'bug_report',
+                'title': 'Upload queue visual issue',
+                'description': 'The upload queue looks stuck after finishing.',
+                'priority': 'high',
+                'page_path': '/#/files',
+                'workspace_id': self.workspace_id,
+            },
+        )
+        self.assertEqual(submit_response.status_code, 201)
+        item = submit_response.get_json()['item']
+        self.assertEqual(item['title'], 'Upload queue visual issue')
+        self.assertNotIn('user_email_snapshot', item)
+
+        mine_response = self.client.get('/api/feedback/mine', headers=self._auth_headers())
+        self.assertEqual(mine_response.status_code, 200)
+        mine_payload = mine_response.get_json()
+        self.assertEqual(mine_payload['total'], 1)
+        self.assertEqual(mine_payload['items'][0]['id'], item['id'])
+
+        self._insert_user('bob', 'bob@example.com')
+        bob_response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers('bob'),
+            json={
+                'type': 'feature_request',
+                'title': 'Bob private feedback',
+                'description': 'Only Bob should see this feedback.',
+                'priority': 'low',
+            },
+        )
+        self.assertEqual(bob_response.status_code, 201)
+        bob_item_id = bob_response.get_json()['item']['id']
+
+        alice_cannot_read_bob = self.client.get(
+            f'/api/feedback/{bob_item_id}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(alice_cannot_read_bob.status_code, 404)
+
+        mine_again = self.client.get('/api/feedback/mine', headers=self._auth_headers())
+        self.assertEqual(mine_again.status_code, 200)
+        self.assertEqual(mine_again.get_json()['total'], 1)
+
+    @patch('backend.feedback_service.FEEDBACK_ADMIN_USERNAMES', 'admin')
+    @patch('backend.feedback_service.send_resend_email', return_value=(True, ''))
+    def test_feedback_admin_status_public_reply_and_internal_note_visibility(self, mock_send_email):
+        self._insert_user('admin', 'admin@example.com')
+        submit_response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers(),
+            json={
+                'type': 'ui_usability',
+                'title': 'Feedback modal smoke',
+                'description': 'The feedback system should keep public and internal updates separate.',
+                'priority': 'medium',
+            },
+        )
+        self.assertEqual(submit_response.status_code, 201)
+        feedback_id = submit_response.get_json()['item']['id']
+
+        non_admin_list = self.client.get('/api/admin/feedback', headers=self._auth_headers())
+        self.assertEqual(non_admin_list.status_code, 403)
+
+        admin_list = self.client.get('/api/admin/feedback', headers=self._auth_headers('admin'))
+        self.assertEqual(admin_list.status_code, 200)
+        self.assertEqual(admin_list.get_json()['total'], 1)
+
+        status_response = self.client.patch(
+            f'/api/admin/feedback/{feedback_id}',
+            headers=self._auth_headers('admin'),
+            json={'status': 'resolved', 'assigned_to': 'admin', 'labels': 'smoke'},
+        )
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.get_json()['item']['status'], 'resolved')
+
+        reply_response = self.client.post(
+            f'/api/admin/feedback/{feedback_id}/public-reply',
+            headers=self._auth_headers('admin'),
+            json={'message': 'This has been fixed for the next demo.'},
+        )
+        self.assertEqual(reply_response.status_code, 200)
+
+        note_response = self.client.post(
+            f'/api/admin/feedback/{feedback_id}/internal-note',
+            headers=self._auth_headers('admin'),
+            json={'message': 'Internal triage note should not leak.'},
+        )
+        self.assertEqual(note_response.status_code, 200)
+        admin_events = note_response.get_json()['item']['events']
+        self.assertIn('internal_note', [event['event_type'] for event in admin_events])
+
+        user_detail = self.client.get(f'/api/feedback/{feedback_id}', headers=self._auth_headers())
+        self.assertEqual(user_detail.status_code, 200)
+        user_events = user_detail.get_json()['item']['events']
+        event_types = [event['event_type'] for event in user_events]
+        self.assertIn('status_changed', event_types)
+        self.assertIn('public_reply', event_types)
+        self.assertNotIn('internal_note', event_types)
+        self.assertGreaterEqual(mock_send_email.call_count, 4)
+
+    @patch('backend.feedback_service.send_resend_email', return_value=(False, 'simulated email failure'))
+    def test_feedback_email_failure_does_not_rollback_submission(self, _mock_send_email):
+        response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers(),
+            json={
+                'type': 'performance',
+                'title': 'Slow search feedback',
+                'description': 'Search took longer than expected on a large workspace.',
+                'priority': 'medium',
+            },
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertFalse(payload['admin_notified'])
+
+        mine_response = self.client.get('/api/feedback/mine', headers=self._auth_headers())
+        self.assertEqual(mine_response.status_code, 200)
+        self.assertEqual(mine_response.get_json()['total'], 1)
 
 
 if __name__ == '__main__':

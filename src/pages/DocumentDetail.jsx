@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
+import FeedbackWidget from '../components/FeedbackWidget.jsx';
 import SendNoteByEmailModal from '../components/SendNoteByEmailModal.jsx';
 import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
@@ -1333,6 +1334,11 @@ export default function DocumentDetail() {
         confirmDialogState={confirmDialogState}
         onDismissToast={dismissToast}
         onCloseConfirmDialog={closeConfirmDialog}
+      />
+      <FeedbackWidget
+        enabled={Boolean(username && !isSharedView)}
+        workspaceId={document?.workspaceId || ''}
+        documentId={document?.id || ''}
       />
     </>
   );

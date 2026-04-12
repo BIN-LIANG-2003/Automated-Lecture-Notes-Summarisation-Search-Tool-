@@ -10,11 +10,13 @@ const loadHomePage = () => import('./pages/Home.jsx');
 const loadAuthPage = () => import('./pages/Auth.jsx');
 const loadDocumentDetailPage = () => import('./pages/DocumentDetail.jsx');
 const loadInviteJoinPage = () => import('./pages/InviteJoin.jsx');
+const loadAdminFeedbackPage = () => import('./pages/AdminFeedback.jsx');
 
 const HomePage = lazy(loadHomePage);
 const AuthPage = lazy(loadAuthPage);
 const DocumentDetail = lazy(loadDocumentDetailPage);
 const InviteJoinPage = lazy(loadInviteJoinPage);
+const AdminFeedbackPage = lazy(loadAdminFeedbackPage);
 
 const preloadedRoutes = new Set();
 
@@ -83,6 +85,12 @@ const prefetchRouteByPath = (path) => {
     if (preloadedRoutes.has('invite')) return;
     preloadedRoutes.add('invite');
     loadInviteJoinPage().catch(() => {});
+    return;
+  }
+  if (safePath.startsWith('/admin/feedback')) {
+    if (preloadedRoutes.has('admin-feedback')) return;
+    preloadedRoutes.add('admin-feedback');
+    loadAdminFeedbackPage().catch(() => {});
   }
 };
 
@@ -314,6 +322,14 @@ export default function App() {
               }
             />
             <Route path="/shared/:shareToken" element={<DocumentDetail />} />
+            <Route
+              path="/admin/feedback"
+              element={
+                <RouteSessionGate requireAuth>
+                  <AdminFeedbackPage />
+                </RouteSessionGate>
+              }
+            />
             <Route path="/invite/:token" element={<InviteJoinPage />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>

@@ -281,6 +281,43 @@ def init_db():
         );
     '''
 
+    feedback_items_sql = f'''
+        CREATE TABLE IF NOT EXISTS feedback_items (
+            id {id_type},
+            username TEXT NOT NULL,
+            user_email_snapshot TEXT,
+            type TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL,
+            priority TEXT NOT NULL DEFAULT 'medium',
+            status TEXT NOT NULL DEFAULT 'new',
+            page_path TEXT,
+            workspace_id TEXT,
+            document_id INTEGER,
+            user_agent TEXT,
+            assigned_to TEXT,
+            labels TEXT,
+            created_at {timestamp_type},
+            updated_at {timestamp_type},
+            resolved_at {optional_timestamp_type}
+        );
+    '''
+
+    feedback_events_sql = f'''
+        CREATE TABLE IF NOT EXISTS feedback_events (
+            id {id_type},
+            feedback_id INTEGER NOT NULL,
+            actor_username TEXT,
+            actor_role TEXT NOT NULL DEFAULT 'system',
+            event_type TEXT NOT NULL,
+            old_status TEXT,
+            new_status TEXT,
+            message TEXT,
+            visibility TEXT NOT NULL DEFAULT 'internal',
+            created_at {timestamp_type}
+        );
+    '''
+
     workspace_members_unique_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
         ON workspace_members(workspace_id, username);
@@ -336,6 +373,21 @@ def init_db():
         ON documents(username, file_type);
     '''
 
+    feedback_items_user_updated_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_feedback_items_user_updated
+        ON feedback_items(username, updated_at);
+    '''
+
+    feedback_items_status_updated_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_feedback_items_status_updated
+        ON feedback_items(status, updated_at);
+    '''
+
+    feedback_events_feedback_created_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_feedback_events_feedback_created
+        ON feedback_events(feedback_id, created_at);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
@@ -344,6 +396,8 @@ def init_db():
         conn.execute(workspace_invitations_sql)
         conn.execute(document_share_links_sql)
         conn.execute(document_summary_cache_sql)
+        conn.execute(feedback_items_sql)
+        conn.execute(feedback_events_sql)
         ensure_users_columns(conn, optional_timestamp_type)
         ensure_documents_columns(conn)
         ensure_workspaces_columns(conn)
@@ -358,6 +412,9 @@ def init_db():
         conn.execute(documents_workspace_deleted_uploaded_idx_sql)
         conn.execute(documents_owner_category_idx_sql)
         conn.execute(documents_owner_file_type_idx_sql)
+        conn.execute(feedback_items_user_updated_idx_sql)
+        conn.execute(feedback_items_status_updated_idx_sql)
+        conn.execute(feedback_events_feedback_created_idx_sql)
 
         from .document_search import ensure_document_search_support
         from .workspace_domain import backfill_documents_workspace_ids

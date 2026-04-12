@@ -7,6 +7,7 @@ StudyHub is a full-stack coursework project for managing study documents in one 
 - Students can upload PDF, DOCX, TXT, and image files, organise them into workspaces, and keep lightweight notes alongside the source files.
 - Workspace owners can invite collaborators, control editing/AI permissions, and manage document share links.
 - The app supports OCR extraction for images and scanned PDFs, then lets users save OCR output back into the document system as notes.
+- Logged-in users can submit private feedback, track their own feedback history, and receive email updates when admins respond or resolve items.
 - `/api/documents` provides filtered, paginated document browsing with facets and improved ranked search while keeping the existing frontend contract unchanged.
 
 ## Coursework Requirements Coverage
@@ -19,6 +20,7 @@ StudyHub is a full-stack coursework project for managing study documents in one 
 | Search and filtering | Keyword search, category/tag/file-type/date/workspace filters, facets, pagination, stable sorting |
 | Collaboration features | Workspace membership, invitation links, access review, share-link generation and revocation |
 | AI / intelligent features | OCR extraction, PDF OCR fallback, summarisation, keyword extraction, saved OCR note creation |
+| Feedback/support workflow | Private in-app feedback widget, user feedback history, admin inbox, and Resend email notifications |
 | Frontend SPA | React + Vite interface with document detail views, workspace settings, invite flow, and shared-document routes |
 | Deployment readiness | Docker multi-stage build, Flask serving built frontend assets, environment-variable driven configuration |
 
@@ -30,6 +32,7 @@ StudyHub is a full-stack coursework project for managing study documents in one 
 - Soft delete / trash retention with restore and permanent delete.
 - Public share links for document access without exposing the rest of the account.
 - Invitation-based workspace join flow with review and resend support.
+- Private feedback center for logged-in users, with admin-only triage and user-visible public updates.
 - OCR for images and scanned PDFs, plus AI summaries and keyword extraction.
 - Search result facets for tags, categories, and file types.
 - SQLite and PostgreSQL support from the same codebase.
@@ -103,7 +106,19 @@ See [.env.example](.env.example) for the documented template. The main variables
 - `EXTERNAL_OCR_SERVICE_URL`, `EXTERNAL_OCR_TIMEOUT_SECONDS`: optional external OCR service
 - `OCRMYPDF_BINARY`, `OCRMYPDF_LANGUAGE`, `ENABLE_PDF_OCR_FALLBACK`, `OCRMYPDF_TIMEOUT_SECONDS`: optional PDF OCR fallback
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`: email delivery for workspace invitations and account verification
+- `SUPPORT_EMAIL`: support inbox shown in the feedback modal and used for new-feedback admin notifications
+- `FEEDBACK_ADMIN_USERNAMES`: comma-separated usernames allowed to access `/#/admin/feedback` and admin feedback APIs
 - `TRASH_RETENTION_DAYS`: trash expiry window
+
+## Feedback Center Notes
+
+- The floating `Feedback` button is shown on authenticated StudyHub pages.
+- Normal users can submit feedback and read only their own history via `/api/feedback`, `/api/feedback/mine`, and `/api/feedback/:id`.
+- Admin access is controlled only by backend env var `FEEDBACK_ADMIN_USERNAMES`; non-admin users receive `403` from `/api/admin/feedback*`.
+- Public admin replies and status changes are visible in the user's timeline and trigger Resend email notifications to the submitting user's email snapshot.
+- Internal notes are admin-only, never returned by normal user APIs, and do not trigger user emails.
+- Email update links use HashRouter-compatible URLs, for example `APP_BASE_URL/#/?feedback=<id>` for users and `APP_BASE_URL/#/admin/feedback?feedback=<id>` for admins.
+- Feedback tables are created idempotently during `backend.db.init_db()` for both SQLite and PostgreSQL.
 
 ## Local Development Notes
 

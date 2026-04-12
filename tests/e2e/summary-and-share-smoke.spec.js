@@ -145,8 +145,9 @@ test('files detail pane summarize flow opens the current summary result modal', 
   await loginAsAlice(page);
   await goToMyFiles(page);
 
-  await page.locator('#search-input').fill('graph');
-  await page.locator('#search-btn').click();
+  const searchInput = page.locator('#search-input');
+  await searchInput.fill('graph');
+  await searchInput.press('Enter');
 
   const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
   await expect(graphCard).toBeVisible();

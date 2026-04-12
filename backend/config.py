@@ -243,6 +243,8 @@ APP_BASE_URL = (os.environ.get('APP_BASE_URL') or DEFAULT_INVITE_BASE_URL).rstri
 INVITE_BASE_URL = APP_BASE_URL
 RESEND_API_KEY = (os.environ.get('RESEND_API_KEY') or '').strip()
 RESEND_FROM_EMAIL = (os.environ.get('RESEND_FROM_EMAIL') or 'StudyHub <onboarding@resend.dev>').strip()
+SUPPORT_EMAIL = (os.environ.get('SUPPORT_EMAIL') or 'hello@studies-hub.com').strip()
+FEEDBACK_ADMIN_USERNAMES = (os.environ.get('FEEDBACK_ADMIN_USERNAMES') or '').strip()
 INVITE_EXPIRY_DAYS = 7
 
 try:

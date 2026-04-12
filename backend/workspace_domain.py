@@ -4,16 +4,12 @@ import uuid
 import html
 from datetime import datetime, timedelta
 
-import requests
-
 from .config import (
     CATEGORY_KEYWORDS,
     DEFAULT_DOCUMENT_CATEGORY,
     DEFAULT_WORKSPACE_SETTINGS,
     INVITE_BASE_URL,
     INVITE_EXPIRY_DAYS,
-    RESEND_API_KEY,
-    RESEND_FROM_EMAIL,
     WORKSPACE_DOCUMENT_LAYOUTS,
     WORKSPACE_DOCUMENT_PAGE_SIZES,
     WORKSPACE_DOCUMENT_SORTS,
@@ -23,6 +19,7 @@ from .config import (
     WORKSPACE_SUMMARY_LENGTH_LEVELS,
 )
 from .db import documents_column_exists
+from .email_service import send_resend_email
 from .utils import normalize_document_category, normalize_email, parse_bool, parse_int, row_to_dict, utcnow_iso
 
 
@@ -248,8 +245,6 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
     recipient = normalize_email(to_email)
     if not recipient:
         return False, 'Missing recipient email'
-    if not RESEND_API_KEY:
-        return False, 'RESEND_API_KEY is not configured'
 
     safe_workspace_name = str(workspace_name or '').strip() or 'Untitled Workspace'
     safe_inviter_username = str(inviter_username or '').strip() or 'A StudyHub member'
@@ -258,7 +253,7 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
     safe_recipient = recipient
 
     subject = f'StudyHub invite: {safe_workspace_name}'
-    html = f'''
+    body_html = f'''
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto;">
           <h2 style="margin-bottom: 12px;">You're invited to collaborate in StudyHub</h2>
           <p><strong>{html.escape(safe_inviter_username)}</strong> invited you to join <strong>{html.escape(safe_workspace_name)}</strong>.</p>
@@ -283,28 +278,7 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
         f'Invitation link: {safe_invite_url}\n'
         f'Expires: {safe_expiry_label}\n'
     )
-    payload = {
-        'from': RESEND_FROM_EMAIL,
-        'to': [recipient],
-        'subject': subject,
-        'html': html,
-        'text': text,
-    }
-    try:
-        response = requests.post(
-            'https://api.resend.com/emails',
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-            },
-            json=payload,
-            timeout=15,
-        )
-        if response.status_code >= 400:
-            return False, f'Resend failed ({response.status_code}): {response.text[:220]}'
-        return True, ''
-    except Exception as e:
-        return False, f'Resend request error: {e}'
+    return send_resend_email(recipient, subject, body_html, text)
 
 
 def expire_workspace_invitations(conn, workspace_id=''):

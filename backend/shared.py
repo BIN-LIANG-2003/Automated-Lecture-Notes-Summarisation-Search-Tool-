@@ -37,8 +37,6 @@ from .config import (
     OCRMYPDF_BINARY,
     OCRMYPDF_LANGUAGE,
     OCRMYPDF_TIMEOUT_SECONDS,
-    RESEND_API_KEY,
-    RESEND_FROM_EMAIL,
     S3_BUCKET,
     SUMMARY_CACHE_VERSION,
     SUMMARIZER_MODEL_ID,
@@ -77,6 +75,7 @@ from .workspace_domain import (
     normalize_workspace_settings,
     workspace_belongs_to_user,
 )
+from .email_service import send_resend_email
 
 
 # ================= 配置部分 =================
@@ -322,12 +321,6 @@ def send_registration_verification_email(to_email, username, verification_url, e
     if not recipient:
         print('Registration verification email send skipped: missing recipient email')
         return False, 'Missing recipient email'
-    if not RESEND_API_KEY:
-        print(
-            f'Registration verification email send failed for {masked_recipient}: '
-            'RESEND_API_KEY is not configured'
-        )
-        return False, 'RESEND_API_KEY is not configured'
     if not safe_verification_url:
         print(
             f'Registration verification email send failed for {masked_recipient}: '
@@ -360,36 +353,14 @@ def send_registration_verification_email(to_email, username, verification_url, e
         f'Verification link: {safe_verification_url}\n'
         f'Expires: {safe_expiry_label}\n'
     )
-    try:
-        response = requests.post(
-            'https://api.resend.com/emails',
-            headers={
-                'Authorization': f'Bearer {RESEND_API_KEY}',
-                'Content-Type': 'application/json',
-            },
-            json={
-                'from': RESEND_FROM_EMAIL,
-                'to': [recipient],
-                'subject': subject,
-                'html': body_html,
-                'text': body_text,
-            },
-            timeout=15,
-        )
-        if response.status_code >= 400:
-            error_message = f'Resend failed ({response.status_code}): {response.text[:220]}'
-            print(
-                f'Registration verification email send failed for {masked_recipient} '
-                f'using sender "{RESEND_FROM_EMAIL}": {error_message}'
-            )
-            return False, error_message
-        return True, ''
-    except Exception as e:
+    sent, error_message = send_resend_email(recipient, subject, body_html, body_text)
+    if not sent:
         print(
-            f'Registration verification email request error for {masked_recipient} '
-            f'using sender "{RESEND_FROM_EMAIL}": {e}'
+            f'Registration verification email send failed for {masked_recipient}: '
+            f'{error_message}'
         )
-        return False, f'Resend request error: {e}'
+        return False, error_message
+    return True, ''
 
 
 def _persist_email_verification(conn, user_row):

@@ -15,7 +15,7 @@ test('login, search documents, and open document detail pane', async ({ page }) 
   const searchInput = page.locator('#search-input');
   await expect(searchInput).toBeVisible();
   await searchInput.fill('graph');
-  await page.locator('#search-btn').click();
+  await searchInput.press('Enter');
 
   const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
   await expect(graphCard).toBeVisible();

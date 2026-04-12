@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
+import FeedbackWidget from '../components/FeedbackWidget.jsx';
 import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
 import TrashModal from '../components/TrashModal.jsx';
@@ -7646,6 +7647,11 @@ export default function HomePage() {
           </div>
         </div>
       )}
+      <FeedbackWidget
+        enabled={isLoggedIn}
+        workspaceId={activeWorkspaceId}
+        documentId={activeDoc?.id || ''}
+      />
     </div>
   );
 }

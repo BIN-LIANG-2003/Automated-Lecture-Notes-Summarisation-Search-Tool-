@@ -119,6 +119,9 @@ def main():
     atexit.register(tempdir.cleanup)
     os.chdir(tempdir.name)
     app = create_app()
+    from backend import feedback_service
+
+    feedback_service.FEEDBACK_ADMIN_USERNAMES = 'alice'
     seed_app_data()
     port = int(os.environ.get('PORT', '5001'))
     app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False)
