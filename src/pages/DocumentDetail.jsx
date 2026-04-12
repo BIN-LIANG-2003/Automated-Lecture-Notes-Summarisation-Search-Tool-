@@ -446,6 +446,9 @@ export default function DocumentDetail() {
   const closeSendNoteEmailModal = () => {
     if (isSendingShareEmail) return;
     setSendNoteEmailOpen(false);
+    resetShareEmailDraft();
+    setShareEmailResult(null);
+    setShareModalMode('send');
   };
 
   const handleSendAnotherShareEmail = () => {
@@ -768,7 +771,10 @@ export default function DocumentDetail() {
 
   const handleCopyExistingShareLink = async (shareUrl) => {
     const value = String(shareUrl || '').trim();
-    if (!value) return;
+    if (!value) {
+      showToast('No share link is available to copy.', 'warning');
+      return;
+    }
     try {
       await copyTextToClipboard(value);
       showToast('Share link copied.', 'success');

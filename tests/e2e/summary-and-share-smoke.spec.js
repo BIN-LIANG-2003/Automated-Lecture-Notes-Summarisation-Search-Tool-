@@ -97,7 +97,8 @@ async function expectMailtoOpen(page) {
   return page.evaluate(() => window.__studyhubWindowOpenCalls[window.__studyhubWindowOpenCalls.length - 1]);
 }
 
-async function mockDocumentEmailShare(page, expectedRecipient = 'classmate@example.com') {
+async function mockDocumentEmailShare(page, expectedRecipient = 'classmate@example.com', options = {}) {
+  const includeShareUrl = options.includeShareUrl !== false;
   await page.route('**/api/documents/1/email-share', async (route) => {
     const requestBody = route.request().postDataJSON();
     expect(requestBody.recipient_email).toBe(expectedRecipient);
@@ -110,7 +111,9 @@ async function mockDocumentEmailShare(page, expectedRecipient = 'classmate@examp
         recipient_email: expectedRecipient,
         expires_at: '2026-04-19T12:00:00Z',
         share: {
-          share_url: 'http://127.0.0.1:5001/#/shared/email-share-smoke-token',
+          ...(includeShareUrl
+            ? { share_url: 'http://127.0.0.1:5001/#/shared/email-share-smoke-token' }
+            : {}),
           token: 'email-share-smoke-token',
           expiry_days: 7,
         },
@@ -119,10 +122,40 @@ async function mockDocumentEmailShare(page, expectedRecipient = 'classmate@examp
   });
 }
 
+async function mockShareLinksList(page, count = 18) {
+  const items = Array.from({ length: count }, (_, index) => {
+    const number = index + 1;
+    const expired = number % 5 === 0;
+    const revoked = number % 4 === 0;
+    return {
+      id: number,
+      token: `long-share-token-${number}`,
+      share_url: `http://127.0.0.1:5001/#/shared/long-share-token-${number}`,
+      status: revoked ? 'revoked' : 'active',
+      expires_at: `2026-04-${String(10 + (number % 15)).padStart(2, '0')}T12:00:00Z`,
+      created_at: '2026-04-01T12:00:00Z',
+      is_expired: expired,
+    };
+  });
+  await page.route('**/api/documents/1/share-links?*', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items }),
+    });
+  });
+}
+
 test('files workspace summary center opens summary result modal with export and email actions', async ({ page }) => {
   await seedHomeStorage(page);
   await loginAsAlice(page);
   await goToMyFiles(page);
+
+  const topbarActions = page.locator('.notion-top-actions');
+  await expect(topbarActions.getByText(/Notes/)).toBeVisible();
+  await expect(topbarActions.getByText(/Tags/)).toBeVisible();
+  await expect(topbarActions.getByText(/Starred/)).toBeVisible();
+  await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
 
   await page.locator('.notion-top-summary-btn').click();
   const summaryCenter = page.getByRole('dialog', { name: 'Summaries' });
@@ -254,7 +287,7 @@ test('document detail sharing defaults to send-by-email flow', async ({ page }) 
   await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
 });
 
-test('document detail send another resets the share email form', async ({ page }) => {
+test('document detail share modal resets after done and send another', async ({ page }) => {
   await loginAsAlice(page);
   await mockDocumentEmailShare(page);
 
@@ -269,6 +302,20 @@ test('document detail send another resets the share email form', async ({ page }
 
   const successModal = page.getByRole('dialog', { name: 'Note Sent' });
   await expect(successModal).toBeVisible();
+  await successModal.getByRole('button', { name: 'Done' }).click();
+  await expect(successModal).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const reopenedModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(reopenedModal).toBeVisible();
+  await expect(reopenedModal.getByLabel('Recipient email')).toHaveValue('');
+  await expect(reopenedModal.getByLabel('Short message (optional)')).toHaveValue('');
+  await expect(reopenedModal.getByLabel('Expiry days (optional)')).toHaveValue('7');
+  await reopenedModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await reopenedModal.getByLabel('Short message (optional)').fill('Second draft should reset too.');
+  await reopenedModal.getByRole('button', { name: 'Send Email' }).click();
+
+  await expect(page.getByRole('dialog', { name: 'Note Sent' })).toBeVisible();
   await successModal.getByRole('button', { name: 'Send Another' }).click();
 
   const resetModal = page.getByRole('dialog', { name: 'Send Note' });
@@ -292,6 +339,65 @@ test('document detail more menu opens share links management first', async ({ pa
   await expect(manageModal.getByRole('button', { name: 'Refresh' })).toBeVisible();
   await expect(manageModal.getByRole('button', { name: 'Revoke All' })).toBeVisible();
   await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
+});
+
+test('document detail success mode disables copy link when email response omits share url', async ({ page }) => {
+  await loginAsAlice(page);
+  await mockDocumentEmailShare(page, 'classmate@example.com', { includeShareUrl: false });
+
+  await page.goto('/#/document/1');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
+
+  const successModal = page.getByRole('dialog', { name: 'Note Sent' });
+  await expect(successModal).toBeVisible();
+  const copyLinkButton = successModal.getByRole('button', { name: 'Copy Link' });
+  await expect(copyLinkButton).toBeDisabled();
+  await expect(copyLinkButton).toHaveAttribute('title', /No share link was returned/);
+  await expect(successModal).toContainText('Copy Link is unavailable');
+});
+
+test('document detail manage links modal handles long link lists', async ({ page }) => {
+  await mockShareLinksList(page, 24);
+  await loginAsAlice(page);
+
+  await page.goto('/#/document/1');
+  await page.locator('.document-detail-more-trigger').click();
+  await page.locator('.document-detail-more-popover').getByRole('button', { name: 'Manage Links' }).click();
+
+  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
+  await expect(manageModal).toBeVisible();
+  await expect(manageModal.locator('.notion-doc-share-list li')).toHaveCount(24);
+  await expect(manageModal.getByRole('button', { name: 'Refresh' })).toBeVisible();
+  await expect(manageModal.getByRole('button', { name: 'Done' })).toBeVisible();
+  await expect(manageModal).toContainText('long-share-token-24');
+});
+
+test('document detail share modal closes with escape in send manage and success modes', async ({ page }) => {
+  await loginAsAlice(page);
+  await mockDocumentEmailShare(page);
+
+  await page.goto('/#/document/1');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Send Note' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Send Note' })).toHaveCount(0);
+
+  await page.locator('.document-detail-more-trigger').click();
+  await page.locator('.document-detail-more-popover').getByRole('button', { name: 'Manage Links' }).click();
+  await expect(page.getByRole('dialog', { name: 'Manage Links' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Manage Links' })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
+  await expect(page.getByRole('dialog', { name: 'Note Sent' })).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('dialog', { name: 'Note Sent' })).toHaveCount(0);
 });
 
 test('public share link opens document view without sign in', async ({ page }) => {
