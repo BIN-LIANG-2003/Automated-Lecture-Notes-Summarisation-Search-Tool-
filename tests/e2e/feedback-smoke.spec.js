@@ -14,7 +14,8 @@ async function loginAs(page, username = 'alice') {
   await expect(page.getByRole('button', { name: 'Feedback' })).toBeVisible();
 }
 
-test('private feedback flow supports user submission and admin public update', async ({ page }) => {
+test('private feedback flow supports user submission and admin public update', async ({ page }, testInfo) => {
+  const feedbackTitle = `Playwright feedback smoke ${Date.now()}-${testInfo.repeatEachIndex}-${testInfo.retry}`;
   await loginAs(page, 'alice');
 
   await page.getByRole('button', { name: 'Feedback' }).click();
@@ -24,18 +25,20 @@ test('private feedback flow supports user submission and admin public update', a
   await feedbackModal.getByLabel('Priority').selectOption('high');
   await feedbackModal.getByLabel('Title').fill('Upload OCR duplicate');
   await expect(feedbackModal.getByText('Upload OCR duplicate smoke')).toBeVisible();
-  await feedbackModal.getByLabel('Title').fill('Playwright feedback smoke');
+  await feedbackModal.getByLabel('Title').fill(feedbackTitle);
   await feedbackModal.getByLabel('Description').fill('Feedback modal should submit and appear in private history.');
   await feedbackModal.locator('form').getByRole('button', { name: 'Submit Feedback' }).click();
 
   await expect(feedbackModal.getByRole('tab', { name: 'My Feedback' })).toHaveAttribute('aria-selected', 'true');
-  await expect(feedbackModal.getByText('Playwright feedback smoke')).toBeVisible();
+  await expect(feedbackModal.getByText(feedbackTitle)).toBeVisible();
   await feedbackModal.getByLabel('Close feedback').click();
 
   await page.goto('/#/admin/feedback');
   await expect(page.getByRole('heading', { name: 'Feedback Inbox' })).toBeVisible();
-  await page.getByRole('row', { name: /Playwright feedback smoke/ }).click();
-  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toContainText('Playwright feedback smoke');
+  const feedbackRow = page.getByRole('row').filter({ hasText: feedbackTitle });
+  await expect(feedbackRow).toHaveCount(1);
+  await feedbackRow.click();
+  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toContainText(feedbackTitle);
 
   const controls = page.locator('.studyhub-admin-feedback-controls');
   await controls.getByLabel('Status').selectOption('resolved');
@@ -49,7 +52,7 @@ test('private feedback flow supports user submission and admin public update', a
   await page.getByRole('button', { name: 'Feedback' }).click();
   const reopenedModal = page.getByRole('dialog', { name: 'Help improve StudyHub' });
   await reopenedModal.getByRole('tab', { name: 'My Feedback' }).click();
-  await reopenedModal.getByText('Playwright feedback smoke').click();
+  await reopenedModal.getByText(feedbackTitle).click();
   await expect(reopenedModal).toContainText('Resolved');
   await expect(reopenedModal).toContainText('Resolved in the Playwright smoke test.');
 });
