@@ -2068,7 +2068,7 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .notion-share-email-modal{
-  width:min(560px, 100%);
+  width:min(680px, 100%);
   display:grid;
   gap:14px;
 }
@@ -2109,6 +2109,54 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-share-email-field-compact{
   max-width:180px;
+}
+
+.notion-share-email-success{
+  display:grid;
+  gap:14px;
+}
+
+.notion-share-email-success-card{
+  border:1px solid #dbe8d8;
+  border-radius:16px;
+  background:#f7fcf6;
+  padding:14px;
+  display:grid;
+  gap:8px;
+}
+
+.notion-share-email-success-card h4{
+  margin:0;
+  color:#253348;
+  font-size:18px;
+}
+
+.notion-share-email-success-card p{
+  margin:0;
+  color:#617089;
+  line-height:1.5;
+}
+
+.notion-share-email-success-actions{
+  justify-content:flex-start;
+}
+
+.notion-share-email-manage{
+  border-top:1px solid #e7edf5;
+  padding-top:14px;
+}
+
+.document-detail-share-links-panel{
+  display:grid;
+  gap:10px;
+}
+
+.document-detail-share-links-panel .notion-doc-share-manager-head{
+  align-items:flex-start;
+}
+
+.document-detail-share-links-panel .notion-doc-share-manager-head p{
+  margin:4px 0 0;
 }
 
 .notion-summary-result-head{
@@ -6290,7 +6338,7 @@ body.notion-home-body .skip-link:focus-visible{
 .studyhub-feedback-trigger{
   position:fixed;
   right:22px;
-  bottom:22px;
+  top:22px;
   z-index:210;
   min-height:46px;
   padding:0 18px;
@@ -6305,6 +6353,17 @@ body.notion-home-body .skip-link:focus-visible{
 
 .studyhub-feedback-trigger:hover{
   background:#255fc0;
+}
+
+.studyhub-feedback-trigger--topbar{
+  position:static;
+  right:auto;
+  top:auto;
+  z-index:auto;
+  min-height:32px;
+  padding:6px 14px;
+  box-shadow:none;
+  font-size:12px;
 }
 
 .studyhub-feedback-modal{
@@ -6761,7 +6820,12 @@ body.notion-home-body .skip-link:focus-visible{
 @media (max-width: 860px){
   .studyhub-feedback-trigger{
     right:14px;
-    bottom:14px;
+    top:14px;
+  }
+  .studyhub-feedback-trigger--topbar{
+    position:static;
+    right:auto;
+    top:auto;
   }
   .studyhub-feedback-grid,
   .studyhub-feedback-admin-meta,

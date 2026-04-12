@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useLocation, useNavigate } from 'react-router-dom';
 import FeedbackModal from './FeedbackModal.jsx';
 import { readStoredAuthSession } from '../lib/authSession.js';
@@ -7,6 +8,7 @@ export default function FeedbackWidget({
   workspaceId = '',
   documentId = '',
   enabled = true,
+  variant = 'floating',
 }) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -28,29 +30,35 @@ export default function FeedbackWidget({
     }
   };
 
+  const modal = (
+    <FeedbackModal
+      open={isOpen}
+      onClose={closeModal}
+      initialFeedbackId={feedbackIdFromUrl}
+      context={{
+        pagePath: `${location.pathname}${location.search || ''}`,
+        workspaceId,
+        documentId,
+      }}
+      onOpenAdmin={() => {
+        setManualOpen(false);
+        navigate('/admin/feedback');
+      }}
+    />
+  );
+
   return (
     <>
       <button
         type="button"
-        className="studyhub-feedback-trigger"
+        className={`studyhub-feedback-trigger${
+          variant === 'topbar' ? ' studyhub-feedback-trigger--topbar' : ''
+        }`}
         onClick={() => setManualOpen(true)}
       >
         Feedback
       </button>
-      <FeedbackModal
-        open={isOpen}
-        onClose={closeModal}
-        initialFeedbackId={feedbackIdFromUrl}
-        context={{
-          pagePath: `${location.pathname}${location.search || ''}`,
-          workspaceId,
-          documentId,
-        }}
-        onOpenAdmin={() => {
-          setManualOpen(false);
-          navigate('/admin/feedback');
-        }}
-      />
+      {typeof document !== 'undefined' ? createPortal(modal, document.body) : modal}
     </>
   );
 }

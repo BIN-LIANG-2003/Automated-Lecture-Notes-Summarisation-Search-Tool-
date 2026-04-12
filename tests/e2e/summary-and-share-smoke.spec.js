@@ -142,6 +142,20 @@ test('files workspace summary center opens summary result modal with export and 
 });
 
 test('files detail pane summarize flow opens the current summary result modal', async ({ page }) => {
+  await page.route('**/api/analyze-text', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        summary: 'Graph traversal review covering BFS, DFS, and shortest-path thinking.',
+        keywords: ['graph', 'bfs', 'dfs'],
+        key_sentences: ['Graph traversal often starts with BFS or DFS.'],
+        summary_source: 'playwright',
+        summary_note: 'Mocked deterministic summary for E2E coverage.',
+        cache_hit: false,
+      }),
+    });
+  });
   await loginAsAlice(page);
   await goToMyFiles(page);
 
@@ -181,6 +195,50 @@ test('files detail pane summarize flow opens the current summary result modal', 
     summaryModal.getByRole('button', { name: 'Export PDF' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
+});
+
+test('document detail sharing defaults to send-by-email flow', async ({ page }) => {
+  await loginAsAlice(page);
+
+  await page.route('**/api/documents/1/email-share', async (route) => {
+    const requestBody = route.request().postDataJSON();
+    expect(requestBody.recipient_email).toBe('classmate@example.com');
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sent: true,
+        message: 'Shared note email sent to classmate@example.com.',
+        recipient_email: 'classmate@example.com',
+        expires_at: '2026-04-19T12:00:00',
+        share: {
+          share_url: 'http://127.0.0.1:5001/#/shared/email-share-smoke-token',
+          token: 'email-share-smoke-token',
+          expiry_days: 7,
+        },
+      }),
+    });
+  });
+
+  await page.goto('/#/document/1');
+  await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
+  await expect(page.locator('.document-detail-share-card')).toHaveCount(0);
+  await expect(page.getByText('Existing Links')).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(sendModal).toBeVisible();
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByLabel('Short message (optional)').fill('Please review this note before class.');
+  await sendModal.getByLabel('Expiry days (optional)').fill('7');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
+
+  const successModal = page.getByRole('dialog', { name: 'Note Sent' });
+  await expect(successModal).toBeVisible();
+  await expect(successModal).toContainText('Sent to classmate@example.com');
+  await expect(successModal.getByRole('button', { name: 'Copy Link' })).toBeVisible();
+  await expect(successModal.getByRole('button', { name: 'Manage Links' })).toBeVisible();
+  await expect(successModal.getByRole('button', { name: 'Send Another' })).toBeVisible();
 });
 
 test('public share link opens document view without sign in', async ({ page }) => {

@@ -128,7 +128,6 @@ const normalizeDocument = (raw) => {
 export default function DocumentDetail() {
   const { docId, shareToken } = useParams();
   const navigate = useNavigate();
-  const shareToolsRef = useRef(null);
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -153,6 +152,8 @@ export default function DocumentDetail() {
   const [shareEmailRecipient, setShareEmailRecipient] = useState('');
   const [shareEmailMessage, setShareEmailMessage] = useState('');
   const [shareEmailExpiryDays, setShareEmailExpiryDays] = useState('');
+  const [shareEmailResult, setShareEmailResult] = useState(null);
+  const [shareManagerOpen, setShareManagerOpen] = useState(false);
   const [isSendingShareEmail, setIsSendingShareEmail] = useState(false);
   const summaryProgressTimerRef = useRef(null);
   const {
@@ -320,9 +321,6 @@ export default function DocumentDetail() {
     canManageShareLinks,
   });
   const shareLinkDisabled = Boolean(shareLinkDisabledReason);
-  const shareEmailHint = shareLinkDisabled
-    ? shareLinkDisabledReason
-    : 'StudyHub sends an email with a button that opens this shared note.';
   const shareLinkHint = shareLinkDisabled
     ? shareLinkDisabledReason
     : isPdf
@@ -330,7 +328,7 @@ export default function DocumentDetail() {
       : 'Create a share link from this detail page and copy it to your clipboard.';
   const shareDeliveryHint = shareLinkDisabled
     ? shareLinkDisabledReason
-    : 'Use Send by Email to let StudyHub deliver the shared note directly. Copy Link still puts a share link on your clipboard.';
+    : 'Send a private email with a button that opens this note. Link tools stay secondary.';
   const shareAvailabilityLabel = shareLinkDisabled
     ? (document.linkSharingMode === 'restricted'
       ? 'Sharing blocked'
@@ -414,12 +412,45 @@ export default function DocumentDetail() {
     setShareEmailRecipient('');
     setShareEmailMessage('');
     setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+    setShareEmailResult(null);
+    setShareManagerOpen(false);
     setSendNoteEmailOpen(true);
+  };
+
+  const openShareManager = () => {
+    if (shareLinkDisabledReason) {
+      showToast(shareLinkDisabledReason, 'warning');
+      return;
+    }
+    setShareEmailResult(null);
+    setShareManagerOpen(true);
+    setSendNoteEmailOpen(true);
+    if (document?.id && username && canManageShareLinks) {
+      void refreshShareLinks(document.id);
+    }
+  };
+
+  const toggleShareManager = () => {
+    setShareManagerOpen((prev) => {
+      const nextOpen = !prev;
+      if (nextOpen && document?.id && username && canManageShareLinks) {
+        void refreshShareLinks(document.id);
+      }
+      return nextOpen;
+    });
   };
 
   const closeSendNoteEmailModal = () => {
     if (isSendingShareEmail) return;
     setSendNoteEmailOpen(false);
+  };
+
+  const handleSendAnotherShareEmail = () => {
+    setShareEmailRecipient('');
+    setShareEmailMessage('');
+    setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+    setShareEmailResult(null);
+    setShareManagerOpen(false);
   };
 
   const handleExtractText = async () => {
@@ -715,13 +746,23 @@ export default function DocumentDetail() {
         expiryDays: shareEmailExpiryDays,
       });
       await refreshShareLinks(document.id);
-      setSendNoteEmailOpen(false);
+      setShareEmailResult(payload);
+      setShareManagerOpen(false);
       showToast(payload.message || `Shared note email sent to ${recipientEmail}.`, 'success');
     } catch (err) {
       showToast(err.message || 'Failed to send note by email.', 'error');
     } finally {
       setIsSendingShareEmail(false);
     }
+  };
+
+  const handleCopySentShareLink = async () => {
+    const shareUrl = String(shareEmailResult?.share?.share_url || '').trim();
+    if (!shareUrl) {
+      showToast('No share link was returned for this email.', 'warning');
+      return;
+    }
+    await handleCopyExistingShareLink(shareUrl);
   };
 
   const handleCopyExistingShareLink = async (shareUrl) => {
@@ -831,10 +872,90 @@ export default function DocumentDetail() {
     }
   };
 
-  const focusShareTools = () => {
-    if (!shareToolsRef.current) return;
-    shareToolsRef.current.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  };
+  const canShowShareManagement = Boolean(username && canManageShareLinks);
+  const shareLinksManagerContent = canShowShareManagement ? (
+    <section className="document-detail-share-links-panel" aria-label="Share links management">
+      <div className="notion-doc-share-manager-head">
+        <div>
+          <h3>Manage Links</h3>
+          <p className="muted tiny">Advanced access controls stay here so sending remains the default workflow.</p>
+        </div>
+        <div className="notion-doc-share-actions">
+          <button
+            type="button"
+            className="btn btn-delete"
+            onClick={handleRevokeAllShareLinks}
+            disabled={shareLinksLoading || shareActionLoadingId !== 0 || !shareLinks.length}
+          >
+            {shareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-delete"
+            onClick={handleDeleteInactiveShareLinks}
+            disabled={
+              shareLinksLoading ||
+              shareActionLoadingId !== 0 ||
+              !shareLinks.some((item) => !isActiveShareLink(item))
+            }
+          >
+            {shareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => refreshShareLinks(document.id)}
+            disabled={shareLinksLoading || shareActionLoadingId !== 0}
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+      {shareLinksError && <p className="muted tiny">Load failed: {shareLinksError}</p>}
+      {shareLinksLoading && !shareLinksError && <p className="muted tiny">Loading share links...</p>}
+      {!shareLinksLoading && !shareLinksError && !shareLinks.length && (
+        <p className="muted tiny">No share links yet. Send this note or copy a link to create one.</p>
+      )}
+      {shareLinks.length > 0 && (
+        <ul className="notion-doc-share-list">
+          {shareLinks.map((item, index) => {
+            const status = String(item?.status || 'unknown').toLowerCase();
+            const isActive = isActiveShareLink(item);
+            const loading = Number(item?.id) === shareActionLoadingId;
+            return (
+              <li key={`detail-share-${item?.id || item?.token || index}`}>
+                <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
+                  {item?.share_url || 'Invalid link'}
+                </a>
+                <span className="notion-doc-share-meta">
+                  Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
+                </span>
+                <div className="notion-doc-share-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => handleCopyExistingShareLink(item?.share_url)}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-delete"
+                    onClick={() => (isActive ? handleRevokeShareLink(item) : handleDeleteShareLink(item))}
+                    disabled={loading || shareActionLoadingId < 0}
+                  >
+                    {loading
+                      ? (shareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
+                      : (isActive ? 'Revoke' : 'Delete')}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  ) : null;
 
   return (
     <>
@@ -932,11 +1053,11 @@ export default function DocumentDetail() {
                 <button
                   type="button"
                   className="btn"
-                  onClick={focusShareTools}
+                  onClick={openSendNoteEmailModal}
                   disabled={shareLinkDisabled}
                   title={shareDeliveryHint}
                 >
-                  Share
+                  Send
                 </button>
                 <button
                   type="button"
@@ -961,21 +1082,23 @@ export default function DocumentDetail() {
                     <button
                       type="button"
                       className="btn"
-                      onClick={openSendNoteEmailModal}
-                      disabled={shareLinkDisabled}
-                      title={shareEmailHint}
-                    >
-                      Send by Email
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
                       onClick={handleCopyShareLink}
                       disabled={shareLinkDisabled}
                       title={shareLinkHint}
                     >
                       Copy Link
                     </button>
+                    {username && canManageShareLinks && (
+                      <button
+                        type="button"
+                        className="btn"
+                        onClick={openShareManager}
+                        disabled={shareLinkDisabled}
+                        title="Review, copy, revoke, or delete existing share links"
+                      >
+                        Manage Links
+                      </button>
+                    )}
                     {!isImage && (
                       <button
                         type="button"
@@ -1160,128 +1283,6 @@ export default function DocumentDetail() {
               </section>
             )}
 
-            {!isSharedView && (
-              <section ref={shareToolsRef} className="document-detail-sidebar-card document-detail-share-card">
-                <div className="document-detail-sidebar-head">
-                  <span className="document-detail-sidebar-kicker">Share</span>
-                  <strong>Send or manage access</strong>
-                </div>
-                <div className="document-detail-share-status" aria-live="polite">
-                  <span className="document-share-pill">{shareModeLabel}</span>
-                  <span className={`document-share-pill${shareLinkDisabled ? ' muted' : ' success'}`}>
-                    {shareAvailabilityLabel}
-                  </span>
-                </div>
-                <p className="document-detail-sidebar-note">{shareDeliveryHint}</p>
-                <div className="document-detail-share-card-actions">
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={openSendNoteEmailModal}
-                    disabled={shareLinkDisabled}
-                    title={shareEmailHint}
-                  >
-                    Send by Email
-                  </button>
-                  <button
-                    type="button"
-                    className="btn"
-                    onClick={handleCopyShareLink}
-                    disabled={shareLinkDisabled}
-                    title={shareLinkHint}
-                  >
-                    Copy Link
-                  </button>
-                </div>
-
-                {username && canManageShareLinks && (
-                  <details className="document-detail-share-links-disclosure">
-                    <summary>
-                      <span>Manage Links</span>
-                      <span>{shareLinks.length}</span>
-                    </summary>
-                    <div className="document-detail-share-links-body">
-                      <div className="notion-doc-share-manager-head">
-                        <h3>Existing Links</h3>
-                        <div className="notion-doc-share-actions">
-                          <button
-                            type="button"
-                            className="btn btn-delete"
-                            onClick={handleRevokeAllShareLinks}
-                            disabled={shareLinksLoading || shareActionLoadingId !== 0 || !shareLinks.length}
-                          >
-                            {shareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-delete"
-                            onClick={handleDeleteInactiveShareLinks}
-                            disabled={
-                              shareLinksLoading ||
-                              shareActionLoadingId !== 0 ||
-                              !shareLinks.some((item) => !isActiveShareLink(item))
-                            }
-                          >
-                            {shareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={() => refreshShareLinks(document.id)}
-                            disabled={shareLinksLoading || shareActionLoadingId !== 0}
-                          >
-                            Refresh
-                          </button>
-                        </div>
-                      </div>
-                      {shareLinksError && <p className="muted tiny">Load failed: {shareLinksError}</p>}
-                      {shareLinksLoading && !shareLinksError && <p className="muted tiny">Loading share links...</p>}
-                      {!shareLinksLoading && !shareLinksError && !shareLinks.length && (
-                        <p className="muted tiny">No share links yet. Use the actions above to create one.</p>
-                      )}
-                      {shareLinks.length > 0 && (
-                        <ul className="notion-doc-share-list">
-                          {shareLinks.map((item, index) => {
-                            const status = String(item?.status || 'unknown').toLowerCase();
-                            const isActive = isActiveShareLink(item);
-                            const loading = Number(item?.id) === shareActionLoadingId;
-                            return (
-                              <li key={`detail-share-${item?.id || item?.token || index}`}>
-                                <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
-                                  {item?.share_url || 'Invalid link'}
-                                </a>
-                                <span className="notion-doc-share-meta">
-                                  Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
-                                </span>
-                                <div className="notion-doc-share-actions">
-                                  <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={() => handleCopyExistingShareLink(item?.share_url)}
-                                  >
-                                    Copy
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-delete"
-                                    onClick={() => (isActive ? handleRevokeShareLink(item) : handleDeleteShareLink(item))}
-                                    disabled={loading || shareActionLoadingId < 0}
-                                  >
-                                    {loading
-                                      ? (shareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
-                                      : (isActive ? 'Revoke' : 'Delete')}
-                                  </button>
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
-                    </div>
-                  </details>
-                )}
-              </section>
-            )}
           </aside>
         </div>
       </article>
@@ -1290,6 +1291,8 @@ export default function DocumentDetail() {
         open={sendNoteEmailOpen}
         onClose={closeSendNoteEmailModal}
         onSubmit={handleSendNoteByEmail}
+        onSendAnother={handleSendAnotherShareEmail}
+        onCopyLink={handleCopySentShareLink}
         recipientEmail={shareEmailRecipient}
         onRecipientEmailChange={setShareEmailRecipient}
         message={shareEmailMessage}
@@ -1299,6 +1302,12 @@ export default function DocumentDetail() {
         isSubmitting={isSendingShareEmail}
         documentTitle={document?.title || document?.filename || 'Untitled Note'}
         linkModeLabel={shareModeLabel}
+        successResult={shareEmailResult}
+        manageLinksContent={shareLinksManagerContent}
+        manageLinksOpen={shareManagerOpen}
+        onManageLinksToggle={toggleShareManager}
+        canManageLinks={canShowShareManagement}
+        shareLinksCount={shareLinks.length}
       />
       <SummaryResultModal
         open={summaryResultOpen}

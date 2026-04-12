@@ -2,6 +2,8 @@ export default function SendNoteByEmailModal({
   open = false,
   onClose,
   onSubmit,
+  onSendAnother,
+  onCopyLink,
   recipientEmail = '',
   onRecipientEmailChange,
   message = '',
@@ -11,8 +13,22 @@ export default function SendNoteByEmailModal({
   isSubmitting = false,
   documentTitle = '',
   linkModeLabel = '',
+  successResult = null,
+  manageLinksContent = null,
+  manageLinksOpen = false,
+  onManageLinksToggle,
+  canManageLinks = false,
+  shareLinksCount = 0,
 }) {
   if (!open) return null;
+
+  const sentRecipient = String(successResult?.recipient_email || recipientEmail || '').trim();
+  const sentExpiry = String(successResult?.expires_at || '').trim();
+  const sentShareUrl = String(
+    successResult?.share?.share_url ||
+    successResult?.shareUrl ||
+    ''
+  ).trim();
 
   return (
     <div
@@ -32,9 +48,9 @@ export default function SendNoteByEmailModal({
       >
         <div className="notion-summary-result-head">
           <div>
-            <h3 id="send-note-email-title">Send Note by Email</h3>
+            <h3 id="send-note-email-title">{successResult ? 'Note Sent' : 'Send Note'}</h3>
             <p className="notion-settings-help">
-              StudyHub will email a button that opens <strong>{documentTitle || 'this shared note'}</strong>.
+              StudyHub emails a button that opens <strong>{documentTitle || 'this shared note'}</strong>.
               {linkModeLabel ? ` Access mode: ${linkModeLabel}.` : ''}
             </p>
           </div>
@@ -51,61 +67,107 @@ export default function SendNoteByEmailModal({
           </button>
         </div>
 
-        <form className="notion-share-email-form" onSubmit={onSubmit}>
-          <label className="notion-share-email-field">
-            <span>Recipient email</span>
-            <input
-              type="email"
-              value={recipientEmail}
-              onChange={(event) => onRecipientEmailChange?.(event.target.value)}
-              placeholder="classmate@example.com"
-              autoComplete="email"
-              required
-              autoFocus
-              disabled={isSubmitting}
-            />
-          </label>
-
-          <label className="notion-share-email-field">
-            <span>Short message (optional)</span>
-            <textarea
-              rows={4}
-              maxLength={500}
-              value={message}
-              onChange={(event) => onMessageChange?.(event.target.value)}
-              placeholder="Optional note for your classmate."
-              disabled={isSubmitting}
-            />
-          </label>
-
-          <label className="notion-share-email-field notion-share-email-field-compact">
-            <span>Expiry days (optional)</span>
-            <input
-              type="number"
-              min="1"
-              max="30"
-              step="1"
-              value={expiryDays}
-              onChange={(event) => onExpiryDaysChange?.(event.target.value)}
-              placeholder="Default workspace expiry"
-              disabled={isSubmitting}
-            />
-          </label>
-
-          <p className="notion-settings-help">
-            The recipient will land on the existing shared-note route and keep the same access limits as a normal
-            StudyHub share link.
-          </p>
-
-          <div className="notion-modal-actions">
-            <button type="button" className="btn" onClick={onClose} disabled={isSubmitting}>
-              Cancel
-            </button>
-            <button type="submit" className="btn btn-primary" disabled={isSubmitting || !String(recipientEmail || '').trim()}>
-              {isSubmitting ? 'Sending...' : 'Send Email'}
-            </button>
+        {successResult ? (
+          <div className="notion-share-email-success">
+            <div className="notion-share-email-success-card" role="status">
+              <span className="document-share-pill success">Email sent</span>
+              <h4>{sentRecipient ? `Sent to ${sentRecipient}` : 'Shared note email sent.'}</h4>
+              <p>
+                The recipient can open the note from the email button
+                {sentExpiry ? ` until ${sentExpiry}` : ''}.
+              </p>
+            </div>
+            <div className="notion-modal-actions notion-share-email-success-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={onCopyLink}
+                disabled={!sentShareUrl}
+                title={sentShareUrl ? 'Copy the shared note link' : 'No share link was returned'}
+              >
+                Copy Link
+              </button>
+              {canManageLinks && (
+                <button type="button" className="btn" onClick={onManageLinksToggle}>
+                  {manageLinksOpen ? 'Hide Links' : 'Manage Links'}
+                </button>
+              )}
+              <button type="button" className="btn" onClick={onSendAnother}>
+                Send Another
+              </button>
+              <button type="button" className="btn btn-primary" onClick={onClose}>
+                Done
+              </button>
+            </div>
           </div>
-        </form>
+        ) : (
+          <form className="notion-share-email-form" onSubmit={onSubmit}>
+            <label className="notion-share-email-field">
+              <span>Recipient email</span>
+              <input
+                type="email"
+                value={recipientEmail}
+                onChange={(event) => onRecipientEmailChange?.(event.target.value)}
+                placeholder="classmate@example.com"
+                autoComplete="email"
+                required
+                autoFocus
+                disabled={isSubmitting}
+              />
+            </label>
+
+            <label className="notion-share-email-field">
+              <span>Short message (optional)</span>
+              <textarea
+                rows={4}
+                maxLength={500}
+                value={message}
+                onChange={(event) => onMessageChange?.(event.target.value)}
+                placeholder="Optional note for your classmate."
+                disabled={isSubmitting}
+              />
+            </label>
+
+            <label className="notion-share-email-field notion-share-email-field-compact">
+              <span>Expiry days (optional)</span>
+              <input
+                type="number"
+                min="1"
+                max="30"
+                step="1"
+                value={expiryDays}
+                onChange={(event) => onExpiryDaysChange?.(event.target.value)}
+                placeholder="Default workspace expiry"
+                disabled={isSubmitting}
+              />
+            </label>
+
+            <p className="notion-settings-help">
+              The recipient lands on the existing shared-note route and keeps the same access limits as a normal
+              StudyHub share link.
+            </p>
+
+            <div className="notion-modal-actions">
+              {canManageLinks && (
+                <button type="button" className="btn" onClick={onManageLinksToggle} disabled={isSubmitting}>
+                  {manageLinksOpen ? 'Hide Links' : `Manage Links${shareLinksCount ? ` (${shareLinksCount})` : ''}`}
+                </button>
+              )}
+              <button type="button" className="btn" onClick={onClose} disabled={isSubmitting}>
+                Cancel
+              </button>
+              <button type="submit" className="btn btn-primary" disabled={isSubmitting || !String(recipientEmail || '').trim()}>
+                {isSubmitting ? 'Sending...' : 'Send Email'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {canManageLinks && manageLinksOpen && manageLinksContent && (
+          <div className="notion-share-email-manage">
+            {manageLinksContent}
+          </div>
+        )}
       </section>
     </div>
   );
