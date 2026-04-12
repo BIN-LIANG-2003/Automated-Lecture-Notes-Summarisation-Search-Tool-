@@ -1,26 +1,29 @@
 import { expect, test } from '@playwright/test';
 
-async function loginAsAlice(page) {
+async function loginAs(page, username = 'alice') {
   await page.goto('/#/login');
   const loginField = page.locator('#login-username');
   if (await loginField.isVisible().catch(() => false)) {
-    await loginField.fill('alice');
+    await loginField.fill(username);
     await page.locator('#login-password').fill('password123');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
     await page.waitForURL('**/#/');
   } else {
     await page.waitForURL('**/#/');
   }
+  await expect(page.getByRole('button', { name: 'Feedback' })).toBeVisible();
 }
 
 test('private feedback flow supports user submission and admin public update', async ({ page }) => {
-  await loginAsAlice(page);
+  await loginAs(page, 'alice');
 
   await page.getByRole('button', { name: 'Feedback' }).click();
   const feedbackModal = page.getByRole('dialog', { name: 'Help improve StudyHub' });
   await expect(feedbackModal).toBeVisible();
   await feedbackModal.getByLabel('Type').selectOption('ui_usability');
   await feedbackModal.getByLabel('Priority').selectOption('high');
+  await feedbackModal.getByLabel('Title').fill('Upload OCR duplicate');
+  await expect(feedbackModal.getByText('Upload OCR duplicate smoke')).toBeVisible();
   await feedbackModal.getByLabel('Title').fill('Playwright feedback smoke');
   await feedbackModal.getByLabel('Description').fill('Feedback modal should submit and appear in private history.');
   await feedbackModal.locator('form').getByRole('button', { name: 'Submit Feedback' }).click();
@@ -49,4 +52,13 @@ test('private feedback flow supports user submission and admin public update', a
   await reopenedModal.getByText('Playwright feedback smoke').click();
   await expect(reopenedModal).toContainText('Resolved');
   await expect(reopenedModal).toContainText('Resolved in the Playwright smoke test.');
+});
+
+test('non-admin user sees a clean access denied state for admin feedback route', async ({ page }) => {
+  await loginAs(page, 'bob');
+  await page.goto('/#/admin/feedback');
+  await page.waitForURL('**/#/admin/feedback');
+
+  await expect(page.getByRole('heading', { name: 'Feedback Admin Access Required' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Feedback Inbox' })).toHaveCount(0);
 });

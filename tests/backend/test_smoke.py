@@ -793,6 +793,78 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(mine_response.status_code, 200)
         self.assertEqual(mine_response.get_json()['total'], 1)
 
+    @patch('backend.feedback_service.send_resend_email', return_value=(True, ''))
+    def test_feedback_similar_returns_safe_cross_user_suggestions(self, _mock_send_email):
+        self._insert_user('bob', 'bob@example.com')
+        bob_response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers('bob'),
+            json={
+                'type': 'upload_ocr',
+                'title': 'Upload OCR duplicate smoke',
+                'description': 'Bob private reproduction details should not be exposed in similar suggestions.',
+                'priority': 'medium',
+                'page_path': '/#/private-bob-page',
+            },
+        )
+        self.assertEqual(bob_response.status_code, 201)
+
+        response = self.client.get(
+            '/api/feedback/similar?q=Upload OCR duplicate',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(response.status_code, 200)
+        items = response.get_json().get('items') or []
+        self.assertTrue(items)
+        suggestion = next(
+            (item for item in items if item.get('title') == 'Upload OCR duplicate smoke'),
+            None,
+        )
+        self.assertIsNotNone(suggestion)
+        self.assertEqual(suggestion.get('type'), 'upload_ocr')
+        self.assertEqual(suggestion.get('status'), 'new')
+        self.assertFalse(suggestion.get('is_own'))
+        self.assertIn('id', suggestion)
+        self.assertNotIn('username', suggestion)
+        self.assertNotIn('user_email_snapshot', suggestion)
+        self.assertNotIn('page_path', suggestion)
+        self.assertNotIn('events', suggestion)
+        self.assertEqual(suggestion.get('preview'), '')
+
+    @patch('backend.feedback_service.FEEDBACK_ADMIN_USERNAMES', 'admin')
+    @patch('backend.feedback_service.send_resend_email', return_value=(False, 'simulated email failure'))
+    def test_feedback_status_update_persists_when_notification_email_fails(self, _mock_send_email):
+        self._insert_user('admin', 'admin@example.com')
+        submit_response = self.client.post(
+            '/api/feedback',
+            headers=self._auth_headers(),
+            json={
+                'type': 'bug_report',
+                'title': 'Status failure persistence smoke',
+                'description': 'Status changes should persist even when notification email fails.',
+                'priority': 'medium',
+            },
+        )
+        self.assertEqual(submit_response.status_code, 201)
+        feedback_id = submit_response.get_json()['item']['id']
+
+        status_response = self.client.patch(
+            f'/api/admin/feedback/{feedback_id}',
+            headers=self._auth_headers('admin'),
+            json={'status': 'resolved'},
+        )
+        self.assertEqual(status_response.status_code, 200)
+        self.assertEqual(status_response.get_json()['item']['status'], 'resolved')
+
+        user_detail = self.client.get(f'/api/feedback/{feedback_id}', headers=self._auth_headers())
+        self.assertEqual(user_detail.status_code, 200)
+        item = user_detail.get_json()['item']
+        self.assertEqual(item['status'], 'resolved')
+        self.assertIn(
+            'status_changed',
+            [event['event_type'] for event in item.get('events') or []],
+        )
+
 
 if __name__ == '__main__':
     unittest.main()

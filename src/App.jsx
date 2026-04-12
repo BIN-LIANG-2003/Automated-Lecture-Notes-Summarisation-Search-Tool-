@@ -5,6 +5,7 @@ import {
   fetchCurrentSession,
   readStoredAuthSession,
 } from './lib/authSession.js';
+import { loadFeedbackConfig } from './lib/feedback.js';
 
 const loadHomePage = () => import('./pages/Home.jsx');
 const loadAuthPage = () => import('./pages/Auth.jsx');
@@ -161,6 +162,60 @@ function RouteSessionGate({ requireAuth = false, children }) {
   if (!requireAuth && sessionState.authenticated) {
     return <Navigate to="/" replace />;
   }
+  return children;
+}
+
+function FeedbackAdminGate({ children }) {
+  const [adminState, setAdminState] = useState({
+    checking: true,
+    allowed: false,
+    error: '',
+  });
+
+  useEffect(() => {
+    let cancelled = false;
+    setAdminState({ checking: true, allowed: false, error: '' });
+    loadFeedbackConfig()
+      .then((payload) => {
+        if (cancelled) return;
+        setAdminState({
+          checking: false,
+          allowed: Boolean(payload?.is_admin),
+          error: '',
+        });
+      })
+      .catch((error) => {
+        if (cancelled) return;
+        setAdminState({
+          checking: false,
+          allowed: false,
+          error: error?.message || 'Could not verify feedback admin access.',
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (adminState.checking) {
+    return <div className="auth-page">Checking feedback admin access...</div>;
+  }
+
+  if (!adminState.allowed) {
+    return (
+      <main className="auth-page studyhub-admin-denied" role="main">
+        <h1>Feedback Admin Access Required</h1>
+        <p>
+          This inbox is only available to usernames listed in FEEDBACK_ADMIN_USERNAMES.
+          {adminState.error ? ` ${adminState.error}` : ''}
+        </p>
+        <a className="btn btn-primary" href="#/">
+          Return to StudyHub
+        </a>
+      </main>
+    );
+  }
+
   return children;
 }
 
@@ -326,7 +381,9 @@ export default function App() {
               path="/admin/feedback"
               element={
                 <RouteSessionGate requireAuth>
-                  <AdminFeedbackPage />
+                  <FeedbackAdminGate>
+                    <AdminFeedbackPage />
+                  </FeedbackAdminGate>
                 </RouteSessionGate>
               }
             />

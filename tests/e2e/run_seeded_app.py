@@ -39,6 +39,28 @@ def seed_app_data():
         )
         conn.execute(
             '''
+            INSERT INTO users (
+                username,
+                email,
+                password_hash,
+                email_verified,
+                email_verification_token,
+                email_verification_expires_at,
+                verified_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                'bob',
+                'bob@example.com',
+                generate_password_hash('password123', method='pbkdf2:sha256'),
+                1,
+                None,
+                None,
+                now_iso,
+            ),
+        )
+        conn.execute(
+            '''
             INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
             VALUES (?, ?, ?, ?, ?, ?, ?)
             ''',
@@ -107,6 +129,46 @@ def seed_app_data():
                 '2026-12-31T23:59:59',
                 now_iso,
                 '',
+            ),
+        )
+        conn.execute(
+            '''
+            INSERT INTO feedback_items (
+                username,
+                user_email_snapshot,
+                type,
+                title,
+                description,
+                priority,
+                status,
+                page_path,
+                workspace_id,
+                document_id,
+                user_agent,
+                assigned_to,
+                labels,
+                created_at,
+                updated_at,
+                resolved_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                'bob',
+                'bob@example.com',
+                'upload_ocr',
+                'Upload OCR duplicate smoke',
+                'Seeded private duplicate suggestion for Playwright coverage.',
+                'medium',
+                'new',
+                '/#/private-bob-page',
+                'ws-e2e',
+                None,
+                'seeded-playwright',
+                '',
+                '',
+                now_iso,
+                now_iso,
+                None,
             ),
         )
         conn.commit()

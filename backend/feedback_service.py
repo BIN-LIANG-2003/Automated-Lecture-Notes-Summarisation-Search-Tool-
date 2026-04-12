@@ -347,6 +347,23 @@ def _serialize_feedback_item(conn, row, *, include_private=False, include_events
     return payload
 
 
+def _serialize_similar_feedback(row, current_username):
+    item = row_to_dict(row) or {}
+    is_own = str(item.get('username') or '').strip() == str(current_username or '').strip()
+    description = _clean_text(item.get('description'), 180) if is_own else ''
+    if len(description) > 140:
+        description = f'{description[:137].rstrip()}...'
+    return {
+        'id': parse_int(item.get('id'), 0, 0),
+        'title': str(item.get('title') or '').strip(),
+        'type': str(item.get('type') or 'other').strip(),
+        'type_label': FEEDBACK_TYPES.get(str(item.get('type') or '').strip(), 'Other'),
+        'status': str(item.get('status') or 'new').strip(),
+        'preview': description,
+        'is_own': is_own,
+    }
+
+
 def _record_email_event(feedback_id, *, ok, target_email, context, actor_username='system'):
     conn = get_db_connection()
     if not conn:
@@ -601,17 +618,19 @@ def similar_feedback():
             '''
             SELECT *
             FROM feedback_items
-            WHERE username = ?
-              AND status NOT IN ('resolved', 'closed')
+            WHERE status NOT IN ('resolved', 'closed')
               AND (LOWER(title) LIKE ? OR LOWER(description) LIKE ?)
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 3
+            ORDER BY
+              CASE WHEN LOWER(title) LIKE ? THEN 0 ELSE 1 END,
+              updated_at DESC,
+              id DESC
+            LIMIT 5
             ''',
-            (username, like, like),
+            (like, like, like),
         ).fetchall()
         return jsonify({
             'items': [
-                _serialize_feedback_item(conn, row, include_private=False, include_events=False)
+                _serialize_similar_feedback(row, username)
                 for row in rows
             ]
         }), 200

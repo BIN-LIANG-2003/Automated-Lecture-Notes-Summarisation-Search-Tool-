@@ -6474,6 +6474,22 @@ body.notion-home-body .skip-link:focus-visible{
   text-align:left;
 }
 
+.studyhub-feedback-similar-title{
+  color:#24344f;
+  font-weight:700;
+}
+
+.studyhub-feedback-similar li > div{
+  display:grid;
+  gap:3px;
+}
+
+.studyhub-feedback-similar li p{
+  margin:0;
+  color:#667084;
+  font-size:12px;
+}
+
 .studyhub-feedback-list{
   display:grid;
   gap:10px;

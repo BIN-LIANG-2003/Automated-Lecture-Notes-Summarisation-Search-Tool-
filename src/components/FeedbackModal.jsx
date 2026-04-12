@@ -258,27 +258,34 @@ export default function FeedbackModal({
             {!!titleLongEnough && (
               <div className="studyhub-feedback-similar" aria-live="polite">
                 <strong>Similar feedback</strong>
-                {similarLoading && <p className="muted tiny">Checking your existing open feedback...</p>}
+                {similarLoading && <p className="muted tiny">Checking similar open feedback...</p>}
                 {!similarLoading && similarItems.length > 0 && (
                   <ul>
                     {similarItems.map((item) => (
                       <li key={item.id}>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setActiveTab('mine');
-                            void selectItem(item);
-                          }}
-                        >
-                          {item.title}
-                        </button>
+                        <div>
+                          {item.is_own ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setActiveTab('mine');
+                                void selectItem(item);
+                              }}
+                            >
+                              {item.title}
+                            </button>
+                          ) : (
+                            <span className="studyhub-feedback-similar-title">{item.title}</span>
+                          )}
+                          {item.preview && <p>{item.preview}</p>}
+                        </div>
                         <span>{item.status}</span>
                       </li>
                     ))}
                   </ul>
                 )}
                 {!similarLoading && !similarItems.length && (
-                  <p className="muted tiny">No similar open feedback found in your history.</p>
+                  <p className="muted tiny">No similar open feedback found.</p>
                 )}
               </div>
             )}

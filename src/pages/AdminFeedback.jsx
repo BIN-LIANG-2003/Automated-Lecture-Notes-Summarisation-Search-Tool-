@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import AdminFeedbackTable from '../components/AdminFeedbackTable.jsx';
 import FeedbackDetailPanel from '../components/FeedbackDetailPanel.jsx';
@@ -37,6 +37,7 @@ export default function AdminFeedbackPage() {
   const [publicReplyDraft, setPublicReplyDraft] = useState('');
   const [internalNoteDraft, setInternalNoteDraft] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
+  const inboxLoadedOnceRef = useRef(false);
   const {
     toastState,
     confirmDialogState,
@@ -50,11 +51,11 @@ export default function AdminFeedbackPage() {
     return Number(params.get('feedback')) || 0;
   }, [location.search]);
 
-  const loadInbox = async () => {
+  const loadInbox = async (nextFilters = filters) => {
     setLoading(true);
     setError('');
     try {
-      const payload = await listAdminFeedback({ ...filters, limit: 60, offset: 0 });
+      const payload = await listAdminFeedback({ ...nextFilters, limit: 60, offset: 0 });
       setItems(Array.isArray(payload.items) ? payload.items : []);
       setTotal(Number(payload.total) || 0);
     } catch (err) {
@@ -83,13 +84,12 @@ export default function AdminFeedbackPage() {
   };
 
   useEffect(() => {
-    void loadInbox();
-  }, []);
-
-  useEffect(() => {
+    const nextFilters = { ...filters };
+    const delay = inboxLoadedOnceRef.current ? 250 : 0;
+    inboxLoadedOnceRef.current = true;
     const timeoutId = window.setTimeout(() => {
-      void loadInbox();
-    }, 250);
+      void loadInbox(nextFilters);
+    }, delay);
     return () => window.clearTimeout(timeoutId);
   }, [filters.q, filters.status, filters.type, filters.priority]);
 
