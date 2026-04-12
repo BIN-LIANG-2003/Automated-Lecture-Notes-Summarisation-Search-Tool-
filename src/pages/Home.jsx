@@ -1,6 +1,7 @@
 import { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
+import SendNoteByEmailModal from '../components/SendNoteByEmailModal.jsx';
 import FeedbackWidget from '../components/FeedbackWidget.jsx';
 import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
@@ -36,6 +37,7 @@ import {
   listDocumentShareLinks,
   revokeAllDocumentShareLinks,
   revokeDocumentShareLink,
+  sendDocumentShareLinkEmail,
 } from '../lib/shareLinks.js';
 import {
   buildSummaryExportFilename,
@@ -87,6 +89,13 @@ const SUGGESTED_CATEGORIES = [
 ];
 const SUMMARY_LENGTH_OPTIONS = ['short', 'medium', 'long'];
 const LINK_SHARING_MODES = ['restricted', 'workspace', 'public'];
+const getLinkSharingModeLabel = (mode) => {
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (safeMode === 'public') return 'Anyone With Link';
+  if (safeMode === 'workspace') return 'Workspace Members';
+  if (safeMode === 'restricted') return 'Restricted';
+  return 'Workspace Members';
+};
 const HOME_TAB_OPTIONS = ['home', 'files'];
 const SIDEBAR_DENSITY_OPTIONS = [
   { value: 'comfortable', label: 'Comfortable' },
@@ -1210,6 +1219,13 @@ export default function HomePage() {
   const [activeDocShareLinksError, setActiveDocShareLinksError] = useState('');
   const [activeDocShareActionLoadingId, setActiveDocShareActionLoadingId] = useState(0);
   const [activeDocShareActionLoadingType, setActiveDocShareActionLoadingType] = useState('');
+  const [activeDocShareEmailOpen, setActiveDocShareEmailOpen] = useState(false);
+  const [activeDocShareModalMode, setActiveDocShareModalMode] = useState('send');
+  const [activeDocShareEmailRecipient, setActiveDocShareEmailRecipient] = useState('');
+  const [activeDocShareEmailMessage, setActiveDocShareEmailMessage] = useState('');
+  const [activeDocShareEmailExpiryDays, setActiveDocShareEmailExpiryDays] = useState('');
+  const [activeDocShareEmailResult, setActiveDocShareEmailResult] = useState(null);
+  const [activeDocShareEmailSending, setActiveDocShareEmailSending] = useState(false);
   const docPaneVisible = activeDocLoading || Boolean(activeDocError) || Boolean(activeDoc);
   const [extractedText, setExtractedText] = useState('');
   const [analysisResult, setAnalysisResult] = useState(null);
@@ -2499,12 +2515,26 @@ export default function HomePage() {
     setWorkspaceMenuOpen(false);
   };
 
+  const getDefaultActiveDocShareExpiryDays = () =>
+    String(clamp(Number(activeWorkspaceSettings.default_share_expiry_days) || 7, 1, 30));
+
+  const resetActiveDocShareEmailDraft = () => {
+    setActiveDocShareEmailRecipient('');
+    setActiveDocShareEmailMessage('');
+    setActiveDocShareEmailExpiryDays(getDefaultActiveDocShareExpiryDays());
+    setActiveDocShareEmailResult(null);
+  };
+
   const clearActiveDocShareState = () => {
     setActiveDocShareLinks([]);
     setActiveDocShareLinksLoading(false);
     setActiveDocShareLinksError('');
     setActiveDocShareActionLoadingId(0);
     setActiveDocShareActionLoadingType('');
+    setActiveDocShareEmailOpen(false);
+    setActiveDocShareModalMode('send');
+    setActiveDocShareEmailSending(false);
+    resetActiveDocShareEmailDraft();
   };
 
   const removeDocumentFromClientState = (docId) => {
@@ -4063,7 +4093,10 @@ export default function HomePage() {
 
   const handleCopyExistingShareLink = async (shareUrl) => {
     const value = String(shareUrl || '').trim();
-    if (!value) return;
+    if (!value) {
+      showToast('No share link is available to copy.', 'warning');
+      return;
+    }
     try {
       await copyTextToClipboard(value);
       showWorkspaceToast('sharing', 'Share link copied.', 'success');
@@ -4072,17 +4105,112 @@ export default function HomePage() {
     }
   };
 
-  const handleShareDocument = async (doc) => {
+  const getShareDisabledReasonForDoc = (doc = activeDoc) => {
     if (activeWorkspaceSettings.link_sharing_mode === 'restricted') {
-      showToast('Link sharing is restricted. Change this in Workspace Settings.', 'warning');
-      return;
-    }
-    if (!canCurrentUserManageShareLinks) {
-      showToast('Only workspace owner can create share links in current settings.', 'warning');
-      return;
+      return 'Link sharing is restricted. Change this in Workspace Settings.';
     }
     if (!username) {
-      showToast('Please sign in to create a share link.', 'warning');
+      return 'Please sign in to share this note.';
+    }
+    if (!canCurrentUserManageShareLinks) {
+      return 'Only workspace owner can create share links in current settings.';
+    }
+    const docId = Number(doc?.id);
+    if (!Number.isFinite(docId) || docId <= 0) {
+      return 'Open a note before sharing.';
+    }
+    return '';
+  };
+
+  const closeActiveDocShareEmailModal = () => {
+    if (activeDocShareEmailSending) return;
+    setActiveDocShareEmailOpen(false);
+    setActiveDocShareModalMode('send');
+    resetActiveDocShareEmailDraft();
+  };
+
+  const openActiveDocShareSendModal = () => {
+    const disabledReason = getShareDisabledReasonForDoc(activeDoc);
+    if (disabledReason) {
+      showToast(disabledReason, 'warning');
+      return;
+    }
+    resetActiveDocShareEmailDraft();
+    setActiveDocShareModalMode('send');
+    setActiveDocShareEmailOpen(true);
+  };
+
+  const openActiveDocShareManagerInModal = () => {
+    const disabledReason = getShareDisabledReasonForDoc(activeDoc);
+    if (disabledReason) {
+      showToast(disabledReason, 'warning');
+      return;
+    }
+    resetActiveDocShareEmailDraft();
+    setActiveDocShareModalMode('manage');
+    setActiveDocShareEmailOpen(true);
+    void refreshActiveDocShareLinks(activeDoc.id);
+  };
+
+  const handleActiveDocShareSendAnother = () => {
+    resetActiveDocShareEmailDraft();
+    setActiveDocShareModalMode('send');
+  };
+
+  const handleSendActiveDocByEmail = async (event) => {
+    event?.preventDefault?.();
+    const disabledReason = getShareDisabledReasonForDoc(activeDoc);
+    if (disabledReason) {
+      showToast(disabledReason, 'warning');
+      return;
+    }
+
+    const recipientEmail = String(activeDocShareEmailRecipient || '').trim();
+    if (!recipientEmail) {
+      showToast('Please enter a recipient email address.', 'warning');
+      return;
+    }
+    if (!EMAIL_REGEX.test(recipientEmail)) {
+      showToast('Please enter a valid recipient email address.', 'warning');
+      return;
+    }
+
+    setActiveDocShareEmailSending(true);
+    try {
+      const payload = await sendDocumentShareLinkEmail(activeDoc.id, {
+        username,
+        recipientEmail,
+        message: activeDocShareEmailMessage,
+        expiryDays: activeDocShareEmailExpiryDays,
+      });
+      await refreshActiveDocShareLinks(activeDoc.id);
+      setActiveDocShareEmailResult(payload);
+      setActiveDocShareModalMode('success');
+      showWorkspaceToast(
+        'sharing',
+        payload.message || `Shared note email sent to ${recipientEmail}.`,
+        'success'
+      );
+    } catch (err) {
+      showToast(err.message || 'Failed to send note by email.', 'error');
+    } finally {
+      setActiveDocShareEmailSending(false);
+    }
+  };
+
+  const handleCopySentActiveDocShareLink = async () => {
+    const shareUrl = String(activeDocShareEmailResult?.share?.share_url || '').trim();
+    if (!shareUrl) {
+      showToast('No share link was returned for this email.', 'warning');
+      return;
+    }
+    await handleCopyExistingShareLink(shareUrl);
+  };
+
+  const handleShareDocument = async (doc) => {
+    const disabledReason = getShareDisabledReasonForDoc(doc);
+    if (disabledReason) {
+      showToast(disabledReason, 'warning');
       return;
     }
     const docId = Number(doc?.id);
@@ -5707,6 +5835,109 @@ export default function HomePage() {
     }
   };
 
+  const activeDocShareModeLabel = getLinkSharingModeLabel(activeWorkspaceSettings.link_sharing_mode);
+  const activeDocShareDisabledReason = getShareDisabledReasonForDoc(activeDoc);
+  const activeDocShareHint = activeDocShareDisabledReason || 'Send this note by email or create a share link.';
+  const activeDocCanShowShareManagement = Boolean(username && canCurrentUserManageShareLinks && activeDoc?.id);
+  const activeDocShareEmailExpiryLabel = activeDocShareEmailResult?.expires_at
+    ? formatDateTimeLabel(activeDocShareEmailResult.expires_at)
+    : '';
+  const activeDocShareLinksManagerContent = activeDocCanShowShareManagement ? (
+    <section className="document-detail-share-links-panel notion-home-share-links-panel" aria-label="Share links management">
+      <div className="notion-doc-share-manager-head">
+        <div>
+          <h3>Manage Links</h3>
+          <p className="muted tiny">Advanced access controls stay here so sending remains the default workflow.</p>
+        </div>
+        <div className="notion-doc-share-actions">
+          <button
+            type="button"
+            className="btn btn-delete"
+            onClick={handleRevokeAllActiveDocShareLinks}
+            disabled={
+              activeDocShareLinksLoading ||
+              activeDocShareActionLoadingId !== 0 ||
+              !activeDocShareLinks.length
+            }
+          >
+            {activeDocShareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
+          </button>
+          <button
+            type="button"
+            className="btn btn-delete"
+            onClick={handleDeleteInactiveActiveDocShareLinks}
+            disabled={
+              activeDocShareLinksLoading ||
+              activeDocShareActionLoadingId !== 0 ||
+              !activeDocShareLinks.some((item) => !isActiveShareLink(item))
+            }
+          >
+            {activeDocShareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => activeDoc?.id && refreshActiveDocShareLinks(activeDoc.id)}
+            disabled={activeDocShareLinksLoading || activeDocShareActionLoadingId !== 0}
+          >
+            Refresh
+          </button>
+        </div>
+      </div>
+      {activeDocShareLinksError && (
+        <p className="muted tiny">Load failed: {activeDocShareLinksError}</p>
+      )}
+      {activeDocShareLinksLoading && !activeDocShareLinksError && (
+        <p className="muted tiny">Loading share links...</p>
+      )}
+      {!activeDocShareLinksLoading && !activeDocShareLinksError && !activeDocShareLinks.length && (
+        <p className="muted tiny">No share links yet. Send this note or copy a link to create one.</p>
+      )}
+      {activeDocShareLinks.length > 0 && (
+        <ul className="notion-doc-share-list">
+          {activeDocShareLinks.map((item, index) => {
+            const status = String(item?.status || 'unknown').toLowerCase();
+            const isActive = isActiveShareLink(item);
+            const loading = Number(item?.id) === activeDocShareActionLoadingId;
+            return (
+              <li key={`doc-share-${item?.id || item?.token || index}`}>
+                <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
+                  {item?.share_url || 'Invalid link'}
+                </a>
+                <span className="notion-doc-share-meta">
+                  Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
+                </span>
+                <div className="notion-doc-share-actions">
+                  <button
+                    type="button"
+                    className="btn"
+                    onClick={() => handleCopyExistingShareLink(item?.share_url)}
+                  >
+                    Copy
+                  </button>
+                  <button
+                    type="button"
+                    className="btn btn-delete"
+                    onClick={() =>
+                      isActive
+                        ? handleRevokeActiveDocShareLink(item)
+                        : handleDeleteActiveDocShareLink(item)
+                    }
+                    disabled={loading || activeDocShareActionLoadingId < 0}
+                  >
+                    {loading
+                      ? (activeDocShareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
+                      : (isActive ? 'Revoke' : 'Delete')}
+                  </button>
+                </div>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </section>
+  ) : null;
+
   useEffect(() => {
     const handleShortcuts = (event) => {
       const key = String(event.key || '').toLowerCase();
@@ -5719,7 +5950,8 @@ export default function HomePage() {
         workspaceInviteOpen ||
         accountManagerOpen ||
         trashModalOpen ||
-        shortcutsOpen;
+        shortcutsOpen ||
+        activeDocShareEmailOpen;
 
       if (blockingModalOpen && key !== 'escape') return;
       if (typing && !(withModifier && key === 'k')) return;
@@ -5765,6 +5997,7 @@ export default function HomePage() {
     accountManagerOpen,
     trashModalOpen,
     shortcutsOpen,
+    activeDocShareEmailOpen,
   ]);
 
   return (
@@ -6034,15 +6267,32 @@ export default function HomePage() {
                         <button
                           type="button"
                           className="btn"
+                          onClick={openActiveDocShareSendModal}
+                          disabled={Boolean(activeDocShareDisabledReason)}
+                          title={activeDocShareHint}
+                        >
+                          Send
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
                           onClick={() => handleShareDocument(activeDoc)}
-                          disabled={
-                            activeWorkspaceSettings.link_sharing_mode === 'restricted' ||
-                            !username ||
-                            !canCurrentUserManageShareLinks
-                          }
+                          disabled={Boolean(activeDocShareDisabledReason)}
+                          title={activeDocShareHint}
                         >
                           Copy Link
                         </button>
+                        {username && canCurrentUserManageShareLinks && (
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={openActiveDocShareManagerInModal}
+                            disabled={Boolean(activeDocShareDisabledReason)}
+                            title="Review, copy, revoke, or delete existing share links"
+                          >
+                            Manage Links
+                          </button>
+                        )}
                         <button
                           type="button"
                           className="edit-tags"
@@ -6083,96 +6333,45 @@ export default function HomePage() {
                     </header>
                   )}
 
-                  {username && canCurrentUserManageShareLinks && (
-                    <section className="notion-doc-share-manager" aria-label="Document share links">
-                      <div className="notion-doc-share-manager-head">
-                        <h3>Shared Links</h3>
-                        <div className="notion-doc-share-actions">
-                          <button
-                            type="button"
-                            className="btn btn-delete"
-                            onClick={handleRevokeAllActiveDocShareLinks}
-                            disabled={
-                              activeDocShareLinksLoading ||
-                              activeDocShareActionLoadingId !== 0 ||
-                              !activeDocShareLinks.length
-                            }
-                          >
-                            {activeDocShareActionLoadingId === -1 ? 'Revoking...' : 'Revoke All'}
-                          </button>
-                          <button
-                            type="button"
-                            className="btn btn-delete"
-                            onClick={handleDeleteInactiveActiveDocShareLinks}
-                            disabled={
-                              activeDocShareLinksLoading ||
-                              activeDocShareActionLoadingId !== 0 ||
-                              !activeDocShareLinks.some((item) => !isActiveShareLink(item))
-                            }
-                          >
-                            {activeDocShareActionLoadingId === -2 ? 'Deleting Inactive...' : 'Delete Inactive'}
-                          </button>
+                  {!showOuterDocHeader && (
+                    <section className="notion-inline-share-strip" aria-label="Share this note">
+                      <div>
+                        <strong>Share this note</strong>
+                        <p className="muted tiny">
+                          Send by email first. Link controls stay in Manage Links when needed.
+                        </p>
+                      </div>
+                      <div className="notion-doc-share-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={openActiveDocShareSendModal}
+                          disabled={Boolean(activeDocShareDisabledReason)}
+                          title={activeDocShareHint}
+                        >
+                          Send
+                        </button>
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => handleShareDocument(activeDoc)}
+                          disabled={Boolean(activeDocShareDisabledReason)}
+                          title={activeDocShareHint}
+                        >
+                          Copy Link
+                        </button>
+                        {username && canCurrentUserManageShareLinks && (
                           <button
                             type="button"
                             className="btn"
-                            onClick={() => refreshActiveDocShareLinks(activeDoc.id)}
-                            disabled={activeDocShareLinksLoading || activeDocShareActionLoadingId !== 0}
+                            onClick={openActiveDocShareManagerInModal}
+                            disabled={Boolean(activeDocShareDisabledReason)}
+                            title="Review, copy, revoke, or delete existing share links"
                           >
-                            Refresh
+                            Manage Links
                           </button>
-                        </div>
+                        )}
                       </div>
-                      {activeDocShareLinksError && (
-                        <p className="muted tiny">Load failed: {activeDocShareLinksError}</p>
-                      )}
-                      {activeDocShareLinksLoading && !activeDocShareLinksError && (
-                        <p className="muted tiny">Loading share links...</p>
-                      )}
-                      {!activeDocShareLinksLoading && !activeDocShareLinksError && !activeDocShareLinks.length && (
-                        <p className="muted tiny">No links yet. Use "Copy Link" to create one.</p>
-                      )}
-                      {activeDocShareLinks.length > 0 && (
-                        <ul className="notion-doc-share-list">
-                          {activeDocShareLinks.map((item, index) => {
-                            const status = String(item?.status || 'unknown').toLowerCase();
-                            const isActive = isActiveShareLink(item);
-                            const loading = Number(item?.id) === activeDocShareActionLoadingId;
-                            return (
-                              <li key={`doc-share-${item?.id || item?.token || index}`}>
-                                <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
-                                  {item?.share_url || 'Invalid link'}
-                                </a>
-                                <span className="notion-doc-share-meta">
-                                  Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
-                                </span>
-                                <div className="notion-doc-share-actions">
-                                  <button
-                                    type="button"
-                                    className="btn"
-                                    onClick={() => handleCopyExistingShareLink(item?.share_url)}
-                                  >
-                                    Copy
-                                  </button>
-                                  <button
-                                    type="button"
-                                    className="btn btn-delete"
-                                    onClick={() =>
-                                      isActive
-                                        ? handleRevokeActiveDocShareLink(item)
-                                        : handleDeleteActiveDocShareLink(item)
-                                    }
-                                    disabled={loading || activeDocShareActionLoadingId < 0}
-                                  >
-                                    {loading
-                                      ? (activeDocShareActionLoadingType === 'delete' ? 'Deleting...' : 'Revoking...')
-                                      : (isActive ? 'Revoke' : 'Delete')}
-                                  </button>
-                                </div>
-                              </li>
-                            );
-                          })}
-                        </ul>
-                      )}
                     </section>
                   )}
                   {username && !canCurrentUserManageShareLinks && (
@@ -7253,6 +7452,31 @@ export default function HomePage() {
         accept="image/*"
         className="sr-only"
         onChange={handleOcrImageChange}
+      />
+
+      <SendNoteByEmailModal
+        open={activeDocShareEmailOpen}
+        mode={activeDocShareModalMode}
+        onClose={closeActiveDocShareEmailModal}
+        onSubmit={handleSendActiveDocByEmail}
+        onSendAnother={handleActiveDocShareSendAnother}
+        onCopyLink={handleCopySentActiveDocShareLink}
+        onManageLinksOpen={openActiveDocShareManagerInModal}
+        onBackToSend={handleActiveDocShareSendAnother}
+        recipientEmail={activeDocShareEmailRecipient}
+        onRecipientEmailChange={setActiveDocShareEmailRecipient}
+        message={activeDocShareEmailMessage}
+        onMessageChange={setActiveDocShareEmailMessage}
+        expiryDays={activeDocShareEmailExpiryDays}
+        onExpiryDaysChange={setActiveDocShareEmailExpiryDays}
+        isSubmitting={activeDocShareEmailSending}
+        documentTitle={activeDoc?.title || activeDoc?.filename || 'Untitled Note'}
+        linkModeLabel={activeDocShareModeLabel}
+        successResult={activeDocShareEmailResult}
+        successExpiryLabel={activeDocShareEmailExpiryLabel}
+        manageLinksContent={activeDocShareLinksManagerContent}
+        canManageLinks={activeDocCanShowShareManagement}
+        shareLinksCount={activeDocShareLinks.length}
       />
 
       <SummaryResultModal

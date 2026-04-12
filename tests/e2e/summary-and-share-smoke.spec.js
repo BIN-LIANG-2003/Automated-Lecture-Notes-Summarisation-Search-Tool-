@@ -252,6 +252,39 @@ test('files detail pane summarize flow opens the current summary result modal', 
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
 });
 
+test('home embedded reader sharing is send-first and hides old shared links panel', async ({ page }) => {
+  await loginAsAlice(page);
+  await mockDocumentEmailShare(page);
+  await goToMyFiles(page);
+
+  const searchInput = page.locator('#search-input');
+  await searchInput.fill('graph');
+  await searchInput.press('Enter');
+
+  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
+  await expect(graphCard).toBeVisible();
+  await graphCard.getByRole('button', { name: 'Open' }).click();
+  const embeddedReader = page.locator('.document-detail-card');
+  await expect(embeddedReader.getByRole('heading', { name: 'Graph Notes' })).toBeVisible();
+  await expect(embeddedReader.getByRole('heading', { name: 'Shared Links' })).toHaveCount(0);
+
+  await embeddedReader.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(sendModal).toBeVisible();
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
+
+  const successModal = page.getByRole('dialog', { name: 'Note Sent' });
+  await expect(successModal).toBeVisible();
+  await expect(successModal).toContainText('Sent to classmate@example.com');
+  await successModal.getByRole('button', { name: 'Manage Links' }).click();
+
+  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
+  await expect(manageModal).toBeVisible();
+  await expect(manageModal.locator('.document-detail-share-links-panel')).toBeVisible();
+  await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
+});
+
 test('document detail sharing defaults to send-by-email flow', async ({ page }) => {
   await loginAsAlice(page);
   await mockDocumentEmailShare(page);
