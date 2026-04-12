@@ -1,9 +1,12 @@
 export default function SendNoteByEmailModal({
   open = false,
+  mode = 'send',
   onClose,
   onSubmit,
   onSendAnother,
   onCopyLink,
+  onManageLinksOpen,
+  onBackToSend,
   recipientEmail = '',
   onRecipientEmailChange,
   message = '',
@@ -14,21 +17,26 @@ export default function SendNoteByEmailModal({
   documentTitle = '',
   linkModeLabel = '',
   successResult = null,
+  successExpiryLabel = '',
   manageLinksContent = null,
-  manageLinksOpen = false,
-  onManageLinksToggle,
   canManageLinks = false,
   shareLinksCount = 0,
 }) {
   if (!open) return null;
 
+  const safeMode = ['send', 'manage', 'success'].includes(mode) ? mode : 'send';
   const sentRecipient = String(successResult?.recipient_email || recipientEmail || '').trim();
-  const sentExpiry = String(successResult?.expires_at || '').trim();
+  const sentExpiry = String(successExpiryLabel || '').trim();
   const sentShareUrl = String(
     successResult?.share?.share_url ||
     successResult?.shareUrl ||
     ''
   ).trim();
+  const modalTitle = safeMode === 'manage'
+    ? 'Manage Links'
+    : safeMode === 'success'
+      ? 'Note Sent'
+      : 'Send Note';
 
   return (
     <div
@@ -48,9 +56,11 @@ export default function SendNoteByEmailModal({
       >
         <div className="notion-summary-result-head">
           <div>
-            <h3 id="send-note-email-title">{successResult ? 'Note Sent' : 'Send Note'}</h3>
+            <h3 id="send-note-email-title">{modalTitle}</h3>
             <p className="notion-settings-help">
-              StudyHub emails a button that opens <strong>{documentTitle || 'this shared note'}</strong>.
+              {safeMode === 'manage'
+                ? 'Review, copy, revoke, or delete existing shared-note links.'
+                : <>StudyHub emails a button that opens <strong>{documentTitle || 'this shared note'}</strong>.</>}
               {linkModeLabel ? ` Access mode: ${linkModeLabel}.` : ''}
             </p>
           </div>
@@ -67,7 +77,7 @@ export default function SendNoteByEmailModal({
           </button>
         </div>
 
-        {successResult ? (
+        {safeMode === 'success' ? (
           <div className="notion-share-email-success">
             <div className="notion-share-email-success-card" role="status">
               <span className="document-share-pill success">Email sent</span>
@@ -88,14 +98,30 @@ export default function SendNoteByEmailModal({
                 Copy Link
               </button>
               {canManageLinks && (
-                <button type="button" className="btn" onClick={onManageLinksToggle}>
-                  {manageLinksOpen ? 'Hide Links' : 'Manage Links'}
+                <button type="button" className="btn" onClick={onManageLinksOpen}>
+                  Manage Links
                 </button>
               )}
               <button type="button" className="btn" onClick={onSendAnother}>
                 Send Another
               </button>
               <button type="button" className="btn btn-primary" onClick={onClose}>
+                Done
+              </button>
+            </div>
+          </div>
+        ) : safeMode === 'manage' ? (
+          <div className="notion-share-email-manage-mode">
+            {canManageLinks && manageLinksContent ? (
+              manageLinksContent
+            ) : (
+              <p className="muted tiny">Share-link management is not available for this note.</p>
+            )}
+            <div className="notion-modal-actions notion-share-email-manage-actions">
+              <button type="button" className="btn" onClick={onBackToSend} disabled={isSubmitting}>
+                Back to Send
+              </button>
+              <button type="button" className="btn btn-primary" onClick={onClose} disabled={isSubmitting}>
                 Done
               </button>
             </div>
@@ -149,8 +175,8 @@ export default function SendNoteByEmailModal({
 
             <div className="notion-modal-actions">
               {canManageLinks && (
-                <button type="button" className="btn" onClick={onManageLinksToggle} disabled={isSubmitting}>
-                  {manageLinksOpen ? 'Hide Links' : `Manage Links${shareLinksCount ? ` (${shareLinksCount})` : ''}`}
+                <button type="button" className="btn" onClick={onManageLinksOpen} disabled={isSubmitting}>
+                  {`Manage Links${shareLinksCount ? ` (${shareLinksCount})` : ''}`}
                 </button>
               )}
               <button type="button" className="btn" onClick={onClose} disabled={isSubmitting}>
@@ -161,12 +187,6 @@ export default function SendNoteByEmailModal({
               </button>
             </div>
           </form>
-        )}
-
-        {canManageLinks && manageLinksOpen && manageLinksContent && (
-          <div className="notion-share-email-manage">
-            {manageLinksContent}
-          </div>
         )}
       </section>
     </div>

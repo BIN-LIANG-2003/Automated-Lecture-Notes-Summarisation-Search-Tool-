@@ -97,6 +97,28 @@ async function expectMailtoOpen(page) {
   return page.evaluate(() => window.__studyhubWindowOpenCalls[window.__studyhubWindowOpenCalls.length - 1]);
 }
 
+async function mockDocumentEmailShare(page, expectedRecipient = 'classmate@example.com') {
+  await page.route('**/api/documents/1/email-share', async (route) => {
+    const requestBody = route.request().postDataJSON();
+    expect(requestBody.recipient_email).toBe(expectedRecipient);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        sent: true,
+        message: `Shared note email sent to ${expectedRecipient}.`,
+        recipient_email: expectedRecipient,
+        expires_at: '2026-04-19T12:00:00Z',
+        share: {
+          share_url: 'http://127.0.0.1:5001/#/shared/email-share-smoke-token',
+          token: 'email-share-smoke-token',
+          expiry_days: 7,
+        },
+      }),
+    });
+  });
+}
+
 test('files workspace summary center opens summary result modal with export and email actions', async ({ page }) => {
   await seedHomeStorage(page);
   await loginAsAlice(page);
@@ -199,26 +221,7 @@ test('files detail pane summarize flow opens the current summary result modal', 
 
 test('document detail sharing defaults to send-by-email flow', async ({ page }) => {
   await loginAsAlice(page);
-
-  await page.route('**/api/documents/1/email-share', async (route) => {
-    const requestBody = route.request().postDataJSON();
-    expect(requestBody.recipient_email).toBe('classmate@example.com');
-    await route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        sent: true,
-        message: 'Shared note email sent to classmate@example.com.',
-        recipient_email: 'classmate@example.com',
-        expires_at: '2026-04-19T12:00:00',
-        share: {
-          share_url: 'http://127.0.0.1:5001/#/shared/email-share-smoke-token',
-          token: 'email-share-smoke-token',
-          expiry_days: 7,
-        },
-      }),
-    });
-  });
+  await mockDocumentEmailShare(page);
 
   await page.goto('/#/document/1');
   await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
@@ -236,9 +239,59 @@ test('document detail sharing defaults to send-by-email flow', async ({ page }) 
   const successModal = page.getByRole('dialog', { name: 'Note Sent' });
   await expect(successModal).toBeVisible();
   await expect(successModal).toContainText('Sent to classmate@example.com');
+  await expect(successModal).toContainText(/until/i);
+  await expect(successModal).not.toContainText('2026-04-19T12:00:00Z');
   await expect(successModal.getByRole('button', { name: 'Copy Link' })).toBeVisible();
   await expect(successModal.getByRole('button', { name: 'Manage Links' })).toBeVisible();
   await expect(successModal.getByRole('button', { name: 'Send Another' })).toBeVisible();
+
+  await successModal.getByRole('button', { name: 'Manage Links' }).click();
+  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
+  await expect(manageModal).toBeVisible();
+  await expect(manageModal.locator('.document-detail-share-links-panel')).toBeVisible();
+  await expect(manageModal.getByRole('button', { name: 'Refresh' })).toBeVisible();
+  await expect(manageModal.getByRole('button', { name: 'Revoke All' })).toBeVisible();
+  await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
+});
+
+test('document detail send another resets the share email form', async ({ page }) => {
+  await loginAsAlice(page);
+  await mockDocumentEmailShare(page);
+
+  await page.goto('/#/document/1');
+  await page.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(sendModal).toBeVisible();
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByLabel('Short message (optional)').fill('Please review this note before class.');
+  await sendModal.getByLabel('Expiry days (optional)').fill('9');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
+
+  const successModal = page.getByRole('dialog', { name: 'Note Sent' });
+  await expect(successModal).toBeVisible();
+  await successModal.getByRole('button', { name: 'Send Another' }).click();
+
+  const resetModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(resetModal).toBeVisible();
+  await expect(resetModal.getByLabel('Recipient email')).toHaveValue('');
+  await expect(resetModal.getByLabel('Short message (optional)')).toHaveValue('');
+  await expect(resetModal.getByLabel('Expiry days (optional)')).toHaveValue('7');
+});
+
+test('document detail more menu opens share links management first', async ({ page }) => {
+  await loginAsAlice(page);
+
+  await page.goto('/#/document/1');
+  await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
+  await page.locator('.document-detail-more-trigger').click();
+  await page.locator('.document-detail-more-popover').getByRole('button', { name: 'Manage Links' }).click();
+
+  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
+  await expect(manageModal).toBeVisible();
+  await expect(manageModal.locator('.document-detail-share-links-panel')).toBeVisible();
+  await expect(manageModal.getByRole('button', { name: 'Refresh' })).toBeVisible();
+  await expect(manageModal.getByRole('button', { name: 'Revoke All' })).toBeVisible();
+  await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
 });
 
 test('public share link opens document view without sign in', async ({ page }) => {

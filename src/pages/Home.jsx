@@ -5901,6 +5901,9 @@ export default function HomePage() {
             <span className="notion-top-time">{nowLabel}</span>
           </div>
           <div className="notion-top-actions">
+            <span className="notion-top-pill">{Number(documentsTotal) || 0} Notes</span>
+            <span className="notion-top-pill">{dashboardStats.tags} Tags</span>
+            <span className="notion-top-pill">{starredNotes.length} Starred</span>
             <FeedbackWidget
               enabled={isLoggedIn}
               workspaceId={activeWorkspaceId}

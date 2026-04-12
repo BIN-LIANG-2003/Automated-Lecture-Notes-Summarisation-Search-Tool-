@@ -153,7 +153,7 @@ export default function DocumentDetail() {
   const [shareEmailMessage, setShareEmailMessage] = useState('');
   const [shareEmailExpiryDays, setShareEmailExpiryDays] = useState('');
   const [shareEmailResult, setShareEmailResult] = useState(null);
-  const [shareManagerOpen, setShareManagerOpen] = useState(false);
+  const [shareModalMode, setShareModalMode] = useState('send');
   const [isSendingShareEmail, setIsSendingShareEmail] = useState(false);
   const summaryProgressTimerRef = useRef(null);
   const {
@@ -404,16 +404,20 @@ export default function DocumentDetail() {
     setOcrSaveFormat('txt');
   };
 
+  const resetShareEmailDraft = () => {
+    setShareEmailRecipient('');
+    setShareEmailMessage('');
+    setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+  };
+
   const openSendNoteEmailModal = () => {
     if (shareLinkDisabledReason) {
       showToast(shareLinkDisabledReason, 'warning');
       return;
     }
-    setShareEmailRecipient('');
-    setShareEmailMessage('');
-    setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+    resetShareEmailDraft();
     setShareEmailResult(null);
-    setShareManagerOpen(false);
+    setShareModalMode('send');
     setSendNoteEmailOpen(true);
   };
 
@@ -422,22 +426,21 @@ export default function DocumentDetail() {
       showToast(shareLinkDisabledReason, 'warning');
       return;
     }
+    resetShareEmailDraft();
     setShareEmailResult(null);
-    setShareManagerOpen(true);
+    setShareModalMode('manage');
     setSendNoteEmailOpen(true);
     if (document?.id && username && canManageShareLinks) {
       void refreshShareLinks(document.id);
     }
   };
 
-  const toggleShareManager = () => {
-    setShareManagerOpen((prev) => {
-      const nextOpen = !prev;
-      if (nextOpen && document?.id && username && canManageShareLinks) {
-        void refreshShareLinks(document.id);
-      }
-      return nextOpen;
-    });
+  const openShareManagerInModal = () => {
+    resetShareEmailDraft();
+    setShareModalMode('manage');
+    if (document?.id && username && canManageShareLinks) {
+      void refreshShareLinks(document.id);
+    }
   };
 
   const closeSendNoteEmailModal = () => {
@@ -446,11 +449,9 @@ export default function DocumentDetail() {
   };
 
   const handleSendAnotherShareEmail = () => {
-    setShareEmailRecipient('');
-    setShareEmailMessage('');
-    setShareEmailExpiryDays(String(document?.defaultShareExpiryDays || 7));
+    resetShareEmailDraft();
     setShareEmailResult(null);
-    setShareManagerOpen(false);
+    setShareModalMode('send');
   };
 
   const handleExtractText = async () => {
@@ -747,7 +748,7 @@ export default function DocumentDetail() {
       });
       await refreshShareLinks(document.id);
       setShareEmailResult(payload);
-      setShareManagerOpen(false);
+      setShareModalMode('success');
       showToast(payload.message || `Shared note email sent to ${recipientEmail}.`, 'success');
     } catch (err) {
       showToast(err.message || 'Failed to send note by email.', 'error');
@@ -956,6 +957,9 @@ export default function DocumentDetail() {
       )}
     </section>
   ) : null;
+  const shareEmailExpiryLabel = shareEmailResult?.expires_at
+    ? formatDateTimeLabel(shareEmailResult.expires_at)
+    : '';
 
   return (
     <>
@@ -1289,10 +1293,13 @@ export default function DocumentDetail() {
       </main>
       <SendNoteByEmailModal
         open={sendNoteEmailOpen}
+        mode={shareModalMode}
         onClose={closeSendNoteEmailModal}
         onSubmit={handleSendNoteByEmail}
         onSendAnother={handleSendAnotherShareEmail}
         onCopyLink={handleCopySentShareLink}
+        onManageLinksOpen={openShareManagerInModal}
+        onBackToSend={handleSendAnotherShareEmail}
         recipientEmail={shareEmailRecipient}
         onRecipientEmailChange={setShareEmailRecipient}
         message={shareEmailMessage}
@@ -1303,9 +1310,8 @@ export default function DocumentDetail() {
         documentTitle={document?.title || document?.filename || 'Untitled Note'}
         linkModeLabel={shareModeLabel}
         successResult={shareEmailResult}
+        successExpiryLabel={shareEmailExpiryLabel}
         manageLinksContent={shareLinksManagerContent}
-        manageLinksOpen={shareManagerOpen}
-        onManageLinksToggle={toggleShareManager}
         canManageLinks={canShowShareManagement}
         shareLinksCount={shareLinks.length}
       />
