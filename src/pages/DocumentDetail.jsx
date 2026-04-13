@@ -33,6 +33,23 @@ import { formatSummaryErrorMessage } from '../lib/summaryDiagnostics.js';
 const DEFAULT_NOTE_CATEGORY = 'Uncategorized';
 const SUMMARY_LENGTH_OPTIONS = new Set(['short', 'medium', 'long']);
 const IMAGE_FILE_TYPE_SET = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
+const PROCESSING_STATUS_META = {
+  queued: {
+    label: 'Queued',
+    message: 'PDF text extraction will start in the background.',
+    summarizeTitle: 'PDF text extraction is queued. Summaries are available after processing.',
+  },
+  processing: {
+    label: 'Processing',
+    message: 'PDF text extraction is running in the background.',
+    summarizeTitle: 'PDF text extraction is still running. Summaries are available after processing.',
+  },
+  failed: {
+    label: 'Failed',
+    message: 'PDF text extraction failed.',
+    summarizeTitle: 'PDF text extraction failed. Summaries need processed text.',
+  },
+};
 const DEFAULT_SUMMARY_PROGRESS = {
   active: false,
   phase: 'idle',
@@ -42,6 +59,7 @@ const DEFAULT_SUMMARY_PROGRESS = {
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
 const isImageFileType = (value) => IMAGE_FILE_TYPE_SET.has(String(value || '').toLowerCase());
+const normalizeProcessingStatus = (value) => String(value || '').trim().toLowerCase();
 const stripFileExtension = (value) => String(value || '').replace(/\.[a-z0-9]+$/i, '').trim();
 const buildOcrNoteTitle = (value) => {
   const base = stripFileExtension(value) || 'Image';
@@ -97,6 +115,10 @@ const normalizeDocument = (raw) => {
     fileType: String(raw.fileType ?? raw.file_type ?? '').toLowerCase(),
     category: String(raw.category || '').trim() || DEFAULT_NOTE_CATEGORY,
     workspaceId: String(raw.workspaceId ?? raw.workspace_id ?? '').trim(),
+    processingStatus: normalizeProcessingStatus(raw.processingStatus ?? raw.processing_status),
+    processingError: String(raw.processingError ?? raw.processing_error ?? '').replace(/\s+/g, ' ').trim(),
+    processingStartedAt: raw.processingStartedAt ?? raw.processing_started_at ?? '',
+    processedAt: raw.processedAt ?? raw.processed_at ?? '',
     linkSharingMode: String(raw.link_sharing_mode || raw.linkSharingMode || 'workspace').toLowerCase(),
     canManageShareLinks: Boolean(raw.can_manage_share_links ?? raw.canManageShareLinks),
     allowAiTools: Boolean(raw.allow_ai_tools ?? raw.allowAiTools ?? true),
@@ -336,10 +358,16 @@ export default function DocumentDetail() {
         ? 'Sign-in required'
         : 'Owner-only')
     : 'Share link available';
+  const processingMeta = PROCESSING_STATUS_META[document.processingStatus] || null;
+  const processingMessage = document.processingStatus === 'failed'
+    ? (document.processingError || processingMeta?.message)
+    : processingMeta?.message;
+  const summarizeBlockedByProcessing = Boolean(processingMeta);
   const detailMetaPills = [
     document?.fileType ? String(document.fileType).toUpperCase() : 'NOTE',
     document?.category || DEFAULT_NOTE_CATEGORY,
     document?.tags?.length ? `${document.tags.length} tag${document.tags.length === 1 ? '' : 's'}` : 'No tags',
+    ...(processingMeta ? [processingMeta.label] : []),
   ];
   const primaryStudyActionLabel = isImage
     ? (isExtracting ? 'Scanning...' : 'Scan Image')
@@ -348,7 +376,7 @@ export default function DocumentDetail() {
     ? true
     : isImage
       ? (isExtracting || !canUseOcr)
-      : (isAnalyzing || (!extractedText.trim() && !document?.id) || !canUseAiTools);
+      : (isAnalyzing || summarizeBlockedByProcessing || (!extractedText.trim() && !document?.id) || !canUseAiTools);
   const primaryStudyActionTitle = isSharedView
     ? 'Study tools stay in the original workspace view.'
     : isImage
@@ -359,6 +387,8 @@ export default function DocumentDetail() {
             : 'Extract editable text from this image.')
       : (!canUseAiTools
           ? 'AI tools are disabled in workspace settings.'
+          : summarizeBlockedByProcessing
+            ? processingMeta.summarizeTitle
           : 'Generate a focused summary for this note.');
   const readingSurfaceTitle = isImage
     ? 'Image Preview'
@@ -1056,6 +1086,11 @@ export default function DocumentDetail() {
             <div className="document-meta document-detail-meta document-detail-meta-subtle">
               Uploaded: {new Date(document.uploadedAt).toLocaleString()}
             </div>
+            {processingMeta && (
+              <div className={`document-processing-message is-${document.processingStatus}`} role="status">
+                {processingMessage}
+              </div>
+            )}
           </div>
           {!isSharedView && (
             <div className="document-detail-head-side">
@@ -1114,8 +1149,12 @@ export default function DocumentDetail() {
                         type="button"
                         className="btn"
                         onClick={() => handleAnalyzeText({ forceRefresh: true })}
-                        disabled={isAnalyzing || !canUseAiTools}
-                        title="Bypass cache and refresh document text before summarizing"
+                        disabled={isAnalyzing || !canUseAiTools || summarizeBlockedByProcessing}
+                        title={
+                          summarizeBlockedByProcessing
+                            ? processingMeta.summarizeTitle
+                            : 'Bypass cache and refresh document text before summarizing'
+                        }
                       >
                         Rebuild Summary
                       </button>

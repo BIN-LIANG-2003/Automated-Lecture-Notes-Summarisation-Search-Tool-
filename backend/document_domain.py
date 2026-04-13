@@ -63,8 +63,9 @@ def purge_expired_trashed_documents(conn, username='', workspace_id=''):
     safe_workspace_id = str(workspace_id or '').strip()
     cutoff = (datetime.utcnow() - timedelta(days=TRASH_RETENTION_DAYS)).isoformat()
     where_parts = [
-        "COALESCE(deleted_at, '') <> ''",
-        "COALESCE(deleted_at, '') <= ?",
+        "deleted_at IS NOT NULL",
+        "TRIM(CAST(deleted_at AS TEXT)) <> ''",
+        "deleted_at <= ?",
     ]
     params = [cutoff]
     if safe_username:

@@ -60,6 +60,23 @@ const DOCUMENTS_LAYOUT_OPTIONS = [
   { value: 'grid', label: 'Grid' },
   { value: 'compact', label: 'Compact' },
 ];
+const PROCESSING_STATUS_META = {
+  queued: {
+    label: 'Queued',
+    message: 'PDF text extraction will start in the background.',
+    summarizeTitle: 'PDF text extraction is queued. Summaries are available after processing.',
+  },
+  processing: {
+    label: 'Processing',
+    message: 'PDF text extraction is running in the background.',
+    summarizeTitle: 'PDF text extraction is still running. Summaries are available after processing.',
+  },
+  failed: {
+    label: 'Failed',
+    message: 'PDF text extraction failed.',
+    summarizeTitle: 'PDF text extraction failed. Summaries need processed text.',
+  },
+};
 const DOCUMENTS_SORT_OPTIONS = [
   { value: 'newest', label: 'Newest first' },
   { value: 'oldest', label: 'Oldest first' },
@@ -1028,11 +1045,30 @@ const normalizeCategory = (value) => {
   return next || DEFAULT_NOTE_CATEGORY;
 };
 
+const normalizeProcessingStatus = (value) => String(value || '').trim().toLowerCase();
+
+const getDocumentProcessingMeta = (doc) =>
+  PROCESSING_STATUS_META[normalizeProcessingStatus(doc?.processingStatus ?? doc?.processing_status)] || null;
+
+const getDocumentProcessingMessage = (doc) => {
+  const meta = getDocumentProcessingMeta(doc);
+  if (!meta) return '';
+  const status = normalizeProcessingStatus(doc?.processingStatus ?? doc?.processing_status);
+  if (status === 'failed') {
+    return String(doc?.processingError ?? doc?.processing_error ?? '').replace(/\s+/g, ' ').trim() || meta.message;
+  }
+  return meta.message;
+};
+
 const normalizeDocument = (doc) => ({
   ...doc,
   uploadedAt: doc.uploaded_at ?? doc.uploadedAt ?? '',
   deletedAt: doc.deleted_at ?? doc.deletedAt ?? '',
   lastAccessAt: doc.last_access_at ?? doc.lastAccessAt ?? '',
+  processingStatus: normalizeProcessingStatus(doc.processing_status ?? doc.processingStatus),
+  processingError: String(doc.processing_error ?? doc.processingError ?? '').replace(/\s+/g, ' ').trim(),
+  processingStartedAt: doc.processing_started_at ?? doc.processingStartedAt ?? '',
+  processedAt: doc.processed_at ?? doc.processedAt ?? '',
   contentHtml: doc.content_html ?? doc.contentHtml ?? '',
   category: normalizeCategory(doc.category),
   content: String(doc.content || ''),
@@ -3953,6 +3989,11 @@ export default function HomePage() {
       showToast('AI tools are disabled in this workspace settings.', 'warning');
       return;
     }
+    const processingMeta = getDocumentProcessingMeta(doc);
+    if (processingMeta) {
+      showToast(processingMeta.summarizeTitle, 'warning');
+      return;
+    }
     const text = String(doc?.content || '').trim();
     const docId = Number(doc?.id) || 0;
     if (!text && docId <= 0) {
@@ -5548,6 +5589,8 @@ export default function HomePage() {
   const activeDocExt = activeDoc ? getDocExt(activeDoc) : '';
   const activeDocIsImage = IMAGE_FILE_TYPE_VALUES.has(activeDocExt);
   const activeDocIsPdf = activeDocExt === 'pdf';
+  const activeDocProcessingMeta = getDocumentProcessingMeta(activeDoc);
+  const activeDocProcessingMessage = getDocumentProcessingMessage(activeDoc);
   const activeDocCanEditText = ['txt', 'docx'].includes(activeDocExt);
   const activeDocViewHtml = useMemo(() => getDocumentRichHtml(activeDoc), [activeDoc]);
   const showOuterDocHeader = !activeDocIsPdf;
@@ -6224,6 +6267,11 @@ export default function HomePage() {
                         <div className="document-meta">
                           Tags: {activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}
                         </div>
+                        {activeDocProcessingMeta && (
+                          <div className={`document-processing-message is-${activeDoc.processingStatus}`} role="status">
+                            {activeDocProcessingMessage}
+                          </div>
+                        )}
                       </div>
                       <div className="notion-inline-doc-actions">
                         <button
@@ -6238,7 +6286,8 @@ export default function HomePage() {
                           type="button"
                           className="btn"
                           onClick={() => handleUseDocumentForAI(activeDoc)}
-                          disabled={!activeWorkspaceSettings.allow_ai_tools}
+                          disabled={!activeWorkspaceSettings.allow_ai_tools || Boolean(activeDocProcessingMeta)}
+                          title={activeDocProcessingMeta ? activeDocProcessingMeta.summarizeTitle : undefined}
                         >
                             Summarize Note
                         </button>
@@ -6246,9 +6295,11 @@ export default function HomePage() {
                           type="button"
                           className="btn"
                           onClick={() => handleRegenerateDocumentSummary(activeDoc)}
-                          disabled={!activeWorkspaceSettings.allow_ai_tools}
+                          disabled={!activeWorkspaceSettings.allow_ai_tools || Boolean(activeDocProcessingMeta)}
                           title={
-                            activeWorkspaceSettings.allow_ai_tools
+                            activeDocProcessingMeta
+                              ? activeDocProcessingMeta.summarizeTitle
+                              : activeWorkspaceSettings.allow_ai_tools
                               ? 'Bypass cache and refresh document text before summarizing'
                               : 'AI is disabled in workspace settings'
                           }

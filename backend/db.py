@@ -96,14 +96,15 @@ def ensure_documents_column(conn, column_name, column_type='TEXT'):
     conn.execute(f'ALTER TABLE documents ADD COLUMN {safe_column} {safe_type}')
 
 
-def ensure_documents_columns(conn):
+def ensure_documents_columns(conn, timestamp_type='TEXT'):
     ensure_documents_column(conn, 'content_html', 'TEXT')
     ensure_documents_column(conn, 'category', 'TEXT')
     ensure_documents_column(conn, 'workspace_id', 'TEXT')
     ensure_documents_column(conn, 'deleted_at', 'TEXT')
     ensure_documents_column(conn, 'processing_status', 'TEXT')
     ensure_documents_column(conn, 'processing_error', 'TEXT')
-    ensure_documents_column(conn, 'processed_at', 'TEXT')
+    ensure_documents_column(conn, 'processing_started_at', timestamp_type)
+    ensure_documents_column(conn, 'processed_at', timestamp_type)
     conn.execute(
         '''
         UPDATE documents
@@ -227,6 +228,7 @@ def init_db():
             deleted_at {timestamp_type},
             processing_status TEXT NOT NULL DEFAULT 'processed',
             processing_error TEXT,
+            processing_started_at {optional_timestamp_type},
             processed_at {timestamp_type}
         );
     '''
@@ -420,7 +422,7 @@ def init_db():
         conn.execute(feedback_items_sql)
         conn.execute(feedback_events_sql)
         ensure_users_columns(conn, optional_timestamp_type)
-        ensure_documents_columns(conn)
+        ensure_documents_columns(conn, optional_timestamp_type)
         ensure_workspaces_columns(conn)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)

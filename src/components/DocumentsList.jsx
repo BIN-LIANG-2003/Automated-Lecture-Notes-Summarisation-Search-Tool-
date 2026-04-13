@@ -3,6 +3,23 @@ import { fmtDate } from '../lib/dates.js';
 
 const normalizeCategory = (value) => String(value || '').trim() || 'Uncategorized';
 const IMAGE_EXT_SET = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
+const PROCESSING_STATUS_META = {
+  queued: {
+    label: 'Queued',
+    message: 'Text extraction will start in the background.',
+    summarizeTitle: 'Text extraction is queued. Summaries are available after processing.',
+  },
+  processing: {
+    label: 'Processing',
+    message: 'Text extraction is running in the background.',
+    summarizeTitle: 'Text extraction is still running. Summaries are available after processing.',
+  },
+  failed: {
+    label: 'Failed',
+    message: 'Text extraction failed.',
+    summarizeTitle: 'Text extraction failed. Summaries need processed text.',
+  },
+};
 
 const getDocumentTypeToken = (doc) => {
   const rawType = String(doc?.fileType || doc?.file_type || '')
@@ -21,6 +38,16 @@ const getDocumentTypeLabel = (doc) => {
   if (IMAGE_EXT_SET.has(ext)) return 'IMAGE';
   return ext.toUpperCase();
 };
+
+const getProcessingStatus = (doc) =>
+  String(doc?.processingStatus || doc?.processing_status || '')
+    .trim()
+    .toLowerCase();
+
+const getProcessingError = (doc) =>
+  String(doc?.processingError || doc?.processing_error || '')
+    .replace(/\s+/g, ' ')
+    .trim();
 
 const normalizeSearchTokens = (query) => {
   const raw = String(query || '').trim().toLowerCase();
@@ -217,6 +244,13 @@ export default function DocumentsList({
             const hiddenTagCount = Math.max(0, docTags.length - visibleDocTags.length);
             const docTypeLabel = getDocumentTypeLabel(doc);
             const isStarred = starredDocIdSet.has(Number(doc.id));
+            const processingStatus = getProcessingStatus(doc);
+            const processingMeta = PROCESSING_STATUS_META[processingStatus] || null;
+            const processingError = getProcessingError(doc);
+            const processingMessage = processingStatus === 'failed'
+              ? (processingError || processingMeta?.message)
+              : processingMeta?.message;
+            const summarizeBlockedByProcessing = Boolean(processingMeta);
             return (
               <article key={doc.id} className="document-card" role="listitem">
                 <div className="document-card-main">
@@ -245,6 +279,11 @@ export default function DocumentsList({
                     <span className="document-type-badge" aria-label={`File type ${docTypeLabel}`}>
                       {docTypeLabel}
                     </span>
+                    {processingMeta && (
+                      <span className={`document-processing-badge is-${processingStatus}`}>
+                        {processingMeta.label}
+                      </span>
+                    )}
                   </div>
                   <div className="document-card-meta-stack">
                     <div className="document-card-meta-inline">
@@ -275,6 +314,11 @@ export default function DocumentsList({
                         {renderHighlightedText(matchSnippet, searchTokens)}
                       </div>
                     )}
+                    {processingMeta && (
+                      <div className={`document-processing-message is-${processingStatus}`} role="status">
+                        {processingMessage}
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -294,11 +338,13 @@ export default function DocumentsList({
                     title={
                       !isLoggedIn
                         ? 'Please sign in'
-                        : canSummarize
+                        : summarizeBlockedByProcessing
+                          ? processingMeta.summarizeTitle
+                          : canSummarize
                           ? 'Summarize this document'
                           : 'AI is disabled in workspace settings'
                     }
-                    disabled={!isLoggedIn || !canSummarize}
+                    disabled={!isLoggedIn || !canSummarize || summarizeBlockedByProcessing}
                     type="button"
                   >
                     Summarize
@@ -415,11 +461,13 @@ export default function DocumentsList({
                             title={
                               !isLoggedIn
                                 ? 'Please sign in'
-                                : canSummarize
+                                : summarizeBlockedByProcessing
+                                  ? processingMeta.summarizeTitle
+                                  : canSummarize
                                   ? undefined
                                   : 'AI is disabled in workspace settings'
                             }
-                            disabled={!isLoggedIn || !canSummarize}
+                            disabled={!isLoggedIn || !canSummarize || summarizeBlockedByProcessing}
                             type="button"
                             role="menuitem"
                           >
@@ -434,11 +482,13 @@ export default function DocumentsList({
                             title={
                               !isLoggedIn
                                 ? 'Please sign in'
-                                : canSummarize
+                                : summarizeBlockedByProcessing
+                                  ? processingMeta.summarizeTitle
+                                  : canSummarize
                                   ? 'Bypass cache and refresh document text before summarizing'
                                   : 'AI is disabled in workspace settings'
                             }
-                            disabled={!isLoggedIn || !canSummarize}
+                            disabled={!isLoggedIn || !canSummarize || summarizeBlockedByProcessing}
                             type="button"
                             role="menuitem"
                           >

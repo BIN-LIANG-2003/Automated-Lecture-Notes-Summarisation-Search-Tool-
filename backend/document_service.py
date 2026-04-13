@@ -1,8 +1,6 @@
 import io
 import os
-import tempfile
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from flask import current_app, jsonify, request, send_file
@@ -34,14 +32,74 @@ from .utils import normalize_document_category, parse_bool, parse_int, row_to_di
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
 
-_UPLOAD_PROCESSING_EXECUTOR = ThreadPoolExecutor(max_workers=1)
-
-
 def _normalize_ocr_import_format(value):
     safe_value = str(value or 'txt').strip().lower()
     if safe_value in ('txt', 'docx', 'pdf'):
         return safe_value
     raise ValueError('file_format must be one of txt, docx, or pdf')
+
+
+def _insert_document_record(
+    conn,
+    *,
+    filename,
+    title,
+    uploaded_at,
+    file_type,
+    content,
+    content_html,
+    username,
+    tags='',
+    category='',
+    workspace_id='',
+    processing_status='processed',
+    processing_error='',
+    processed_at=None,
+):
+    columns = [
+        'filename',
+        'title',
+        'uploaded_at',
+        'file_type',
+        'content',
+        'content_html',
+        'username',
+        'tags',
+        'category',
+        'workspace_id',
+        'processing_status',
+        'processing_error',
+        'processed_at',
+    ]
+    values = [
+        filename,
+        title,
+        uploaded_at,
+        file_type,
+        content,
+        content_html,
+        username,
+        tags,
+        category,
+        workspace_id,
+        processing_status,
+        processing_error,
+        processed_at,
+    ]
+    placeholders = ', '.join(['?'] * len(columns))
+    returning_sql = ' RETURNING id' if getattr(conn, 'db_type', '') == 'postgres' else ''
+    cursor = conn.execute(
+        f'''
+        INSERT INTO documents ({', '.join(columns)})
+        VALUES ({placeholders})
+        {returning_sql}
+        ''',
+        tuple(values),
+    )
+    if getattr(conn, 'db_type', '') == 'postgres':
+        row = row_to_dict(cursor.fetchone()) or {}
+        return parse_int(row.get('id'), 0, 0)
+    return parse_int(getattr(cursor, 'lastrowid', 0), 0, 0)
 
 
 def _create_ocr_note_document(
@@ -67,30 +125,33 @@ def _create_ocr_note_document(
 
     try:
         write_file_bytes_to_storage(unique_filename, file_bytes, mimetype)
-        insert_cursor = conn.execute(
-            '''
-            INSERT INTO documents (
-                filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ''',
-            (
-                unique_filename,
-                safe_title,
-                datetime.utcnow().isoformat(),
-                safe_format,
-                safe_text,
-                content_html if safe_format in ('txt', 'docx') else '',
-                username,
-                '',
-                safe_category,
-                workspace_id,
-            ),
+        new_doc_id = _insert_document_record(
+            conn,
+            filename=unique_filename,
+            title=safe_title,
+            uploaded_at=datetime.utcnow().isoformat(),
+            file_type=safe_format,
+            content=safe_text,
+            content_html=content_html if safe_format in ('txt', 'docx') else '',
+            username=username,
+            tags='',
+            category=safe_category,
+            workspace_id=workspace_id,
+            processing_status='processed',
+            processing_error='',
+            processed_at=utcnow_iso(),
         )
-        conn.commit()
-        new_doc_id = insert_cursor.lastrowid
+        if new_doc_id <= 0:
+            raise RuntimeError('Document insert did not return an id')
         new_doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (new_doc_id,))
-        return new_doc_id, row_to_dict(new_doc_cursor.fetchone()) or {}
+        new_doc = row_to_dict(new_doc_cursor.fetchone()) or {}
+        conn.commit()
+        return new_doc_id, new_doc
     except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
         remove_document_file_from_storage(unique_filename)
         raise
 
@@ -138,100 +199,6 @@ def _final_upload_category(original_filename, extracted_text, requested_category
         return infer_document_category(original_filename, extracted_text)
     final_category = normalize_document_category((workspace_settings or {}).get('default_category'))
     return final_category or DEFAULT_DOCUMENT_CATEGORY
-
-
-def _update_pdf_processing_failed(document_id, error_message):
-    conn = get_db_connection()
-    if not conn:
-        print(f'PDF upload processing failed for document {document_id}: database unavailable')
-        return
-    try:
-        now_iso = utcnow_iso()
-        conn.execute(
-            '''
-            UPDATE documents
-            SET processing_status = ?,
-                processing_error = ?,
-                processed_at = ?
-            WHERE id = ?
-            ''',
-            ('failed', str(error_message or 'PDF processing failed')[:500], now_iso, document_id),
-        )
-        conn.commit()
-    except Exception as e:
-        try:
-            conn.rollback()
-        except Exception:
-            pass
-        print(f'PDF upload processing failure update failed for document {document_id}: {e}')
-    finally:
-        conn.close()
-
-
-def _process_uploaded_pdf_document(
-    document_id,
-    *,
-    unique_filename,
-    original_filename,
-    requested_category,
-    workspace_settings,
-):
-    temp_path = ''
-    try:
-        file_bytes = read_file_bytes_from_storage(unique_filename)
-        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-            temp_file.write(file_bytes)
-            temp_path = temp_file.name
-
-        extracted_text, extracted_html = extract_document_content(temp_path, 'pdf', allow_pdf_ocr=False)
-        final_category = _final_upload_category(
-            original_filename,
-            extracted_text,
-            requested_category,
-            workspace_settings,
-        )
-
-        conn = get_db_connection()
-        if not conn:
-            raise RuntimeError('Database connection failed')
-        try:
-            now_iso = utcnow_iso()
-            conn.execute(
-                '''
-                UPDATE documents
-                SET content = ?,
-                    content_html = ?,
-                    category = ?,
-                    processing_status = ?,
-                    processing_error = ?,
-                    processed_at = ?
-                WHERE id = ?
-                ''',
-                (extracted_text, extracted_html or '', final_category, 'processed', '', now_iso, document_id),
-            )
-            conn.commit()
-            print(f'✅ PDF upload processing completed for document {document_id}')
-        except Exception:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-            raise
-        finally:
-            conn.close()
-    except Exception as e:
-        print(f'❌ PDF upload processing failed for document {document_id}: {e}')
-        _update_pdf_processing_failed(document_id, e)
-    finally:
-        if temp_path and os.path.exists(temp_path):
-            try:
-                os.remove(temp_path)
-            except Exception:
-                pass
-
-
-def _queue_uploaded_pdf_processing(document_id, **kwargs):
-    _UPLOAD_PROCESSING_EXECUTOR.submit(_process_uploaded_pdf_document, document_id, **kwargs)
 
 
 def get_documents():
@@ -377,7 +344,7 @@ def get_trashed_documents():
 
         where_parts = [
             'username = ?',
-            "COALESCE(deleted_at, '') <> ''",
+            "deleted_at IS NOT NULL AND TRIM(CAST(deleted_at AS TEXT)) <> ''",
         ]
         params = [username]
         if workspace_id:
@@ -514,6 +481,8 @@ def upload_file():
     local_filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
     file.save(local_filepath)
 
+    storage_written = False
+    document_saved = False
     try:
         processing_status = 'processed'
         processing_error = ''
@@ -522,7 +491,7 @@ def upload_file():
             extracted_text = ''
             extracted_html = ''
             processing_status = 'queued'
-            processed_at = ''
+            processed_at = None
             final_category = _final_upload_category(original_filename, '', requested_category, workspace_settings)
         else:
             extracted_text, extracted_html = extract_document_content(local_filepath, ext)
@@ -545,76 +514,74 @@ def upload_file():
                 print("✅ Upload to S3 successful")
                 os.remove(local_filepath)
                 print("🗑️ Local file removed")
+                storage_written = True
             else:
                 print("⚠️ S3_BUCKET not set or client failed, keeping local file")
+                storage_written = True
         except Exception as e:
             print(f"❌ S3 Upload Error: {e}")
+            if os.path.exists(local_filepath):
+                try:
+                    os.remove(local_filepath)
+                except Exception:
+                    pass
             return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
 
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         try:
-            conn.execute(
-                '''
-                INSERT INTO documents (
-                    filename,
-                    title,
-                    uploaded_at,
-                    file_type,
-                    content,
-                    content_html,
-                    username,
-                    tags,
-                    category,
-                    workspace_id,
-                    processing_status,
-                    processing_error,
-                    processed_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ''',
-                (
-                    unique_filename,
-                    original_filename,
-                    datetime.utcnow().isoformat(),
-                    ext,
-                    extracted_text,
-                    extracted_html if ext in ('docx', 'txt') else '',
-                    username,
-                    '',
-                    final_category,
-                    workspace_id,
-                    processing_status,
-                    processing_error,
-                    processed_at,
-                ),
+            document_id = _insert_document_record(
+                conn,
+                filename=unique_filename,
+                title=original_filename,
+                uploaded_at=datetime.utcnow().isoformat(),
+                file_type=ext,
+                content=extracted_text,
+                content_html=extracted_html if ext in ('docx', 'txt') else '',
+                username=username,
+                tags='',
+                category=final_category,
+                workspace_id=workspace_id,
+                processing_status=processing_status,
+                processing_error=processing_error,
+                processed_at=processed_at,
             )
+            if document_id <= 0:
+                raise RuntimeError('Document insert did not return an id')
             conn.commit()
-            doc_cursor = conn.execute('SELECT id FROM documents WHERE filename = ? LIMIT 1', (unique_filename,))
-            doc_row = row_to_dict(doc_cursor.fetchone()) or {}
-            document_id = parse_int(doc_row.get('id'), 0, 0)
-            if ext == 'pdf' and document_id > 0:
-                _queue_uploaded_pdf_processing(
-                    document_id,
-                    unique_filename=unique_filename,
-                    original_filename=original_filename,
-                    requested_category=requested_category,
-                    workspace_settings=workspace_settings,
-                )
-                print(f'Queued PDF upload processing for document {document_id}')
+            document_saved = True
             return jsonify({
                 'message': 'File uploaded successfully',
                 'document_id': document_id,
                 'processing_status': processing_status,
             }), 201
         except Exception as e:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             print(f"Database Error: {e}")
             return jsonify({'error': 'Database save failed'}), 500
         finally:
             conn.close()
+    except Exception as e:
+        print(f"Upload processing error: {e}")
+        return jsonify({'error': 'Upload processing failed'}), 500
     finally:
-        if os.path.exists(local_filepath) and not (S3_BUCKET and s3_client):
-            pass
+        if not document_saved:
+            if storage_written:
+                remove_document_file_from_storage(unique_filename)
+            elif os.path.exists(local_filepath):
+                try:
+                    os.remove(local_filepath)
+                except Exception:
+                    pass
+        elif S3_BUCKET and s3_client and os.path.exists(local_filepath):
+            try:
+                os.remove(local_filepath)
+            except Exception:
+                pass
 
 
 def get_document(doc_id):
@@ -751,7 +718,7 @@ def restore_document(doc_id):
         if not is_document_soft_deleted(doc_data):
             return jsonify({'message': 'Document is already active', 'id': doc_id, 'restored': False}), 200
 
-        conn.execute("UPDATE documents SET deleted_at = '' WHERE id = ?", (doc_id,))
+        conn.execute('UPDATE documents SET deleted_at = NULL WHERE id = ?', (doc_id,))
         conn.commit()
 
         refreshed_cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))

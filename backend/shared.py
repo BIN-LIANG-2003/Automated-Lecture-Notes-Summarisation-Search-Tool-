@@ -15,6 +15,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 
 from flask import request, jsonify, send_from_directory, redirect
+from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.feature_extraction.text import TfidfVectorizer
 
@@ -1702,6 +1703,8 @@ def analyze_text():
     doc_filename = ''
     attempted_doc_text_extraction = False
     doc_text_extraction_error = ''
+    doc_processing_status = ''
+    doc_processing_error = ''
 
     if requested_doc_id > 0:
         conn = get_db_connection()
@@ -1733,11 +1736,29 @@ def analyze_text():
             doc_filename = str(
                 (doc.get('filename') if hasattr(doc, 'get') else doc['filename']) or ''
             ).strip()
+            doc_processing_status = str(
+                (doc.get('processing_status') if hasattr(doc, 'get') else doc['processing_status']) or ''
+            ).strip().lower()
+            doc_processing_error = str(
+                (doc.get('processing_error') if hasattr(doc, 'get') else doc['processing_error']) or ''
+            ).strip()
             can_persist_doc_text = bool(
                 username
                 and user_can_edit_document(conn, doc, username)
                 and workspace_settings.get('allow_note_editing', True)
             )
+
+            if doc_file_type == 'pdf' and not doc_text_content and doc_processing_status in ('queued', 'processing'):
+                return jsonify({
+                    'error': 'PDF text extraction is still processing. Try again after the upload worker finishes.',
+                    'processing_status': doc_processing_status,
+                }), 409
+            if doc_file_type == 'pdf' and not doc_text_content and doc_processing_status == 'failed':
+                return jsonify({
+                    'error': doc_processing_error or 'PDF text extraction failed. Upload the file again or retry processing.',
+                    'processing_status': doc_processing_status,
+                    'processing_error': doc_processing_error,
+                }), 409
 
             # On explicit rebuild, refresh file text from source file so summary
             # uses latest/full extraction quality instead of stale db content.
@@ -2065,24 +2086,33 @@ def analyze_text():
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 def uploaded_file(filename):
-    bearer_token = get_bearer_token()
+    safe_filename = secure_filename(str(filename or '').strip())
+    if not safe_filename or safe_filename != str(filename or '').strip():
+        return jsonify({'error': 'File not found'}), 404
+
+    bearer_token = get_bearer_token() or (request.args.get('auth_token') or '').strip()
     token_ok, token_username, _ = decode_auth_token(bearer_token)
     username = token_username if token_ok else ''
     share_token = (request.args.get('share_token') or '').strip()
     conn = get_db_connection()
-    if conn:
-        try:
-            cursor = conn.execute(
-                'SELECT * FROM documents WHERE filename = ? ORDER BY id DESC LIMIT 1',
-                (filename,)
-            )
-            doc = cursor.fetchone()
-            if doc:
-                allowed, reason = check_document_access(conn, doc, username, share_token)
-                if not allowed:
-                    return jsonify({'error': reason}), 403
-        finally:
-            conn.close()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        cursor = conn.execute(
+            'SELECT * FROM documents WHERE filename = ? ORDER BY id DESC LIMIT 1',
+            (safe_filename,)
+        )
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'File not found'}), 404
+        if not username and not share_token:
+            return jsonify({'error': 'Auth token or share token is required'}), 401
+        allowed, reason = check_document_access(conn, doc, username, share_token)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+    finally:
+        conn.close()
 
     # 如果配置了 S3，直接生成一个 S3 的链接跳转过去
     if S3_BUCKET and s3_client:
@@ -2090,7 +2120,7 @@ def uploaded_file(filename):
             # 生成一个“预签名 URL”，有效期 1 小时 (3600秒)
             presigned_url = s3_client.generate_presigned_url(
                 'get_object',
-                Params={'Bucket': S3_BUCKET, 'Key': filename},
+                Params={'Bucket': S3_BUCKET, 'Key': safe_filename},
                 ExpiresIn=3600
             )
             # 让浏览器直接跳转到 AWS S3 下载
@@ -2100,7 +2130,10 @@ def uploaded_file(filename):
             return jsonify({'error': 'Could not generate file link'}), 500
     else:
         # 如果没配 S3 (比如本地测试)，还是从本地文件夹读
-        return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
+        upload_dir = app.config['UPLOAD_FOLDER']
+        if not os.path.isabs(upload_dir):
+            upload_dir = os.path.abspath(upload_dir)
+        return send_from_directory(upload_dir, safe_filename)
 
 # ================= 前端路由 =================
 def serve_index():

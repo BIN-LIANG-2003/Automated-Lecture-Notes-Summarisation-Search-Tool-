@@ -25,6 +25,7 @@ WEAK_AUTH_TOKEN_SECRET_VALUES = {
     'changeme',
     'change-me',
     'default',
+    'replace-with-at-least-32-random-characters',
     'secret',
     'studyhub',
     DEFAULT_AUTH_TOKEN_SECRET,
@@ -35,6 +36,19 @@ def _is_production_environment():
     return any(
         str(os.environ.get(env_name) or '').strip().lower() == 'production'
         for env_name in ('APP_ENV', 'FLASK_ENV')
+    )
+
+
+def _is_deployed_environment():
+    return any(
+        str(os.environ.get(env_name) or '').strip()
+        for env_name in (
+            'RENDER',
+            'DYNO',
+            'FLY_APP_NAME',
+            'K_SERVICE',
+            'RAILWAY_ENVIRONMENT',
+        )
     )
 
 
@@ -58,10 +72,9 @@ else:
     AUTH_TOKEN_SECRET = DEFAULT_AUTH_TOKEN_SECRET
 
 IS_PRODUCTION_ENV = _is_production_environment()
-if IS_PRODUCTION_ENV and _auth_token_secret_is_weak(_primary_auth_token_secret):
+if (IS_PRODUCTION_ENV or _is_deployed_environment()) and _auth_token_secret_is_weak(_primary_auth_token_secret):
     raise RuntimeError(
-        'AUTH_TOKEN_SECRET must be set to a strong non-default value when '
-        'APP_ENV=production or FLASK_ENV=production. '
+        'AUTH_TOKEN_SECRET must be set to a strong non-default value in production or deployed environments. '
         f'Use at least {MIN_AUTH_TOKEN_SECRET_LENGTH} characters and avoid default placeholders.'
     )
 
@@ -106,6 +119,23 @@ try:
     OCRMYPDF_TIMEOUT_SECONDS = max(15, int((os.getenv('OCRMYPDF_TIMEOUT_SECONDS') or '180').strip()))
 except Exception:
     OCRMYPDF_TIMEOUT_SECONDS = 180
+_upload_pdf_ocr_raw = str(os.getenv('UPLOAD_PDF_OCR_FALLBACK') or '0').strip().lower()
+UPLOAD_PDF_OCR_FALLBACK = _upload_pdf_ocr_raw not in ('0', 'false', 'no', 'off')
+try:
+    DOCUMENT_WORKER_BATCH_SIZE = max(1, min(100, int((os.getenv('DOCUMENT_WORKER_BATCH_SIZE') or '5').strip())))
+except Exception:
+    DOCUMENT_WORKER_BATCH_SIZE = 5
+try:
+    DOCUMENT_WORKER_POLL_SECONDS = max(1, min(300, int((os.getenv('DOCUMENT_WORKER_POLL_SECONDS') or '5').strip())))
+except Exception:
+    DOCUMENT_WORKER_POLL_SECONDS = 5
+try:
+    DOCUMENT_PROCESSING_STALE_MINUTES = max(
+        5,
+        min(1440, int((os.getenv('DOCUMENT_PROCESSING_STALE_MINUTES') or '30').strip())),
+    )
+except Exception:
+    DOCUMENT_PROCESSING_STALE_MINUTES = 30
 try:
     TRASH_RETENTION_DAYS = max(1, min(365, int((os.getenv('TRASH_RETENTION_DAYS') or '30').strip())))
 except Exception:

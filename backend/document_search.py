@@ -17,6 +17,7 @@ DOCUMENT_RESULT_COLUMNS = (
     'deleted_at',
     'processing_status',
     'processing_error',
+    'processing_started_at',
     'processed_at',
 )
 

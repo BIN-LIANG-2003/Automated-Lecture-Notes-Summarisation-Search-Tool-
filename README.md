@@ -83,6 +83,13 @@ source venv/bin/activate
 python app.py
 ```
 
+PDF upload worker:
+
+```bash
+source venv/bin/activate
+python -m backend.document_worker
+```
+
 Frontend dev server:
 
 ```bash
@@ -105,6 +112,8 @@ See [.env.example](.env.example) for the documented template. The main variables
 - `HF_API_TOKEN`, `HF_MODEL_BASE_URL`, `HF_OCR_MODEL`, `HF_SUMMARIZER_MODEL`: optional Hugging Face OCR/summarisation
 - `EXTERNAL_OCR_SERVICE_URL`, `EXTERNAL_OCR_TIMEOUT_SECONDS`: optional external OCR service
 - `OCRMYPDF_BINARY`, `OCRMYPDF_LANGUAGE`, `ENABLE_PDF_OCR_FALLBACK`, `OCRMYPDF_TIMEOUT_SECONDS`: optional PDF OCR fallback
+- `UPLOAD_PDF_OCR_FALLBACK`: optional OCR fallback for the upload worker only; defaults off
+- `DOCUMENT_WORKER_BATCH_SIZE`, `DOCUMENT_WORKER_POLL_SECONDS`, `DOCUMENT_PROCESSING_STALE_MINUTES`: background upload worker controls
 - `RESEND_API_KEY`, `RESEND_FROM_EMAIL`: email delivery for workspace invitations and account verification
 - `SUPPORT_EMAIL`: support inbox shown in the feedback modal and used for new-feedback admin notifications
 - `FEEDBACK_ADMIN_USERNAMES`: comma-separated usernames allowed to access `/#/admin/feedback` and admin feedback APIs
@@ -130,7 +139,9 @@ npm run build
 ```
 
 - Local uploads are written to `uploads/` unless S3 is configured.
-- PDF uploads are saved and listed immediately, then text extraction is completed asynchronously so large PDFs do not block the upload HTTP request. The optional `ocrmypdf` fallback is still available for explicit PDF rebuild/summary paths, but it is skipped during upload background processing to avoid Render/Gunicorn request timeouts.
+- PDF uploads are saved and listed immediately with `processing_status=queued`. Run `python -m backend.document_worker` in a second terminal to process queued PDFs, or `python -m backend.document_worker --once` to process one batch and exit.
+- The upload worker reads PDFs through a local file path. Local development reuses `uploads/` directly; S3-backed deployments download one object to one temporary file for extraction instead of reading the full PDF into memory and writing another full copy.
+- `UPLOAD_PDF_OCR_FALLBACK` defaults off, so expensive `ocrmypdf` fallback work is not part of the normal upload path. Explicit OCR and summary refresh flows can still use their existing OCR settings.
 - Local SQLite data is stored in `database.db` and is ignored by Git.
 
 ## Build and Deploy Notes
@@ -142,6 +153,13 @@ npm run build
   - stage 2 installs Python/backend dependencies and copies the built `dist/`
 - The container starts Gunicorn with a 120 second timeout as a safety margin; long PDF extraction is kept out of the request path rather than relying on this timeout.
 - `.dockerignore` excludes local `dist/` because Docker rebuilds it internally; this reduces build context without changing runtime behavior.
+- On Render, create a separate Background Worker using the same image and environment as the web service. Use this start command:
+
+```bash
+python -m backend.document_worker
+```
+
+- The web service and worker must share the same `DATABASE_URL` and file storage. For separate Render services, configure S3 with the same `S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, and `AWS_REGION`; local `uploads/` storage is not shared between Render service instances.
 
 ## Search and Index Notes
 
@@ -183,7 +201,7 @@ python scripts/rebuild_document_search.py
 - If `username` is still supplied by older callers, it is treated as a compatibility claim and must match the authenticated user.
 - Query-string auth is retained only for `/api/documents/:id/file?auth_token=...` as transitional compatibility for inline preview.
 - That compatibility response is returned with `Cache-Control: no-store` headers.
-- In production, startup fails closed if `APP_ENV=production` or `FLASK_ENV=production` and `AUTH_TOKEN_SECRET` is empty, default, or weak.
+- In production or common hosted environments, startup fails closed if `AUTH_TOKEN_SECRET` is empty, default, or weak.
 
 ## Generated Assets and Repository Hygiene
 

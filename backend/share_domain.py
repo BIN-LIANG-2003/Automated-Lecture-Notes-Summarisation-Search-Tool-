@@ -232,9 +232,11 @@ def check_document_access(conn, doc_row, username='', share_token=''):
                 return True, ''
             if token_reason:
                 return False, token_reason
-        if owner_username and viewer and viewer != owner_username:
+        if owner_username:
             return False, 'You do not have access to this document'
-        return True, ''
+        if viewer:
+            return True, ''
+        return False, 'Authentication required'
 
     link_mode = get_document_link_sharing_mode(conn, doc)
 

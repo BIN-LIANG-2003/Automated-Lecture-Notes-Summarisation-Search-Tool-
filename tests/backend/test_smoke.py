@@ -12,6 +12,7 @@ from werkzeug.security import generate_password_hash
 from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
+from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
 from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input
 from backend.utils import parse_int, row_to_dict, utcnow_iso
@@ -383,6 +384,30 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['title'], 'Shared Revision Sheet')
         self.assertEqual(payload['share']['token'], share_token)
 
+    def test_legacy_uploads_route_rejects_anonymous_document_file_access(self):
+        filename = 'legacy-private-route.txt'
+        self._insert_document(
+            'Legacy Private Route',
+            'private route smoke content',
+            workspace_id='',
+            filename=filename,
+        )
+        os.makedirs('uploads', exist_ok=True)
+        with open(os.path.join('uploads', filename), 'wb') as handle:
+            handle.write(b'private route smoke content')
+
+        anonymous_response = self.client.get(f'/uploads/{filename}')
+        self.assertEqual(anonymous_response.status_code, 401)
+        anonymous_response.close()
+
+        authenticated_response = self.client.get(
+            f'/uploads/{filename}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(authenticated_response.status_code, 200)
+        self.assertEqual(authenticated_response.get_data(), b'private route smoke content')
+        authenticated_response.close()
+
     def test_expired_and_revoked_share_links_are_rejected(self):
         expired_doc_id = self._insert_document(
             'Expired Shared Note',
@@ -510,6 +535,8 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             content_type='multipart/form-data',
         )
         self.assertEqual(upload_response.status_code, 201)
+        upload_payload = upload_response.get_json()
+        self.assertEqual(upload_payload.get('processing_status'), 'queued')
 
         search_response = self.client.get(
             '/api/documents?include_meta=1&q=pdfsmoke',
@@ -539,6 +566,138 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         ]
         self.assertTrue(listed_items, 'Uploaded PDF should remain visible in the document listing.')
         self.assertEqual(str(listed_items[0]['file_type']).lower(), 'pdf')
+        self.assertEqual(listed_items[0].get('processing_status'), 'queued')
+
+    @patch('backend.document_processing.extract_document_content', return_value=('workerpdf searchable text', ''))
+    def test_pdf_upload_is_queued_then_processed_by_worker(self, mock_extract):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_pdf_upload('worker queued pdf coverage'),
+                    'worker-pdf-smoke.pdf',
+                ),
+                'category': 'Computer Science',
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        upload_payload = upload_response.get_json()
+        self.assertEqual(upload_payload.get('processing_status'), 'queued')
+        document_id = parse_int(upload_payload.get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+        mock_extract.assert_not_called()
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute('SELECT content, processing_status, processed_at FROM documents WHERE id = ?', (document_id,))
+            queued_doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+        self.assertEqual(queued_doc.get('processing_status'), 'queued')
+        self.assertEqual(queued_doc.get('content') or '', '')
+        self.assertFalse(str(queued_doc.get('processed_at') or '').strip())
+
+        result = process_queued_documents_once(limit=1)
+        self.assertEqual(result.get('claimed_count'), 1)
+        self.assertEqual(result.get('processed_count'), 1)
+        self.assertEqual(result.get('failed_count'), 0)
+        mock_extract.assert_called_once()
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                '''
+                SELECT content, processing_status, processing_error, processing_started_at, processed_at
+                FROM documents
+                WHERE id = ?
+                ''',
+                (document_id,),
+            )
+            processed_doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+        self.assertEqual(processed_doc.get('processing_status'), 'processed')
+        self.assertEqual(processed_doc.get('processing_error') or '', '')
+        self.assertIn('workerpdf searchable text', processed_doc.get('content') or '')
+        self.assertTrue(str(processed_doc.get('processing_started_at') or '').strip())
+        self.assertTrue(str(processed_doc.get('processed_at') or '').strip())
+
+        search_response = self.client.get(
+            '/api/documents?include_meta=1&q=workerpdf',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(search_response.status_code, 200)
+        search_payload = search_response.get_json()
+        self.assertEqual(search_payload['total'], 1)
+        self.assertEqual(search_payload['items'][0]['title'], 'worker-pdf-smoke.pdf')
+
+    @patch('backend.document_processing.extract_document_content', side_effect=RuntimeError('pdf worker boom'))
+    def test_pdf_worker_persists_processing_failure(self, _mock_extract):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_pdf_upload('worker failure pdf coverage'),
+                    'worker-pdf-failure.pdf',
+                ),
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+
+        result = process_queued_documents_once(limit=1)
+        self.assertEqual(result.get('claimed_count'), 1)
+        self.assertEqual(result.get('processed_count'), 0)
+        self.assertEqual(result.get('failed_count'), 1)
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                'SELECT processing_status, processing_error, processed_at FROM documents WHERE id = ?',
+                (document_id,),
+            )
+            failed_doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+        self.assertEqual(failed_doc.get('processing_status'), 'failed')
+        self.assertIn('pdf worker boom', failed_doc.get('processing_error') or '')
+        self.assertTrue(str(failed_doc.get('processed_at') or '').strip())
+
+    @patch('backend.shared.extract_document_text_from_storage')
+    def test_queued_pdf_summary_does_not_extract_pdf_in_request(self, mock_extract_from_storage):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_pdf_upload('queued summary pdf coverage'),
+                    'queued-summary.pdf',
+                ),
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+
+        response = self.client.post(
+            '/api/analyze-text',
+            headers=self._auth_headers(),
+            json={'doc_id': document_id},
+        )
+        self.assertEqual(response.status_code, 409)
+        payload = response.get_json()
+        self.assertEqual(payload.get('processing_status'), 'queued')
+        self.assertIn('processing', payload.get('error') or '')
+        mock_extract_from_storage.assert_not_called()
 
     def test_ocr_quality_check_allows_normal_text(self):
         quality = assess_ocr_text_quality(

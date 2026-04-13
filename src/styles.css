@@ -5644,6 +5644,65 @@ body.notion-home-body .skip-link:focus-visible{
   flex:0 0 auto;
 }
 
+.document-processing-badge{
+  border:1px solid #d8dce5;
+  background:#f6f7f9;
+  color:#3f4654;
+  border-radius:6px;
+  padding:3px 8px;
+  font-size:11px;
+  font-weight:700;
+  line-height:1;
+  white-space:nowrap;
+  flex:0 0 auto;
+}
+
+.document-processing-badge.is-queued{
+  border-color:#d9c782;
+  background:#fff9df;
+  color:#695400;
+}
+
+.document-processing-badge.is-processing{
+  border-color:#8cc7b0;
+  background:#eaf8f1;
+  color:#1e604b;
+}
+
+.document-processing-badge.is-failed{
+  border-color:#e2a4a4;
+  background:#fff0f0;
+  color:#8b2727;
+}
+
+.document-processing-message{
+  border:1px solid #d8dce5;
+  border-radius:6px;
+  background:#f7f8fa;
+  color:#3f4654;
+  padding:8px 10px;
+  font-size:13px;
+  line-height:1.35;
+}
+
+.document-processing-message.is-queued{
+  border-color:#eadc9d;
+  background:#fffbea;
+  color:#6b5707;
+}
+
+.document-processing-message.is-processing{
+  border-color:#a6d7c4;
+  background:#eefaf5;
+  color:#205b49;
+}
+
+.document-processing-message.is-failed{
+  border-color:#ebb6b6;
+  background:#fff4f4;
+  color:#822525;
+}
+
 .document-card-meta-inline{
   display:flex;
   align-items:center;
