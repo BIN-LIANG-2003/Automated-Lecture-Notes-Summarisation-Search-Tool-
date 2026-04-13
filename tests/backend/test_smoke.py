@@ -118,6 +118,9 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         workspace_id=None,
         filename='document.txt',
         uploaded_at='',
+        processing_status='processed',
+        processing_error='',
+        processed_at=None,
     ):
         conn = self._connection()
         try:
@@ -135,8 +138,11 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                     category,
                     workspace_id,
                     last_access_at,
-                    deleted_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    deleted_at,
+                    processing_status,
+                    processing_error,
+                    processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     filename,
@@ -151,12 +157,21 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                     self.workspace_id if workspace_id is None else workspace_id,
                     '',
                     '',
+                    processing_status,
+                    processing_error,
+                    (uploaded_at or utcnow_iso()) if processed_at is None else processed_at,
                 ),
             )
             conn.commit()
             return cursor.lastrowid
         finally:
             conn.close()
+
+    def _save_pdf_upload_file(self, filename, *lines):
+        os.makedirs('uploads', exist_ok=True)
+        pdf_buffer = self._build_pdf_upload(*(lines or ['legacy queued pdf coverage']))
+        with open(os.path.join('uploads', filename), 'wb') as f:
+            f.write(pdf_buffer.getvalue())
 
     def _insert_share_link(
         self,
@@ -593,13 +608,18 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 ),
                 'category': 'Computer Science',
                 'workspace_id': self.workspace_id,
+                'client_pdf_text_status': 'processed',
+                'client_extracted_text': (
+                    'pdfsmoke searchable coverage. '
+                    'This generated PDF fixture keeps PDF upload smoke coverage lightweight.'
+                ),
             },
             headers=self._auth_headers(),
             content_type='multipart/form-data',
         )
         self.assertEqual(upload_response.status_code, 201)
         upload_payload = upload_response.get_json()
-        self.assertEqual(upload_payload.get('processing_status'), 'queued')
+        self.assertEqual(upload_payload.get('processing_status'), 'processed')
 
         search_response = self.client.get(
             '/api/documents?include_meta=1&q=pdfsmoke',
@@ -607,50 +627,33 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(search_response.status_code, 200)
         search_payload = search_response.get_json()
-        matching_items = [
-            item
-            for item in (search_payload.get('items') or [])
-            if item.get('title') == 'upload-pdf-smoke.pdf'
-        ]
-        if matching_items:
-            self.assertEqual(str(matching_items[0]['file_type']).lower(), 'pdf')
-            return
+        self.assertEqual(search_payload['total'], 1)
+        self.assertEqual(search_payload['items'][0]['title'], 'upload-pdf-smoke.pdf')
+        self.assertEqual(str(search_payload['items'][0]['file_type']).lower(), 'pdf')
+        self.assertEqual(search_payload['items'][0].get('processing_status'), 'processed')
 
-        listing_response = self.client.get(
-            '/api/documents?include_meta=1&sort=newest',
+        summary_response = self.client.post(
+            '/api/analyze-text',
             headers=self._auth_headers(),
+            json={'doc_id': parse_int(upload_payload.get('document_id'), 0, 0)},
         )
-        self.assertEqual(listing_response.status_code, 200)
-        listing_payload = listing_response.get_json()
-        listed_items = [
-            item
-            for item in (listing_payload.get('items') or [])
-            if item.get('title') == 'upload-pdf-smoke.pdf'
-        ]
-        self.assertTrue(listed_items, 'Uploaded PDF should remain visible in the document listing.')
-        self.assertEqual(str(listed_items[0]['file_type']).lower(), 'pdf')
-        self.assertEqual(listed_items[0].get('processing_status'), 'queued')
+        self.assertEqual(summary_response.status_code, 200)
+        summary_payload = summary_response.get_json()
+        self.assertEqual(summary_payload.get('text_source'), 'document_content')
+        self.assertIn('summary', summary_payload)
 
     @patch('backend.document_processing.extract_document_content', return_value=('workerpdf searchable text', ''))
-    def test_pdf_upload_is_queued_then_processed_by_worker(self, mock_extract):
-        upload_response = self.client.post(
-            '/api/documents/upload',
-            data={
-                'file': (
-                    self._build_pdf_upload('worker queued pdf coverage'),
-                    'worker-pdf-smoke.pdf',
-                ),
-                'category': 'Computer Science',
-                'workspace_id': self.workspace_id,
-            },
-            headers=self._auth_headers(),
-            content_type='multipart/form-data',
+    def test_legacy_queued_pdf_is_processed_by_worker(self, mock_extract):
+        filename = 'worker-pdf-smoke.pdf'
+        self._save_pdf_upload_file(filename, 'worker queued pdf coverage')
+        document_id = self._insert_document(
+            'worker-pdf-smoke.pdf',
+            '',
+            file_type='pdf',
+            filename=filename,
+            processing_status='queued',
+            processed_at='',
         )
-        self.assertEqual(upload_response.status_code, 201)
-        upload_payload = upload_response.get_json()
-        self.assertEqual(upload_payload.get('processing_status'), 'queued')
-        document_id = parse_int(upload_payload.get('document_id'), 0, 0)
-        self.assertGreater(document_id, 0)
         mock_extract.assert_not_called()
 
         conn = self._connection()
@@ -666,6 +669,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         result = process_queued_documents_once(limit=1)
         self.assertEqual(result.get('claimed_count'), 1)
         self.assertEqual(result.get('processed_count'), 1)
+        self.assertEqual(result.get('needs_ocr_count'), 0)
         self.assertEqual(result.get('failed_count'), 0)
         mock_extract.assert_called_once()
 
@@ -699,21 +703,16 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
 
     @patch('backend.document_service._UPLOAD_PROCESSING_EXECUTOR.submit')
     def test_queued_pdf_recovery_atomically_claims_before_submit(self, mock_submit):
-        upload_response = self.client.post(
-            '/api/documents/upload',
-            data={
-                'file': (
-                    self._build_pdf_upload('recover queued pdf coverage'),
-                    'recover-pdf-smoke.pdf',
-                ),
-                'workspace_id': self.workspace_id,
-            },
-            headers=self._auth_headers(),
-            content_type='multipart/form-data',
+        filename = 'recover-pdf-smoke.pdf'
+        self._save_pdf_upload_file(filename, 'recover queued pdf coverage')
+        document_id = self._insert_document(
+            'recover-pdf-smoke.pdf',
+            '',
+            file_type='pdf',
+            filename=filename,
+            processing_status='queued',
+            processed_at='',
         )
-        self.assertEqual(upload_response.status_code, 201)
-        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
-        self.assertGreater(document_id, 0)
 
         first_recovery = document_service.recover_queued_pdf_uploads(limit=5)
         self.assertEqual(first_recovery.get('queued_count'), 1)
@@ -738,21 +737,16 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
 
     @patch('backend.document_processing.extract_document_content', side_effect=RuntimeError('pdf worker boom'))
     def test_pdf_worker_persists_processing_failure(self, _mock_extract):
-        upload_response = self.client.post(
-            '/api/documents/upload',
-            data={
-                'file': (
-                    self._build_pdf_upload('worker failure pdf coverage'),
-                    'worker-pdf-failure.pdf',
-                ),
-                'workspace_id': self.workspace_id,
-            },
-            headers=self._auth_headers(),
-            content_type='multipart/form-data',
+        filename = 'worker-pdf-failure.pdf'
+        self._save_pdf_upload_file(filename, 'worker failure pdf coverage')
+        document_id = self._insert_document(
+            'worker-pdf-failure.pdf',
+            '',
+            file_type='pdf',
+            filename=filename,
+            processing_status='queued',
+            processed_at='',
         )
-        self.assertEqual(upload_response.status_code, 201)
-        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
-        self.assertGreater(document_id, 0)
 
         result = process_queued_documents_once(limit=1)
         self.assertEqual(result.get('claimed_count'), 1)
@@ -773,21 +767,24 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertTrue(str(failed_doc.get('processed_at') or '').strip())
 
     @patch('backend.shared.extract_document_text_from_storage')
-    def test_queued_pdf_summary_does_not_extract_pdf_in_request(self, mock_extract_from_storage):
+    def test_scanned_pdf_summary_reports_ocr_needed_without_request_extraction(self, mock_extract_from_storage):
         upload_response = self.client.post(
             '/api/documents/upload',
             data={
                 'file': (
-                    self._build_pdf_upload('queued summary pdf coverage'),
-                    'queued-summary.pdf',
+                    self._build_pdf_upload('scanned summary pdf coverage'),
+                    'scanned-summary.pdf',
                 ),
                 'workspace_id': self.workspace_id,
+                'client_pdf_text_status': 'needs_ocr',
             },
             headers=self._auth_headers(),
             content_type='multipart/form-data',
         )
         self.assertEqual(upload_response.status_code, 201)
-        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
+        upload_payload = upload_response.get_json()
+        self.assertEqual(upload_payload.get('processing_status'), 'needs_ocr')
+        document_id = parse_int(upload_payload.get('document_id'), 0, 0)
         self.assertGreater(document_id, 0)
 
         response = self.client.post(
@@ -797,9 +794,42 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 409)
         payload = response.get_json()
-        self.assertEqual(payload.get('processing_status'), 'queued')
-        self.assertIn('processing', payload.get('error') or '')
+        self.assertEqual(payload.get('processing_status'), 'needs_ocr')
+        self.assertIn('OCR', payload.get('error') or '')
         mock_extract_from_storage.assert_not_called()
+
+    @patch('backend.document_processing.extract_document_content', return_value=('Text extraction failed.', ''))
+    def test_legacy_worker_marks_no_text_pdf_needs_ocr(self, _mock_extract):
+        filename = 'worker-no-text.pdf'
+        self._save_pdf_upload_file(filename, 'worker no text pdf coverage')
+        document_id = self._insert_document(
+            'worker-no-text.pdf',
+            '',
+            file_type='pdf',
+            filename=filename,
+            processing_status='queued',
+            processed_at='',
+        )
+
+        result = process_queued_documents_once(limit=1)
+        self.assertEqual(result.get('claimed_count'), 1)
+        self.assertEqual(result.get('processed_count'), 0)
+        self.assertEqual(result.get('needs_ocr_count'), 1)
+        self.assertEqual(result.get('failed_count'), 0)
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                'SELECT content, processing_status, processing_error, processed_at FROM documents WHERE id = ?',
+                (document_id,),
+            )
+            doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+        self.assertEqual(doc.get('content') or '', '')
+        self.assertEqual(doc.get('processing_status'), 'needs_ocr')
+        self.assertIn('OCR', doc.get('processing_error') or '')
+        self.assertTrue(str(doc.get('processed_at') or '').strip())
 
     def test_ocr_quality_check_allows_normal_text(self):
         quality = assess_ocr_text_quality(

@@ -18,16 +18,20 @@ from .config import (
 from .db import get_db_connection
 from .document_processing import claim_next_queued_pdf_document, process_claimed_pdf_document
 from .document_domain import (
+    PDF_NEEDS_OCR_ERROR,
+    PDF_NEEDS_OCR_STATUS,
     build_editable_file_bytes,
     extract_document_content,
     extract_text_from_pdf_bytes,
     hard_delete_document_record,
     html_to_plaintext,
     infer_document_category,
+    is_pdf_text_available,
     plaintext_to_html,
     purge_expired_trashed_documents,
     sanitize_editor_html,
     user_can_edit_document,
+    normalize_pdf_text,
 )
 from .document_search import DOCUMENT_RESULT_COLUMNS_SQL, build_document_listing_base_query
 from .share_domain import (
@@ -37,7 +41,7 @@ from .share_domain import (
     user_can_manage_document_share_links,
 )
 from .security import get_authenticated_username
-from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, write_file_bytes_to_storage
+from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, upload_local_file_to_storage, write_file_bytes_to_storage
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
@@ -212,6 +216,49 @@ def _final_upload_category(original_filename, extracted_text, requested_category
         return infer_document_category(original_filename, extracted_text)
     final_category = normalize_document_category((workspace_settings or {}).get('default_category'))
     return final_category or DEFAULT_DOCUMENT_CATEGORY
+
+
+def _client_pdf_text_status():
+    safe_status = str(
+        request.form.get('client_pdf_text_status')
+        or request.form.get('client_pdf_text_state')
+        or ''
+    ).strip().lower()
+    if safe_status in ('processed', 'ready', 'text', 'text_available'):
+        return 'processed'
+    if safe_status in ('needs_ocr', 'no_text_available', 'no_text', 'action_required', 'scanned'):
+        return PDF_NEEDS_OCR_STATUS
+    if safe_status in ('client_failed', 'failed', 'error', 'unknown'):
+        return 'client_failed'
+    return ''
+
+
+def _client_pdf_text():
+    for field_name in ('client_extracted_text', 'client_pdf_text', 'extracted_text'):
+        value = request.form.get(field_name)
+        if value:
+            return normalize_pdf_text(value)
+    return ''
+
+
+def _extract_pdf_upload_content(local_filepath):
+    client_text = _client_pdf_text()
+    if is_pdf_text_available(client_text):
+        return normalize_pdf_text(client_text), '', 'processed', '', utcnow_iso()
+
+    client_status = _client_pdf_text_status()
+    if client_status == PDF_NEEDS_OCR_STATUS:
+        return '', '', PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso()
+
+    extracted_text, extracted_html = extract_document_content(
+        local_filepath,
+        'pdf',
+        allow_pdf_ocr=False,
+    )
+    if is_pdf_text_available(extracted_text):
+        return normalize_pdf_text(extracted_text), extracted_html or '', 'processed', '', utcnow_iso()
+
+    return '', '', PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso()
 
 
 def _reset_pdf_processing_claim(document_id, error_message):
@@ -586,11 +633,10 @@ def upload_file():
         processing_error = ''
         processed_at = utcnow_iso()
         if ext == 'pdf':
-            extracted_text = ''
-            extracted_html = ''
-            processing_status = 'queued'
-            processed_at = None
-            final_category = _final_upload_category(original_filename, '', requested_category, workspace_settings)
+            extracted_text, extracted_html, processing_status, processing_error, processed_at = _extract_pdf_upload_content(
+                local_filepath
+            )
+            final_category = _final_upload_category(original_filename, extracted_text, requested_category, workspace_settings)
         else:
             extracted_text, extracted_html = extract_document_content(local_filepath, ext)
             final_category = _final_upload_category(
@@ -601,29 +647,19 @@ def upload_file():
             )
 
         try:
+            mimetype = file.content_type or detect_mimetype(original_filename, ext)
+            upload_local_file_to_storage(local_filepath, unique_filename, mimetype)
             if S3_BUCKET and s3_client:
-                print(f"🚀 Uploading to S3: {S3_BUCKET}")
-                s3_client.upload_file(
-                    local_filepath,
-                    S3_BUCKET,
-                    unique_filename,
-                    ExtraArgs={'ContentType': file.content_type},
-                )
-                print("✅ Upload to S3 successful")
                 os.remove(local_filepath)
-                print("🗑️ Local file removed")
-                storage_written = True
-            else:
-                print("⚠️ S3_BUCKET not set or client failed, keeping local file")
-                storage_written = True
+            storage_written = True
         except Exception as e:
-            print(f"❌ S3 Upload Error: {e}")
+            print(f"❌ Storage upload error: {e}")
             if os.path.exists(local_filepath):
                 try:
                     os.remove(local_filepath)
                 except Exception:
                     pass
-            return jsonify({'error': f'Failed to upload to S3: {str(e)}'}), 500
+            return jsonify({'error': f'Failed to save uploaded file: {str(e)}'}), 500
 
         conn = get_db_connection()
         if not conn:
@@ -653,6 +689,7 @@ def upload_file():
                 'message': 'File uploaded successfully',
                 'document_id': document_id,
                 'processing_status': processing_status,
+                'processing_error': processing_error,
             }), 201
         except Exception as e:
             try:
@@ -1142,10 +1179,33 @@ def update_document_pdf_file(doc_id):
             print(f"PDF file update failed: {e}")
             return jsonify({'error': 'Failed to update source PDF file'}), 500
 
-        extracted_text = extract_text_from_pdf_bytes(file_bytes)
-        if not extracted_text.strip():
-            extracted_text = (doc.get('content') if hasattr(doc, 'get') else doc['content']) or ''
-        conn.execute('UPDATE documents SET content = ?, content_html = ? WHERE id = ?', (extracted_text, '', doc_id))
+        extracted_text = normalize_pdf_text(extract_text_from_pdf_bytes(file_bytes, allow_ocr=False))
+        if is_pdf_text_available(extracted_text):
+            conn.execute(
+                '''
+                UPDATE documents
+                SET content = ?,
+                    content_html = ?,
+                    processing_status = ?,
+                    processing_error = ?,
+                    processed_at = ?
+                WHERE id = ?
+                ''',
+                (extracted_text, '', 'processed', '', utcnow_iso(), doc_id),
+            )
+        else:
+            conn.execute(
+                '''
+                UPDATE documents
+                SET content = ?,
+                    content_html = ?,
+                    processing_status = ?,
+                    processing_error = ?,
+                    processed_at = ?
+                WHERE id = ?
+                ''',
+                ('', '', PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso(), doc_id),
+            )
         conn.commit()
 
         cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))

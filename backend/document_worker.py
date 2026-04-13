@@ -33,6 +33,7 @@ def main():
             'Document worker batch: '
             f"claimed={result.get('claimed_count', 0)} "
             f"processed={result.get('processed_count', 0)} "
+            f"needs_ocr={result.get('needs_ocr_count', 0)} "
             f"failed={result.get('failed_count', 0)}"
         )
         if result.get('error'):

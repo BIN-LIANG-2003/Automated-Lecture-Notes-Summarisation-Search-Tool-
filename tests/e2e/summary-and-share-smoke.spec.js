@@ -252,6 +252,57 @@ test('files detail pane summarize flow opens the current summary result modal', 
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
 });
 
+test('files list shows OCR-needed PDFs as action required', async ({ page }) => {
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 77,
+            filename: 'scanned-notes.pdf',
+            title: 'Scanned Notes',
+            uploaded_at: '2026-04-03T12:00:00.000Z',
+            file_type: 'pdf',
+            content: '',
+            content_html: '',
+            username: 'alice',
+            tags: '',
+            category: 'Computer Science',
+            workspace_id: 'ws-e2e',
+            processing_status: 'needs_ocr',
+            processing_error: 'No selectable text was found in this PDF. OCR or a text-selectable PDF is required before summaries and search.',
+            processed_at: '2026-04-03T12:00:00.000Z',
+          },
+        ],
+        total: 1,
+        limit: 20,
+        offset: 0,
+        has_more: false,
+        facets: {
+          tags: [],
+          categories: ['Computer Science'],
+          file_types: { pdf: 1 },
+        },
+      }),
+    });
+  });
+
+  await loginAsAlice(page);
+  await goToMyFiles(page);
+
+  const scannedCard = page.locator('.document-card', { hasText: 'Scanned Notes' });
+  await expect(scannedCard).toBeVisible();
+  await expect(scannedCard).toContainText('OCR Needed');
+  await expect(scannedCard).toContainText('No selectable text was found');
+  await expect(scannedCard.getByRole('button', { name: 'Summarize' })).toBeDisabled();
+});
+
 test('home embedded reader sharing keeps link management inside the send modal', async ({ page }) => {
   await loginAsAlice(page);
   await mockDocumentEmailShare(page);

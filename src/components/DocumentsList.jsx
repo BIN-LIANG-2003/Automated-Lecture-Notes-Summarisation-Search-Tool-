@@ -6,18 +6,33 @@ const IMAGE_EXT_SET = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
 const PROCESSING_STATUS_META = {
   queued: {
     label: 'Queued',
-    message: 'Text extraction will start in the background.',
-    summarizeTitle: 'Text extraction is queued. Summaries are available after processing.',
+    message: 'Text is not ready yet. Run the optional document worker or retry upload.',
+    summarizeTitle: 'Text is not ready. Run the optional worker or retry upload.',
   },
   processing: {
     label: 'Processing',
-    message: 'Text extraction is running in the background.',
-    summarizeTitle: 'Text extraction is still running. Summaries are available after processing.',
+    message: 'Text extraction is running in the document worker.',
+    summarizeTitle: 'Text extraction is running in the document worker.',
+  },
+  needs_ocr: {
+    label: 'OCR Needed',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
+  },
+  no_text_available: {
+    label: 'OCR Needed',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
+  },
+  action_required: {
+    label: 'Action Required',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
   },
   failed: {
     label: 'Failed',
     message: 'Text extraction failed.',
-    summarizeTitle: 'Text extraction failed. Summaries need processed text.',
+    summarizeTitle: 'Text extraction failed. Upload a text-selectable PDF or run OCR.',
   },
 };
 
@@ -247,7 +262,7 @@ export default function DocumentsList({
             const processingStatus = getProcessingStatus(doc);
             const processingMeta = PROCESSING_STATUS_META[processingStatus] || null;
             const processingError = getProcessingError(doc);
-            const processingMessage = processingStatus === 'failed'
+            const processingMessage = ['failed', 'needs_ocr', 'no_text_available', 'action_required'].includes(processingStatus)
               ? (processingError || processingMeta?.message)
               : processingMeta?.message;
             const summarizeBlockedByProcessing = Boolean(processingMeta);

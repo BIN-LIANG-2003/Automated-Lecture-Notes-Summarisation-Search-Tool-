@@ -36,18 +36,33 @@ const IMAGE_FILE_TYPE_SET = new Set(['jpg', 'jpeg', 'png', 'webp', 'gif']);
 const PROCESSING_STATUS_META = {
   queued: {
     label: 'Queued',
-    message: 'PDF text extraction will start in the background.',
-    summarizeTitle: 'PDF text extraction is queued. Summaries are available after processing.',
+    message: 'PDF text is not ready yet. Run the optional document worker or retry upload.',
+    summarizeTitle: 'PDF text is not ready. Run the optional worker or upload a text-selectable PDF.',
   },
   processing: {
     label: 'Processing',
-    message: 'PDF text extraction is running in the background.',
-    summarizeTitle: 'PDF text extraction is still running. Summaries are available after processing.',
+    message: 'PDF text extraction is running in the document worker.',
+    summarizeTitle: 'PDF text extraction is running in the document worker.',
+  },
+  needs_ocr: {
+    label: 'OCR Needed',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
+  },
+  no_text_available: {
+    label: 'OCR Needed',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
+  },
+  action_required: {
+    label: 'Action Required',
+    message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
+    summarizeTitle: 'This PDF needs OCR or selectable text before summaries are available.',
   },
   failed: {
     label: 'Failed',
     message: 'PDF text extraction failed.',
-    summarizeTitle: 'PDF text extraction failed. Summaries need processed text.',
+    summarizeTitle: 'PDF text extraction failed. Upload a text-selectable PDF or run OCR.',
   },
 };
 const DEFAULT_SUMMARY_PROGRESS = {
@@ -359,7 +374,7 @@ export default function DocumentDetail() {
         : 'Owner-only')
     : 'Share link available';
   const processingMeta = PROCESSING_STATUS_META[document.processingStatus] || null;
-  const processingMessage = document.processingStatus === 'failed'
+  const processingMessage = ['failed', 'needs_ocr', 'no_text_available', 'action_required'].includes(document.processingStatus)
     ? (document.processingError || processingMeta?.message)
     : processingMeta?.message;
   const summarizeBlockedByProcessing = Boolean(processingMeta);
@@ -1272,8 +1287,12 @@ export default function DocumentDetail() {
                           type="button"
                           className="btn"
                           onClick={() => handleAnalyzeText({ forceRefresh: true })}
-                          disabled={isAnalyzing || !canUseAiTools}
-                          title="Bypass cache and refresh document text before summarizing"
+                          disabled={isAnalyzing || !canUseAiTools || summarizeBlockedByProcessing}
+                          title={
+                            summarizeBlockedByProcessing
+                              ? processingMeta.summarizeTitle
+                              : 'Bypass cache and refresh document text before summarizing'
+                          }
                         >
                           Rebuild Summary
                         </button>

@@ -894,6 +894,22 @@ def normalize_pdf_text(text):
     return value.strip()
 
 
+PDF_TEXT_EXTRACTION_FAILED_TEXT = 'Text extraction failed.'
+PDF_NEEDS_OCR_STATUS = 'needs_ocr'
+PDF_NEEDS_OCR_ERROR = (
+    'No selectable text was found in this PDF. OCR or a text-selectable PDF is required before summaries and search.'
+)
+
+
+def is_pdf_text_available(text):
+    normalized = normalize_pdf_text(text or '')
+    if not normalized:
+        return False
+    if normalized.strip().lower() == PDF_TEXT_EXTRACTION_FAILED_TEXT.lower():
+        return False
+    return bool(re.search(r'\w', normalized, re.UNICODE))
+
+
 def compute_pdf_text_quality_metrics(text):
     normalized = normalize_pdf_text(text or '')
     tokens = re.findall(r'\S+', normalized)
@@ -1298,6 +1314,9 @@ def build_editable_file_bytes(file_ext, content, content_html=''):
 
 
 __all__ = [
+    'PDF_NEEDS_OCR_ERROR',
+    'PDF_NEEDS_OCR_STATUS',
+    'PDF_TEXT_EXTRACTION_FAILED_TEXT',
     'build_editable_file_bytes',
     'extract_document_content',
     'extract_text_from_pdf_bytes',
@@ -1305,7 +1324,9 @@ __all__ = [
     'hard_delete_document_record',
     'html_to_plaintext',
     'infer_document_category',
+    'is_pdf_text_available',
     'normalize_newlines',
+    'normalize_pdf_text',
     'plaintext_to_html',
     'purge_expired_trashed_documents',
     'sanitize_editor_html',

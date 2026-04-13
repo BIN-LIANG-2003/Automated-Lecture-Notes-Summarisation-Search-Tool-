@@ -7,7 +7,14 @@ from .config import (
     UPLOAD_PDF_OCR_FALLBACK,
 )
 from .db import get_db_connection
-from .document_domain import extract_document_content, infer_document_category
+from .document_domain import (
+    PDF_NEEDS_OCR_ERROR,
+    PDF_NEEDS_OCR_STATUS,
+    extract_document_content,
+    infer_document_category,
+    is_pdf_text_available,
+    normalize_pdf_text,
+)
 from .storage import storage_file_as_local_path
 from .utils import normalize_document_category, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_workspace_settings
@@ -170,6 +177,37 @@ def _mark_document_failed(document_id, error):
         conn.close()
 
 
+def _mark_document_needs_ocr(document_id, category):
+    conn = get_db_connection()
+    if not conn:
+        print(f'Document OCR-needed update skipped for {document_id}: database unavailable')
+        return
+    try:
+        now_iso = utcnow_iso()
+        conn.execute(
+            '''
+            UPDATE documents
+            SET content = ?,
+                content_html = ?,
+                category = ?,
+                processing_status = ?,
+                processing_error = ?,
+                processed_at = ?
+            WHERE id = ?
+            ''',
+            ('', '', category, PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, now_iso, document_id),
+        )
+        conn.commit()
+    except Exception as update_error:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'Document OCR-needed update failed for {document_id}: {update_error}')
+    finally:
+        conn.close()
+
+
 def process_claimed_pdf_document(document_row):
     doc = row_to_dict(document_row) or {}
     document_id = parse_int(doc.get('id'), 0, 0)
@@ -193,7 +231,10 @@ def process_claimed_pdf_document(document_row):
             doc.get('category') or '',
             workspace_settings,
         )
-        _mark_document_processed(document_id, extracted_text, extracted_html or '', final_category)
+        if not is_pdf_text_available(extracted_text):
+            _mark_document_needs_ocr(document_id, final_category)
+            return {'status': PDF_NEEDS_OCR_STATUS, 'document_id': document_id, 'error': PDF_NEEDS_OCR_ERROR}
+        _mark_document_processed(document_id, normalize_pdf_text(extracted_text), extracted_html or '', final_category)
         return {'status': 'processed', 'document_id': document_id, 'error': ''}
     except Exception as error:
         print(f'Document processing failed for {document_id}: {error}')
@@ -206,6 +247,7 @@ def process_queued_documents_once(limit=None):
     result = {
         'claimed_count': 0,
         'processed_count': 0,
+        'needs_ocr_count': 0,
         'failed_count': 0,
         'error': '',
     }
@@ -236,6 +278,8 @@ def process_queued_documents_once(limit=None):
         outcome = process_claimed_pdf_document(claimed)
         if outcome.get('status') == 'processed':
             result['processed_count'] += 1
+        elif outcome.get('status') == PDF_NEEDS_OCR_STATUS:
+            result['needs_ocr_count'] += 1
         else:
             result['failed_count'] += 1
 

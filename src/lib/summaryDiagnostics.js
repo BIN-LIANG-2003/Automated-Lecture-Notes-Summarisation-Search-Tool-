@@ -106,13 +106,16 @@ export const formatSummaryErrorMessage = (payload) => {
   const textSource = String(details.text_source || '').trim().toLowerCase();
   const extractionError = String(details.file_extraction_error || '').trim();
   const attemptedExtraction = Boolean(details.attempted_file_extraction);
+  const processingStatus = String(payload?.processing_status || details.processing_status || '').trim().toLowerCase();
 
   const hints = [];
   if (fileType === 'pdf') {
-    if (attemptedExtraction && extractionError) {
+    if (processingStatus === 'needs_ocr' || processingStatus === 'no_text_available') {
+      hints.push('Use OCR or upload a PDF with selectable text, then summarize again.');
+    } else if (attemptedExtraction && extractionError) {
       hints.push(`PDF extract detail: ${extractionError}`);
     } else if (textSource === 'empty' || attemptedExtraction) {
-      hints.push('If this is a scanned PDF, OCR fallback must be available on the server. Try Rebuild after deployment.');
+      hints.push('If this is a scanned PDF, OCR is needed before summaries are available.');
     }
   } else if (fileType === 'docx' || fileType === 'txt') {
     if (attemptedExtraction && extractionError) {

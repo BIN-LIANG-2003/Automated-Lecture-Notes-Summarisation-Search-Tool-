@@ -139,9 +139,10 @@ npm run build
 ```
 
 - Local uploads are written to `uploads/` unless S3 is configured.
-- PDF uploads are saved and listed immediately with `processing_status=queued`. Run `python -m backend.document_worker` in a second terminal to process queued PDFs, or `python -m backend.document_worker --once` to process one batch and exit.
-- The upload worker reads PDFs through a local file path. Local development reuses `uploads/` directly; S3-backed deployments download one object to one temporary file for extraction instead of reading the full PDF into memory and writing another full copy.
-- `UPLOAD_PDF_OCR_FALLBACK` defaults off, so expensive `ocrmypdf` fallback work is not part of the normal upload path. Explicit OCR and summary refresh flows can still use their existing OCR settings.
+- PDF uploads no longer default to a fake queue. The browser extracts selectable PDF text with `pdfjs-dist` before upload; if text is found, the document is saved as `processing_status=processed` and is ready for click-to-generate summaries. If no selectable text is found, the document is saved as `processing_status=needs_ocr` with a clear action-required message.
+- The legacy upload worker remains available for old `queued` PDF rows or explicit background processing. Run `python -m backend.document_worker` in a second terminal, or `python -m backend.document_worker --once` to process one batch and exit.
+- The upload worker and summary refresh paths read PDFs through a local file path. Local development reuses `uploads/` directly; S3-backed deployments download one object to one temporary file for extraction instead of reading the full PDF into memory and writing another full copy.
+- `UPLOAD_PDF_OCR_FALLBACK` defaults off, so expensive `ocrmypdf` fallback work is not part of the normal upload or summary request path.
 - Local SQLite data is stored in `database.db` and is ignored by Git.
 
 ## Build and Deploy Notes
@@ -151,9 +152,9 @@ npm run build
 - The Docker image uses a multi-stage build:
   - stage 1 runs `npm ci` and `npm run build`
   - stage 2 installs Python/backend dependencies and copies the built `dist/`
-- The container starts Gunicorn with a 120 second timeout as a safety margin; long PDF extraction is kept out of the request path rather than relying on this timeout.
+- The container starts Gunicorn with a 120 second timeout as a safety margin; normal text-PDF uploads are prepared by browser-side selectable-text extraction rather than relying on this timeout.
 - `.dockerignore` excludes local `dist/` because Docker rebuilds it internally; this reduces build context without changing runtime behavior.
-- On Render, create a separate Background Worker using the same image and environment as the web service. Use this start command:
+- Optional: on Render, create a separate Background Worker using the same image and environment as the web service if you need to recover legacy `queued` PDFs or run heavier background processing. Use this start command:
 
 ```bash
 python -m backend.document_worker

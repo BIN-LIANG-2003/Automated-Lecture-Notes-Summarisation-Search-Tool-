@@ -8,7 +8,6 @@ import re
 import secrets
 import shutil
 import subprocess
-import tempfile
 import uuid
 import requests
 from datetime import datetime, timedelta
@@ -46,10 +45,14 @@ from .config import (
 )
 from .db import get_db_connection
 from .document_domain import (
+    PDF_NEEDS_OCR_ERROR,
+    PDF_NEEDS_OCR_STATUS,
     extract_document_content,
-    extract_text_from_pdf_bytes_with_meta,
     normalize_newlines,
+    is_pdf_text_available,
     plaintext_to_html,
+    normalize_pdf_text,
+    score_pdf_text_quality,
     user_can_edit_document,
 )
 from .security import create_auth_token, decode_auth_token, get_authenticated_username, get_bearer_token
@@ -59,7 +62,7 @@ from .share_domain import (
 )
 from .storage import (
     detect_mimetype,
-    read_file_bytes_from_storage,
+    storage_file_as_local_path,
 )
 from .utils import (
     normalize_email,
@@ -1385,25 +1388,33 @@ def extract_document_text_from_storage(filename, file_type):
     if not safe_filename or not safe_file_type:
         return '', {}
 
-    source_bytes = read_file_bytes_from_storage(safe_filename)
     if safe_file_type == 'pdf':
-        extracted_text, meta = extract_text_from_pdf_bytes_with_meta(source_bytes)
-        return str(extracted_text or '').strip(), meta if isinstance(meta, dict) else {}
+        with storage_file_as_local_path(safe_filename, suffix='.pdf') as source_path:
+            extracted_text, _ = extract_document_content(source_path, 'pdf', allow_pdf_ocr=False)
+        normalized_text = normalize_pdf_text(extracted_text)
+        if not is_pdf_text_available(normalized_text):
+            return '', {
+                'extractor': 'path-no-ocr',
+                'ocr_attempted': False,
+                'ocr_used': False,
+                'note': PDF_NEEDS_OCR_ERROR,
+            }
+        score, metrics = score_pdf_text_quality(normalized_text)
+        return normalized_text, {
+            'extractor': 'path-no-ocr',
+            'ocr_attempted': False,
+            'ocr_used': False,
+            'quality_score_before': score,
+            'quality_score_after': score,
+            'quality_metrics_before': metrics,
+            'quality_metrics_after': metrics,
+            'note': '',
+        }
 
     if safe_file_type in ('docx', 'txt'):
-        temp_path = ''
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, suffix=f'.{safe_file_type}') as temp_file:
-                temp_file.write(source_bytes)
-                temp_path = temp_file.name
-            extracted_text, _ = extract_document_content(temp_path, safe_file_type)
-            return str(extracted_text or '').strip(), {}
-        finally:
-            if temp_path and os.path.exists(temp_path):
-                try:
-                    os.remove(temp_path)
-                except OSError:
-                    pass
+        with storage_file_as_local_path(safe_filename, suffix=f'.{safe_file_type}') as source_path:
+            extracted_text, _ = extract_document_content(source_path, safe_file_type)
+        return str(extracted_text or '').strip(), {}
 
     return '', {}
 
@@ -1748,17 +1759,37 @@ def analyze_text():
                 and workspace_settings.get('allow_note_editing', True)
             )
 
-            if doc_file_type == 'pdf' and not doc_text_content and doc_processing_status in ('queued', 'processing'):
-                return jsonify({
-                    'error': 'PDF text extraction is still processing. Try again after the upload worker finishes.',
-                    'processing_status': doc_processing_status,
-                }), 409
-            if doc_file_type == 'pdf' and not doc_text_content and doc_processing_status == 'failed':
-                return jsonify({
-                    'error': doc_processing_error or 'PDF text extraction failed. Upload the file again or retry processing.',
-                    'processing_status': doc_processing_status,
-                    'processing_error': doc_processing_error,
-                }), 409
+            if doc_file_type == 'pdf' and not doc_text_content:
+                if doc_processing_status in (PDF_NEEDS_OCR_STATUS, 'no_text_available', 'action_required'):
+                    return jsonify({
+                        'error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                        'processing_status': doc_processing_status or PDF_NEEDS_OCR_STATUS,
+                        'processing_error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                        'details': {
+                            'doc_id': requested_doc_id,
+                            'file_type': doc_file_type,
+                            'text_source': 'empty',
+                            'attempted_file_extraction': False,
+                            'processing_status': doc_processing_status or PDF_NEEDS_OCR_STATUS,
+                            'processing_error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                        },
+                    }), 409
+                if doc_processing_status == 'queued':
+                    return jsonify({
+                        'error': 'PDF text is not ready. Run the optional document worker, or re-upload with a text-selectable PDF.',
+                        'processing_status': doc_processing_status,
+                    }), 409
+                if doc_processing_status == 'processing':
+                    return jsonify({
+                        'error': 'PDF text extraction is currently running in the document worker.',
+                        'processing_status': doc_processing_status,
+                    }), 409
+                if doc_processing_status == 'failed':
+                    return jsonify({
+                        'error': doc_processing_error or 'PDF text extraction failed. Upload a text-selectable PDF or run OCR.',
+                        'processing_status': doc_processing_status,
+                        'processing_error': doc_processing_error,
+                    }), 409
 
             # On explicit rebuild, refresh file text from source file so summary
             # uses latest/full extraction quality instead of stale db content.
@@ -1773,12 +1804,34 @@ def analyze_text():
                             if doc_file_type in ('docx', 'txt'):
                                 next_content_html = plaintext_to_html(refreshed_text)
                             conn.execute(
-                                'UPDATE documents SET content = ?, content_html = ? WHERE id = ?',
-                                (refreshed_text, next_content_html, requested_doc_id)
+                                '''
+                                UPDATE documents
+                                SET content = ?,
+                                    content_html = ?,
+                                    processing_status = ?,
+                                    processing_error = ?,
+                                    processed_at = ?
+                                WHERE id = ?
+                                ''',
+                                (refreshed_text, next_content_html, 'processed', '', utcnow_iso(), requested_doc_id)
                             )
                             conn.commit()
                         doc_text_content = refreshed_text
                         refreshed_from_file = True
+                    elif doc_file_type == 'pdf' and not doc_text_content and can_persist_doc_text:
+                        conn.execute(
+                            '''
+                            UPDATE documents
+                            SET processing_status = ?,
+                                processing_error = ?,
+                                processed_at = ?
+                            WHERE id = ?
+                            ''',
+                            (PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso(), requested_doc_id)
+                        )
+                        conn.commit()
+                        doc_processing_status = PDF_NEEDS_OCR_STATUS
+                        doc_processing_error = PDF_NEEDS_OCR_ERROR
                 except Exception as e:
                     print(f"Document re-extraction on summary refresh failed: {e}")
 
@@ -1795,12 +1848,34 @@ def analyze_text():
                             if doc_file_type in ('docx', 'txt'):
                                 next_content_html = plaintext_to_html(extracted_text)
                             conn.execute(
-                                'UPDATE documents SET content = ?, content_html = ? WHERE id = ?',
-                                (extracted_text, next_content_html, requested_doc_id)
+                                '''
+                                UPDATE documents
+                                SET content = ?,
+                                    content_html = ?,
+                                    processing_status = ?,
+                                    processing_error = ?,
+                                    processed_at = ?
+                                WHERE id = ?
+                                ''',
+                                (extracted_text, next_content_html, 'processed', '', utcnow_iso(), requested_doc_id)
                             )
                             conn.commit()
                         doc_text_content = extracted_text
                         refreshed_from_file = True
+                    elif doc_file_type == 'pdf' and can_persist_doc_text:
+                        conn.execute(
+                            '''
+                            UPDATE documents
+                            SET processing_status = ?,
+                                processing_error = ?,
+                                processed_at = ?
+                            WHERE id = ?
+                            ''',
+                            (PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso(), requested_doc_id)
+                        )
+                        conn.commit()
+                        doc_processing_status = PDF_NEEDS_OCR_STATUS
+                        doc_processing_error = PDF_NEEDS_OCR_ERROR
                 except Exception as e:
                     doc_text_extraction_error = str(e)
                     print(f"Document text extraction on summarize failed: {e}")
@@ -1870,17 +1945,24 @@ def analyze_text():
             if doc_file_type in ('png', 'jpg', 'jpeg', 'webp', 'gif'):
                 error_message = "No text is available for this image yet. Run OCR first, then summarize the extracted text."
             elif doc_file_type == 'pdf':
-                error_message = "No text could be extracted from this PDF. Try Rebuild, or use a clearer PDF with selectable text."
+                if doc_processing_status in (PDF_NEEDS_OCR_STATUS, 'no_text_available', 'action_required'):
+                    error_message = doc_processing_error or PDF_NEEDS_OCR_ERROR
+                else:
+                    error_message = "No selectable text is available for this PDF. OCR or a text-selectable PDF is required before summarizing."
             elif doc_file_type in ('docx', 'txt'):
                 error_message = "No text could be extracted from this file. Open the note and add or edit content first."
             return jsonify({
                 "error": error_message,
+                "processing_status": doc_processing_status,
+                "processing_error": doc_processing_error,
                 "details": {
                     "doc_id": requested_doc_id,
                     "file_type": doc_file_type,
                     "text_source": text_source,
                     "attempted_file_extraction": attempted_doc_text_extraction,
                     "file_extraction_error": doc_text_extraction_error,
+                    "processing_status": doc_processing_status,
+                    "processing_error": doc_processing_error,
                 }
             }), 400
         return jsonify({"error": "No text provided"}), 400

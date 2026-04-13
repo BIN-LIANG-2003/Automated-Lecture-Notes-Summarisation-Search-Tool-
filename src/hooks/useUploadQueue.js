@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { authFetch } from '../lib/authFetch.js';
+import { extractSelectableTextFromPdfFile, isPdfUploadFile } from '../lib/pdfTextExtraction.js';
 
 const MAX_UPLOAD_QUEUE_ITEMS = 30;
 
@@ -95,7 +96,8 @@ export default function useUploadQueue({
     }
   };
 
-  const uploadSingleFile = async (file, activeUser) => {
+  const uploadSingleFile = async (item, activeUser) => {
+    const file = item?.file;
     const formData = new FormData();
     formData.append('file', file);
     formData.append('username', activeUser);
@@ -107,6 +109,46 @@ export default function useUploadQueue({
       formData.append('category', preferredCategory);
     }
     try {
+      if (isPdfUploadFile(file)) {
+        setUploadQueue((prev) =>
+          prev.map((row) =>
+            row.id === item.id
+              ? {
+                  ...row,
+                  progress: 15,
+                  message: 'Reading selectable PDF text...',
+                }
+              : row
+          )
+        );
+        const extraction = await extractSelectableTextFromPdfFile(file);
+        formData.append('client_pdf_text_status', extraction.status || 'client_failed');
+        if (extraction.text) {
+          formData.append('client_extracted_text', extraction.text);
+        }
+        if (extraction.pageCount) {
+          formData.append('client_pdf_page_count', String(extraction.pageCount));
+        }
+        if (extraction.error) {
+          formData.append('client_pdf_text_error', extraction.error);
+        }
+        setUploadQueue((prev) =>
+          prev.map((row) =>
+            row.id === item.id
+              ? {
+                  ...row,
+                  progress: 45,
+                  message:
+                    extraction.status === 'needs_ocr'
+                      ? 'No selectable PDF text found; saving OCR-needed state...'
+                      : extraction.status === 'client_failed'
+                        ? 'Uploading file; server will retry text extraction...'
+                        : 'Uploading file and prepared text...',
+                }
+              : row
+          )
+        );
+      }
       const response = await authFetch('/api/documents/upload', {
         method: 'POST',
         body: formData,
@@ -147,7 +189,7 @@ export default function useUploadQueue({
               : row
           )
         );
-        const result = await uploadSingleFile(item.file, activeUser);
+        const result = await uploadSingleFile(item, activeUser);
         if (result.ok) successCount += 1;
         setUploadQueue((prev) =>
           prev.map((row) =>
