@@ -28,7 +28,7 @@ def _processing_stale_cutoff():
     return (datetime.utcnow() - timedelta(minutes=minutes)).isoformat()
 
 
-def _claim_next_queued_pdf_document(conn):
+def claim_next_queued_pdf_document(conn):
     stale_cutoff = _processing_stale_cutoff()
     cursor = conn.execute(
         f'''
@@ -84,6 +84,9 @@ def _claim_next_queued_pdf_document(conn):
     cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (document_id,))
     claimed = row_to_dict(cursor.fetchone()) or {}
     return claimed or None
+
+
+_claim_next_queued_pdf_document = claim_next_queued_pdf_document
 
 
 def _final_processing_category(title, extracted_text, current_category, workspace_settings):

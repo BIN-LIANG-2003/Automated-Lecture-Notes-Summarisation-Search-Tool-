@@ -4,7 +4,7 @@ from pathlib import Path
 from flask import Flask
 from flask_cors import CORS
 
-from . import config, db, security, shared
+from . import config, db, document_service, security, shared
 from .auth import auth_bp
 from .documents import documents_bp
 from .feedback import feedback_bp
@@ -27,6 +27,7 @@ def create_app():
 
     shared.app = app
     db.init_db()
+    document_service.recover_queued_pdf_uploads()
     app.before_request(security.enforce_auth_token_middleware)
 
     app.register_blueprint(auth_bp)

@@ -1,5 +1,7 @@
 import io
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -9,9 +11,12 @@ from docx import Document as DocxDocument
 from reportlab.pdfgen import canvas
 from werkzeug.security import generate_password_hash
 
+os.environ.setdefault('APP_ENV', 'development')
+
 from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
+from backend import document_service
 from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
 from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input
@@ -230,6 +235,64 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         payload = ok_response.get_json()
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'Protected Notes')
+
+    def test_auth_secret_policy_requires_strong_secret_or_explicit_development(self):
+        def run_config_import(env_updates):
+            env = os.environ.copy()
+            for key in (
+                'APP_ENV',
+                'FLASK_ENV',
+                'AUTH_TOKEN_SECRET',
+                'FLASK_SECRET_KEY',
+                'RENDER',
+                'DYNO',
+                'FLY_APP_NAME',
+                'K_SERVICE',
+                'RAILWAY_ENVIRONMENT',
+            ):
+                env.pop(key, None)
+            env['PYTHONPATH'] = self.original_cwd
+            env['PYTHON_DOTENV_DISABLED'] = '1'
+            env.update(env_updates)
+            return subprocess.run(
+                [
+                    sys.executable,
+                    '-c',
+                    (
+                        'import backend.config as config; '
+                        'print(f"SECRET_LEN={len(config.AUTH_TOKEN_SECRET)}"); '
+                        'print(f"SECRET_SOURCE={config.AUTH_TOKEN_SECRET_SOURCE}")'
+                    ),
+                ],
+                cwd=self.original_cwd,
+                env=env,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+
+        missing_secret = run_config_import({})
+        self.assertNotEqual(missing_secret.returncode, 0)
+        self.assertIn('AUTH_TOKEN_SECRET', f'{missing_secret.stdout}\n{missing_secret.stderr}')
+
+        explicit_dev = run_config_import({'APP_ENV': 'development'})
+        self.assertEqual(explicit_dev.returncode, 0, explicit_dev.stderr)
+        self.assertIn('SECRET_SOURCE=generated-development', explicit_dev.stdout)
+        self.assertIn('per-process random secret', explicit_dev.stdout)
+
+        weak_dev = run_config_import({'FLASK_ENV': 'development', 'AUTH_TOKEN_SECRET': 'short'})
+        self.assertEqual(weak_dev.returncode, 0, weak_dev.stderr)
+        self.assertIn('SECRET_SOURCE=generated-development', weak_dev.stdout)
+
+        strong_secret = run_config_import({'AUTH_TOKEN_SECRET': 's' * 32})
+        self.assertEqual(strong_secret.returncode, 0, strong_secret.stderr)
+        self.assertIn('SECRET_LEN=32', strong_secret.stdout)
+        self.assertIn('SECRET_SOURCE=auth_token_secret', strong_secret.stdout)
+
+        strong_legacy = run_config_import({'FLASK_SECRET_KEY': 'l' * 32})
+        self.assertEqual(strong_legacy.returncode, 0, strong_legacy.stderr)
+        self.assertIn('SECRET_LEN=32', strong_legacy.stdout)
+        self.assertIn('SECRET_SOURCE=flask_secret_key', strong_legacy.stdout)
 
     @patch('backend.share_link_service.send_document_share_email', return_value=(True, ''))
     def test_send_note_by_email_creates_share_link_and_returns_share_payload(self, _mock_send_share_email):
@@ -633,6 +696,45 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         search_payload = search_response.get_json()
         self.assertEqual(search_payload['total'], 1)
         self.assertEqual(search_payload['items'][0]['title'], 'worker-pdf-smoke.pdf')
+
+    @patch('backend.document_service._UPLOAD_PROCESSING_EXECUTOR.submit')
+    def test_queued_pdf_recovery_atomically_claims_before_submit(self, mock_submit):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (
+                    self._build_pdf_upload('recover queued pdf coverage'),
+                    'recover-pdf-smoke.pdf',
+                ),
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        document_id = parse_int(upload_response.get_json().get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+
+        first_recovery = document_service.recover_queued_pdf_uploads(limit=5)
+        self.assertEqual(first_recovery.get('queued_count'), 1)
+        self.assertEqual(first_recovery.get('error'), '')
+        mock_submit.assert_called_once()
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                'SELECT processing_status, processing_started_at FROM documents WHERE id = ?',
+                (document_id,),
+            )
+            claimed_doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+        self.assertEqual(claimed_doc.get('processing_status'), 'processing')
+        self.assertTrue(str(claimed_doc.get('processing_started_at') or '').strip())
+
+        second_recovery = document_service.recover_queued_pdf_uploads(limit=5)
+        self.assertEqual(second_recovery.get('queued_count'), 0)
+        self.assertEqual(mock_submit.call_count, 1)
 
     @patch('backend.document_processing.extract_document_content', side_effect=RuntimeError('pdf worker boom'))
     def test_pdf_worker_persists_processing_failure(self, _mock_extract):

@@ -1,12 +1,22 @@
 import io
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from flask import current_app, jsonify, request, send_file
 
-from .config import DEFAULT_DOCUMENT_CATEGORY, DEFAULT_WORKSPACE_SETTINGS, MIME_BY_EXT, S3_BUCKET, s3_client, TRASH_RETENTION_DAYS
+from .config import (
+    DEFAULT_DOCUMENT_CATEGORY,
+    DEFAULT_WORKSPACE_SETTINGS,
+    DOCUMENT_WORKER_BATCH_SIZE,
+    MIME_BY_EXT,
+    S3_BUCKET,
+    s3_client,
+    TRASH_RETENTION_DAYS,
+)
 from .db import get_db_connection
+from .document_processing import claim_next_queued_pdf_document, process_claimed_pdf_document
 from .document_domain import (
     build_editable_file_bytes,
     extract_document_content,
@@ -30,6 +40,9 @@ from .security import get_authenticated_username
 from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, write_file_bytes_to_storage
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
+
+
+_UPLOAD_PROCESSING_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
 def _normalize_ocr_import_format(value):
@@ -199,6 +212,91 @@ def _final_upload_category(original_filename, extracted_text, requested_category
         return infer_document_category(original_filename, extracted_text)
     final_category = normalize_document_category((workspace_settings or {}).get('default_category'))
     return final_category or DEFAULT_DOCUMENT_CATEGORY
+
+
+def _reset_pdf_processing_claim(document_id, error_message):
+    conn = get_db_connection()
+    if not conn:
+        print(f'PDF processing claim reset skipped for {document_id}: database unavailable')
+        return
+    try:
+        conn.execute(
+            '''
+            UPDATE documents
+            SET processing_status = ?,
+                processing_error = ?,
+                processing_started_at = NULL
+            WHERE id = ?
+              AND LOWER(COALESCE(file_type, '')) = 'pdf'
+              AND LOWER(COALESCE(processing_status, '')) = 'processing'
+            ''',
+            ('queued', str(error_message or 'Failed to submit PDF processing job')[:500], document_id),
+        )
+        conn.commit()
+    except Exception as error:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'PDF processing claim reset failed for {document_id}: {error}')
+    finally:
+        conn.close()
+
+
+def _claim_next_pdf_processing_job():
+    conn = get_db_connection()
+    if not conn:
+        raise RuntimeError('Database connection failed')
+    try:
+        claimed = claim_next_queued_pdf_document(conn)
+        conn.commit()
+        return claimed
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def recover_queued_pdf_uploads(limit=None):
+    safe_limit = parse_int(
+        limit if limit is not None else DOCUMENT_WORKER_BATCH_SIZE,
+        DOCUMENT_WORKER_BATCH_SIZE,
+        1,
+        100,
+    )
+    queued_count = 0
+    errors = []
+
+    for _ in range(safe_limit):
+        try:
+            claimed = _claim_next_pdf_processing_job()
+        except Exception as error:
+            errors.append(str(error))
+            print(f'Queued PDF upload recovery claim failed: {error}')
+            break
+
+        if not claimed:
+            break
+
+        document_id = parse_int(claimed.get('id'), 0, 0)
+        try:
+            _UPLOAD_PROCESSING_EXECUTOR.submit(process_claimed_pdf_document, claimed)
+            queued_count += 1
+        except Exception as error:
+            errors.append(str(error))
+            print(f'Queued PDF upload recovery submit failed for document {document_id}: {error}')
+            _reset_pdf_processing_claim(document_id, error)
+
+    if queued_count:
+        print(f'Recovered {queued_count} queued PDF upload(s) for background processing.')
+    return {
+        'queued_count': queued_count,
+        'error': '; '.join(errors)[:500],
+    }
 
 
 def get_documents():

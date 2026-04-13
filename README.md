@@ -72,7 +72,7 @@ npm ci
 cp .env.example .env
 ```
 
-Set the variables you actually need for your environment. Local development can run with SQLite and local uploads; production should set a real `AUTH_TOKEN_SECRET` and, if needed, `DATABASE_URL`.
+Set the variables you actually need for your environment. Local development can run with SQLite and local uploads. Outside explicit development mode, set a real `AUTH_TOKEN_SECRET` and, if needed, `DATABASE_URL`.
 
 ### 3. Start locally
 
@@ -102,8 +102,8 @@ The Vite dev server runs on `http://127.0.0.1:5173` and proxies `/api` and `/upl
 
 See [.env.example](.env.example) for the documented template. The main variables are:
 
-- `APP_ENV` / `FLASK_ENV`: production detection for auth-secret guard
-- `AUTH_TOKEN_SECRET`: required strong token secret in production
+- `APP_ENV` / `FLASK_ENV`: set one to `development` for local-only generated auth secret fallback
+- `AUTH_TOKEN_SECRET`: required strong token secret outside explicit development mode
 - `AUTH_TOKEN_TTL_SECONDS`: token lifetime
 - `DATABASE_URL`: enables PostgreSQL; if unset, the app uses local SQLite `database.db`
 - `APP_BASE_URL`: public app origin used in invite/share link generation and email-verification links
@@ -201,7 +201,7 @@ python scripts/rebuild_document_search.py
 - If `username` is still supplied by older callers, it is treated as a compatibility claim and must match the authenticated user.
 - Query-string auth is retained only for `/api/documents/:id/file?auth_token=...` as transitional compatibility for inline preview.
 - That compatibility response is returned with `Cache-Control: no-store` headers.
-- In production or common hosted environments, startup fails closed if `AUTH_TOKEN_SECRET` is empty, default, or weak.
+- Outside explicit development mode, startup fails closed if `AUTH_TOKEN_SECRET` is empty, default, or weak. `FLASK_SECRET_KEY` remains a compatibility fallback only when it is at least 32 characters long.
 
 ## Generated Assets and Repository Hygiene
 

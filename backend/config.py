@@ -1,4 +1,5 @@
 import os
+import secrets
 
 import boto3
 from docx.enum.text import WD_COLOR_INDEX
@@ -18,7 +19,6 @@ os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 ALLOWED_EXTENSIONS = {'txt', 'pdf', 'png', 'jpg', 'jpeg', 'gif', 'docx', 'webp'}
 
 GOOGLE_CLIENT_ID = '1076922320508-6jdkr9v6g7rku2dipd6kr3n3thojdvn4.apps.googleusercontent.com'
-DEFAULT_AUTH_TOKEN_SECRET = 'studyhub-dev-secret-change-me'
 MIN_AUTH_TOKEN_SECRET_LENGTH = 32
 WEAK_AUTH_TOKEN_SECRET_VALUES = {
     '',
@@ -28,27 +28,21 @@ WEAK_AUTH_TOKEN_SECRET_VALUES = {
     'replace-with-at-least-32-random-characters',
     'secret',
     'studyhub',
-    DEFAULT_AUTH_TOKEN_SECRET,
+    'studyhub-dev-secret-change-me',
 }
+
+
+def _is_explicit_development_environment():
+    return any(
+        str(os.environ.get(env_name) or '').strip().lower() == 'development'
+        for env_name in ('APP_ENV', 'FLASK_ENV')
+    )
 
 
 def _is_production_environment():
     return any(
         str(os.environ.get(env_name) or '').strip().lower() == 'production'
         for env_name in ('APP_ENV', 'FLASK_ENV')
-    )
-
-
-def _is_deployed_environment():
-    return any(
-        str(os.environ.get(env_name) or '').strip()
-        for env_name in (
-            'RENDER',
-            'DYNO',
-            'FLY_APP_NAME',
-            'K_SERVICE',
-            'RAILWAY_ENVIRONMENT',
-        )
     )
 
 
@@ -62,21 +56,52 @@ def _auth_token_secret_is_weak(value):
     return False
 
 
-_primary_auth_token_secret = (os.environ.get('AUTH_TOKEN_SECRET') or '').strip()
-_legacy_auth_token_secret = (os.environ.get('FLASK_SECRET_KEY') or '').strip()
-if _primary_auth_token_secret:
-    AUTH_TOKEN_SECRET = _primary_auth_token_secret
-elif _legacy_auth_token_secret and not _auth_token_secret_is_weak(_legacy_auth_token_secret):
-    AUTH_TOKEN_SECRET = _legacy_auth_token_secret
-else:
-    AUTH_TOKEN_SECRET = DEFAULT_AUTH_TOKEN_SECRET
-
-IS_PRODUCTION_ENV = _is_production_environment()
-if (IS_PRODUCTION_ENV or _is_deployed_environment()) and _auth_token_secret_is_weak(_primary_auth_token_secret):
-    raise RuntimeError(
-        'AUTH_TOKEN_SECRET must be set to a strong non-default value in production or deployed environments. '
-        f'Use at least {MIN_AUTH_TOKEN_SECRET_LENGTH} characters and avoid default placeholders.'
+def _generate_development_auth_token_secret(reason):
+    generated_secret = secrets.token_urlsafe(48)
+    print(
+        '⚠️ AUTH_TOKEN_SECRET is missing or weak in explicit development mode; '
+        'generated a per-process random secret. Existing auth tokens will be invalid after restart. '
+        f'Set a strong AUTH_TOKEN_SECRET for stable local sessions. Reason: {reason}.'
     )
+    return generated_secret
+
+
+def _resolve_auth_token_secret():
+    primary_secret = (os.environ.get('AUTH_TOKEN_SECRET') or '').strip()
+    legacy_secret = (os.environ.get('FLASK_SECRET_KEY') or '').strip()
+    is_explicit_development = _is_explicit_development_environment()
+
+    if primary_secret:
+        if not _auth_token_secret_is_weak(primary_secret):
+            return primary_secret, 'auth_token_secret'
+        if is_explicit_development:
+            return _generate_development_auth_token_secret('AUTH_TOKEN_SECRET is weak'), 'generated-development'
+        raise RuntimeError(
+            'AUTH_TOKEN_SECRET must be a strong non-default value outside explicit development mode. '
+            f'Use at least {MIN_AUTH_TOKEN_SECRET_LENGTH} characters and avoid default placeholders.'
+        )
+
+    if legacy_secret:
+        if not _auth_token_secret_is_weak(legacy_secret):
+            return legacy_secret, 'flask_secret_key'
+        if is_explicit_development:
+            return _generate_development_auth_token_secret('FLASK_SECRET_KEY is weak'), 'generated-development'
+        raise RuntimeError(
+            'FLASK_SECRET_KEY cannot be used for auth tokens unless it is strong. '
+            f'Set AUTH_TOKEN_SECRET to at least {MIN_AUTH_TOKEN_SECRET_LENGTH} characters.'
+        )
+
+    if is_explicit_development:
+        return _generate_development_auth_token_secret('AUTH_TOKEN_SECRET is missing'), 'generated-development'
+
+    raise RuntimeError(
+        'AUTH_TOKEN_SECRET must be set outside explicit development mode. '
+        'For local development set APP_ENV=development or FLASK_ENV=development, or provide a strong AUTH_TOKEN_SECRET.'
+    )
+
+
+AUTH_TOKEN_SECRET, AUTH_TOKEN_SECRET_SOURCE = _resolve_auth_token_secret()
+IS_PRODUCTION_ENV = _is_production_environment()
 
 AUTH_TOKEN_SALT = 'studyhub-auth-token-v1'
 try:
