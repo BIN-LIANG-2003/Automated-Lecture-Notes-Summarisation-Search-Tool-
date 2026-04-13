@@ -252,7 +252,7 @@ test('files detail pane summarize flow opens the current summary result modal', 
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
 });
 
-test('home embedded reader sharing is send-first and hides old shared links panel', async ({ page }) => {
+test('home embedded reader sharing only exposes Send before modal flow', async ({ page }) => {
   await loginAsAlice(page);
   await mockDocumentEmailShare(page);
   await goToMyFiles(page);
@@ -267,16 +267,21 @@ test('home embedded reader sharing is send-first and hides old shared links pane
   const embeddedReader = page.locator('.document-detail-card');
   await expect(embeddedReader.getByRole('heading', { name: 'Graph Notes' })).toBeVisible();
   await expect(embeddedReader.getByRole('heading', { name: 'Shared Links' })).toHaveCount(0);
+  await expect(embeddedReader.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
+  await expect(embeddedReader.getByRole('button', { name: 'Manage Links', exact: true })).toHaveCount(0);
 
   await embeddedReader.getByRole('button', { name: 'Send', exact: true }).click();
   const sendModal = page.getByRole('dialog', { name: 'Send Note' });
   await expect(sendModal).toBeVisible();
+  await expect(sendModal.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
+  await expect(sendModal.getByRole('button', { name: 'Manage Links', exact: true })).toHaveCount(0);
   await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
   await sendModal.getByRole('button', { name: 'Send Email' }).click();
 
   const successModal = page.getByRole('dialog', { name: 'Note Sent' });
   await expect(successModal).toBeVisible();
   await expect(successModal).toContainText('Sent to classmate@example.com');
+  await expect(successModal.getByRole('button', { name: 'Copy Link' })).toBeVisible();
   await successModal.getByRole('button', { name: 'Manage Links' }).click();
 
   const manageModal = page.getByRole('dialog', { name: 'Manage Links' });

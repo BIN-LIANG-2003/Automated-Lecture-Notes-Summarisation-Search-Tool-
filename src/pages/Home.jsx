@@ -5837,7 +5837,7 @@ export default function HomePage() {
 
   const activeDocShareModeLabel = getLinkSharingModeLabel(activeWorkspaceSettings.link_sharing_mode);
   const activeDocShareDisabledReason = getShareDisabledReasonForDoc(activeDoc);
-  const activeDocShareHint = activeDocShareDisabledReason || 'Send this note by email or create a share link.';
+  const activeDocShareHint = activeDocShareDisabledReason || 'Send this note by email.';
   const activeDocCanShowShareManagement = Boolean(username && canCurrentUserManageShareLinks && activeDoc?.id);
   const activeDocShareEmailExpiryLabel = activeDocShareEmailResult?.expires_at
     ? formatDateTimeLabel(activeDocShareEmailResult.expires_at)
@@ -6275,26 +6275,6 @@ export default function HomePage() {
                         </button>
                         <button
                           type="button"
-                          className="btn"
-                          onClick={() => handleShareDocument(activeDoc)}
-                          disabled={Boolean(activeDocShareDisabledReason)}
-                          title={activeDocShareHint}
-                        >
-                          Copy Link
-                        </button>
-                        {username && canCurrentUserManageShareLinks && (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={openActiveDocShareManagerInModal}
-                            disabled={Boolean(activeDocShareDisabledReason)}
-                            title="Review, copy, revoke, or delete existing share links"
-                          >
-                            Manage Links
-                          </button>
-                        )}
-                        <button
-                          type="button"
                           className="edit-tags"
                           onClick={() => handleEditCategory(activeDoc)}
                           disabled={
@@ -6338,7 +6318,7 @@ export default function HomePage() {
                       <div>
                         <strong>Share this note</strong>
                         <p className="muted tiny">
-                          Send by email first. Link controls stay in Manage Links when needed.
+                          Send by email first. Link controls stay inside the send flow when needed.
                         </p>
                       </div>
                       <div className="notion-doc-share-actions">
@@ -6351,26 +6331,6 @@ export default function HomePage() {
                         >
                           Send
                         </button>
-                        <button
-                          type="button"
-                          className="btn"
-                          onClick={() => handleShareDocument(activeDoc)}
-                          disabled={Boolean(activeDocShareDisabledReason)}
-                          title={activeDocShareHint}
-                        >
-                          Copy Link
-                        </button>
-                        {username && canCurrentUserManageShareLinks && (
-                          <button
-                            type="button"
-                            className="btn"
-                            onClick={openActiveDocShareManagerInModal}
-                            disabled={Boolean(activeDocShareDisabledReason)}
-                            title="Review, copy, revoke, or delete existing share links"
-                          >
-                            Manage Links
-                          </button>
-                        )}
                       </div>
                     </section>
                   )}
@@ -7476,7 +7436,6 @@ export default function HomePage() {
         successExpiryLabel={activeDocShareEmailExpiryLabel}
         manageLinksContent={activeDocShareLinksManagerContent}
         canManageLinks={activeDocCanShowShareManagement}
-        shareLinksCount={activeDocShareLinks.length}
       />
 
       <SummaryResultModal

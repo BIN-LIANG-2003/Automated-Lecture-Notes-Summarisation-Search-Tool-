@@ -1319,7 +1319,6 @@ export default function DocumentDetail() {
         successExpiryLabel={shareEmailExpiryLabel}
         manageLinksContent={shareLinksManagerContent}
         canManageLinks={canShowShareManagement}
-        shareLinksCount={shareLinks.length}
       />
       <SummaryResultModal
         open={summaryResultOpen}

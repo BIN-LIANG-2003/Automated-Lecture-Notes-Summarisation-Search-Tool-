@@ -22,7 +22,6 @@ export default function SendNoteByEmailModal({
   successExpiryLabel = '',
   manageLinksContent = null,
   canManageLinks = false,
-  shareLinksCount = 0,
 }) {
   const safeMode = ['send', 'manage', 'success'].includes(mode) ? mode : 'send';
   const closeButtonRef = useRef(null);
@@ -230,11 +229,6 @@ export default function SendNoteByEmailModal({
               </p>
 
               <div className="notion-modal-actions notion-share-email-form-actions">
-                {canManageLinks && (
-                  <button type="button" className="btn" onClick={onManageLinksOpen} disabled={isSubmitting}>
-                    {`Manage Links${shareLinksCount ? ` (${shareLinksCount})` : ''}`}
-                  </button>
-                )}
                 <button type="button" className="btn" onClick={requestClose} disabled={isSubmitting}>
                   Cancel
                 </button>
