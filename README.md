@@ -130,6 +130,7 @@ npm run build
 ```
 
 - Local uploads are written to `uploads/` unless S3 is configured.
+- PDF uploads are saved and listed immediately, then text extraction is completed asynchronously so large PDFs do not block the upload HTTP request. The optional `ocrmypdf` fallback is still available for explicit PDF rebuild/summary paths, but it is skipped during upload background processing to avoid Render/Gunicorn request timeouts.
 - Local SQLite data is stored in `database.db` and is ignored by Git.
 
 ## Build and Deploy Notes
@@ -139,6 +140,7 @@ npm run build
 - The Docker image uses a multi-stage build:
   - stage 1 runs `npm ci` and `npm run build`
   - stage 2 installs Python/backend dependencies and copies the built `dist/`
+- The container starts Gunicorn with a 120 second timeout as a safety margin; long PDF extraction is kept out of the request path rather than relying on this timeout.
 - `.dockerignore` excludes local `dist/` because Docker rebuilds it internally; this reduces build context without changing runtime behavior.
 
 ## Search and Index Notes

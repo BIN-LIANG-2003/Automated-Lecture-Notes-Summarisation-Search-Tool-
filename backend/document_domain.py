@@ -851,7 +851,7 @@ def extract_text_content(filepath):
         return f.read()
 
 
-def extract_document_content(filepath, ext):
+def extract_document_content(filepath, ext, *, allow_pdf_ocr=True):
     file_ext = (ext or '').lower().strip('.')
     text = ''
     content_html = ''
@@ -860,9 +860,12 @@ def extract_document_content(filepath, ext):
         if file_ext == 'docx':
             text, content_html = extract_docx_content(filepath)
         elif file_ext == 'pdf':
-            with open(filepath, 'rb') as f:
-                file_bytes = f.read()
-            text = extract_text_from_pdf_bytes(file_bytes)
+            if allow_pdf_ocr:
+                with open(filepath, 'rb') as f:
+                    file_bytes = f.read()
+                text = extract_text_from_pdf_bytes(file_bytes, allow_ocr=True)
+            else:
+                text = extract_text_from_pdf_file_without_ocr(filepath)
         elif file_ext == 'txt':
             text = extract_text_content(filepath)
             content_html = plaintext_to_html(text)
@@ -967,16 +970,7 @@ def should_try_pdf_ocr_fallback(text):
     return False, score, metrics
 
 
-def extract_text_from_pdf_bytes_pymupdf(file_bytes):
-    if fitz is None:
-        return ''
-
-    try:
-        doc = fitz.open(stream=file_bytes, filetype='pdf')
-    except Exception as e:
-        print(f"PyMuPDF open failed: {e}")
-        return ''
-
+def _extract_text_from_pymupdf_doc(doc):
     page_outputs = []
     try:
         for page in doc:
@@ -1019,6 +1013,32 @@ def extract_text_from_pdf_bytes_pymupdf(file_bytes):
     return normalize_pdf_text(result)
 
 
+def extract_text_from_pdf_bytes_pymupdf(file_bytes):
+    if fitz is None:
+        return ''
+
+    try:
+        doc = fitz.open(stream=file_bytes, filetype='pdf')
+    except Exception as e:
+        print(f"PyMuPDF open failed: {e}")
+        return ''
+
+    return _extract_text_from_pymupdf_doc(doc)
+
+
+def extract_text_from_pdf_path_pymupdf(filepath):
+    if fitz is None:
+        return ''
+
+    try:
+        doc = fitz.open(filepath)
+    except Exception as e:
+        print(f"PyMuPDF open failed: {e}")
+        return ''
+
+    return _extract_text_from_pymupdf_doc(doc)
+
+
 def extract_text_from_pdf_bytes_pypdf2(file_bytes):
     text = ''
     try:
@@ -1030,6 +1050,28 @@ def extract_text_from_pdf_bytes_pypdf2(file_bytes):
         print(f"PyPDF2 extraction failed: {e}")
         return ''
     return normalize_pdf_text(text)
+
+
+def extract_text_from_pdf_path_pypdf2(filepath):
+    text = ''
+    try:
+        with open(filepath, 'rb') as pdf_file:
+            reader = PyPDF2.PdfReader(pdf_file)
+            for page in reader.pages:
+                page_text = page.extract_text() or ''
+                text += page_text + '\n'
+    except Exception as e:
+        print(f"PyPDF2 extraction failed: {e}")
+        return ''
+    return normalize_pdf_text(text)
+
+
+def extract_text_from_pdf_file_without_ocr(filepath):
+    primary_text = extract_text_from_pdf_path_pymupdf(filepath)
+    if primary_text:
+        return primary_text
+    fallback_text = extract_text_from_pdf_path_pypdf2(filepath)
+    return fallback_text or 'Text extraction failed.'
 
 
 def run_ocrmypdf_on_pdf_bytes(file_bytes):
@@ -1082,7 +1124,7 @@ def run_ocrmypdf_on_pdf_bytes(file_bytes):
         return b'', f'ocrmypdf runtime error: {e}'
 
 
-def extract_text_from_pdf_bytes_with_meta(file_bytes):
+def extract_text_from_pdf_bytes_with_meta(file_bytes, *, allow_ocr=True):
     meta = {
         'extractor': 'none',
         'ocr_attempted': False,
@@ -1118,6 +1160,12 @@ def extract_text_from_pdf_bytes_with_meta(file_bytes):
         meta['quality_metrics_after'] = before_metrics
         return primary_text, meta
 
+    if not allow_ocr:
+        meta['quality_score_after'] = before_score
+        meta['quality_metrics_after'] = before_metrics
+        meta['note'] = 'PDF OCR fallback skipped for asynchronous upload processing'
+        return primary_text, meta
+
     ocr_pdf_bytes, ocr_error = run_ocrmypdf_on_pdf_bytes(file_bytes)
     meta['ocr_attempted'] = True
     if not ocr_pdf_bytes:
@@ -1146,8 +1194,8 @@ def extract_text_from_pdf_bytes_with_meta(file_bytes):
     return primary_text, meta
 
 
-def extract_text_from_pdf_bytes(file_bytes):
-    text, _ = extract_text_from_pdf_bytes_with_meta(file_bytes)
+def extract_text_from_pdf_bytes(file_bytes, *, allow_ocr=True):
+    text, _ = extract_text_from_pdf_bytes_with_meta(file_bytes, allow_ocr=allow_ocr)
     return text
 
 

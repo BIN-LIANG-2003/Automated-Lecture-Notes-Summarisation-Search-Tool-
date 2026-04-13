@@ -15,6 +15,9 @@ DOCUMENT_RESULT_COLUMNS = (
     'username',
     'last_access_at',
     'deleted_at',
+    'processing_status',
+    'processing_error',
+    'processed_at',
 )
 
 DOCUMENT_RESULT_COLUMNS_SQL = ', '.join(DOCUMENT_RESULT_COLUMNS)

@@ -101,6 +101,24 @@ def ensure_documents_columns(conn):
     ensure_documents_column(conn, 'category', 'TEXT')
     ensure_documents_column(conn, 'workspace_id', 'TEXT')
     ensure_documents_column(conn, 'deleted_at', 'TEXT')
+    ensure_documents_column(conn, 'processing_status', 'TEXT')
+    ensure_documents_column(conn, 'processing_error', 'TEXT')
+    ensure_documents_column(conn, 'processed_at', 'TEXT')
+    conn.execute(
+        '''
+        UPDATE documents
+        SET processing_status = 'processed'
+        WHERE processing_status IS NULL OR TRIM(CAST(processing_status AS TEXT)) = ''
+        '''
+    )
+    conn.execute(
+        '''
+        UPDATE documents
+        SET processed_at = uploaded_at
+        WHERE processing_status = 'processed'
+          AND (processed_at IS NULL OR TRIM(CAST(processed_at AS TEXT)) = '')
+        '''
+    )
 
 
 def ensure_workspaces_column(conn, column_name, column_type='TEXT'):
@@ -206,7 +224,10 @@ def init_db():
             workspace_id TEXT,
             username TEXT,
             last_access_at {timestamp_type},
-            deleted_at {timestamp_type}
+            deleted_at {timestamp_type},
+            processing_status TEXT NOT NULL DEFAULT 'processed',
+            processing_error TEXT,
+            processed_at {timestamp_type}
         );
     '''
 

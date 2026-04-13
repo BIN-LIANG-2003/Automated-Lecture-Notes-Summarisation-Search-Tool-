@@ -1,6 +1,8 @@
 import io
 import os
+import tempfile
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from flask import current_app, jsonify, request, send_file
@@ -30,6 +32,9 @@ from .security import get_authenticated_username
 from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, write_file_bytes_to_storage
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
+
+
+_UPLOAD_PROCESSING_EXECUTOR = ThreadPoolExecutor(max_workers=1)
 
 
 def _normalize_ocr_import_format(value):
@@ -88,6 +93,145 @@ def _create_ocr_note_document(
     except Exception:
         remove_document_file_from_storage(unique_filename)
         raise
+
+
+def _resolve_upload_workspace_context(username, requested_workspace_id):
+    conn = get_db_connection()
+    if not conn:
+        return None, (jsonify({'error': 'Database connection failed'}), 500)
+
+    try:
+        workspace_id = ''
+        workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
+        if requested_workspace_id:
+            if not workspace_belongs_to_user(conn, requested_workspace_id, username):
+                return None, (jsonify({'error': 'No access to this workspace'}), 403)
+            workspace_id = requested_workspace_id
+        else:
+            workspace_id = get_or_create_default_workspace_id(conn, username)
+
+        workspace_row = get_workspace_record(conn, workspace_id)
+        workspace_settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
+        if not workspace_settings.get('allow_uploads', True):
+            return None, (jsonify({'error': 'Uploads are disabled in this workspace settings'}), 403)
+
+        conn.commit()
+        return {
+            'workspace_id': workspace_id,
+            'settings': workspace_settings,
+        }, None
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'Upload workspace resolution failed: {e}')
+        return None, (jsonify({'error': 'Workspace lookup failed'}), 500)
+    finally:
+        conn.close()
+
+
+def _final_upload_category(original_filename, extracted_text, requested_category, workspace_settings):
+    if requested_category:
+        return requested_category
+    if (workspace_settings or {}).get('auto_categorize', True):
+        return infer_document_category(original_filename, extracted_text)
+    final_category = normalize_document_category((workspace_settings or {}).get('default_category'))
+    return final_category or DEFAULT_DOCUMENT_CATEGORY
+
+
+def _update_pdf_processing_failed(document_id, error_message):
+    conn = get_db_connection()
+    if not conn:
+        print(f'PDF upload processing failed for document {document_id}: database unavailable')
+        return
+    try:
+        now_iso = utcnow_iso()
+        conn.execute(
+            '''
+            UPDATE documents
+            SET processing_status = ?,
+                processing_error = ?,
+                processed_at = ?
+            WHERE id = ?
+            ''',
+            ('failed', str(error_message or 'PDF processing failed')[:500], now_iso, document_id),
+        )
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'PDF upload processing failure update failed for document {document_id}: {e}')
+    finally:
+        conn.close()
+
+
+def _process_uploaded_pdf_document(
+    document_id,
+    *,
+    unique_filename,
+    original_filename,
+    requested_category,
+    workspace_settings,
+):
+    temp_path = ''
+    try:
+        file_bytes = read_file_bytes_from_storage(unique_filename)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+            temp_file.write(file_bytes)
+            temp_path = temp_file.name
+
+        extracted_text, extracted_html = extract_document_content(temp_path, 'pdf', allow_pdf_ocr=False)
+        final_category = _final_upload_category(
+            original_filename,
+            extracted_text,
+            requested_category,
+            workspace_settings,
+        )
+
+        conn = get_db_connection()
+        if not conn:
+            raise RuntimeError('Database connection failed')
+        try:
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                UPDATE documents
+                SET content = ?,
+                    content_html = ?,
+                    category = ?,
+                    processing_status = ?,
+                    processing_error = ?,
+                    processed_at = ?
+                WHERE id = ?
+                ''',
+                (extracted_text, extracted_html or '', final_category, 'processed', '', now_iso, document_id),
+            )
+            conn.commit()
+            print(f'✅ PDF upload processing completed for document {document_id}')
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f'❌ PDF upload processing failed for document {document_id}: {e}')
+        _update_pdf_processing_failed(document_id, e)
+    finally:
+        if temp_path and os.path.exists(temp_path):
+            try:
+                os.remove(temp_path)
+            except Exception:
+                pass
+
+
+def _queue_uploaded_pdf_processing(document_id, **kwargs):
+    _UPLOAD_PROCESSING_EXECUTOR.submit(_process_uploaded_pdf_document, document_id, **kwargs)
 
 
 def get_documents():
@@ -349,16 +493,6 @@ def upload_file():
     if not username:
         return jsonify({'error': 'Auth token is required'}), 401
 
-    if requested_workspace_id and username:
-        conn = get_db_connection()
-        if not conn:
-            return jsonify({'error': 'Database connection failed'}), 500
-        try:
-            if not workspace_belongs_to_user(conn, requested_workspace_id, username):
-                return jsonify({'error': 'No access to this workspace'}), 403
-        finally:
-            conn.close()
-
     if file.filename == '':
         return jsonify({'error': 'No selected file'}), 400
     if not (file and allowed_file(file.filename)):
@@ -370,12 +504,34 @@ def upload_file():
     except IndexError:
         return jsonify({'error': 'Filename must have an extension'}), 400
 
+    workspace_context, workspace_error = _resolve_upload_workspace_context(username, requested_workspace_id)
+    if workspace_error:
+        return workspace_error
+    workspace_id = (workspace_context or {}).get('workspace_id', '')
+    workspace_settings = (workspace_context or {}).get('settings') or dict(DEFAULT_WORKSPACE_SETTINGS)
+
     unique_filename = f"{uuid.uuid4().hex}.{ext}"
     local_filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
     file.save(local_filepath)
 
     try:
-        extracted_text, extracted_html = extract_document_content(local_filepath, ext)
+        processing_status = 'processed'
+        processing_error = ''
+        processed_at = utcnow_iso()
+        if ext == 'pdf':
+            extracted_text = ''
+            extracted_html = ''
+            processing_status = 'queued'
+            processed_at = ''
+            final_category = _final_upload_category(original_filename, '', requested_category, workspace_settings)
+        else:
+            extracted_text, extracted_html = extract_document_content(local_filepath, ext)
+            final_category = _final_upload_category(
+                original_filename,
+                extracted_text,
+                requested_category,
+                workspace_settings,
+            )
 
         try:
             if S3_BUCKET and s3_client:
@@ -399,35 +555,23 @@ def upload_file():
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         try:
-            workspace_id = ''
-            workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
-            if username:
-                if requested_workspace_id:
-                    if not workspace_belongs_to_user(conn, requested_workspace_id, username):
-                        return jsonify({'error': 'No access to this workspace'}), 403
-                    workspace_id = requested_workspace_id
-                else:
-                    workspace_id = get_or_create_default_workspace_id(conn, username)
-
-                workspace_row = get_workspace_record(conn, workspace_id)
-                workspace_settings = normalize_workspace_settings((workspace_row or {}).get('settings_json'))
-                if not workspace_settings.get('allow_uploads', True):
-                    return jsonify({'error': 'Uploads are disabled in this workspace settings'}), 403
-
-            if requested_category:
-                final_category = requested_category
-            elif workspace_settings.get('auto_categorize', True):
-                final_category = infer_document_category(original_filename, extracted_text)
-            else:
-                final_category = normalize_document_category(workspace_settings.get('default_category'))
-                if not final_category:
-                    final_category = DEFAULT_DOCUMENT_CATEGORY
-
             conn.execute(
                 '''
                 INSERT INTO documents (
-                    filename, title, uploaded_at, file_type, content, content_html, username, tags, category, workspace_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    filename,
+                    title,
+                    uploaded_at,
+                    file_type,
+                    content,
+                    content_html,
+                    username,
+                    tags,
+                    category,
+                    workspace_id,
+                    processing_status,
+                    processing_error,
+                    processed_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''',
                 (
                     unique_filename,
@@ -440,10 +584,29 @@ def upload_file():
                     '',
                     final_category,
                     workspace_id,
+                    processing_status,
+                    processing_error,
+                    processed_at,
                 ),
             )
             conn.commit()
-            return jsonify({'message': 'File uploaded successfully'}), 201
+            doc_cursor = conn.execute('SELECT id FROM documents WHERE filename = ? LIMIT 1', (unique_filename,))
+            doc_row = row_to_dict(doc_cursor.fetchone()) or {}
+            document_id = parse_int(doc_row.get('id'), 0, 0)
+            if ext == 'pdf' and document_id > 0:
+                _queue_uploaded_pdf_processing(
+                    document_id,
+                    unique_filename=unique_filename,
+                    original_filename=original_filename,
+                    requested_category=requested_category,
+                    workspace_settings=workspace_settings,
+                )
+                print(f'Queued PDF upload processing for document {document_id}')
+            return jsonify({
+                'message': 'File uploaded successfully',
+                'document_id': document_id,
+                'processing_status': processing_status,
+            }), 201
         except Exception as e:
             print(f"Database Error: {e}")
             return jsonify({'error': 'Database save failed'}), 500
