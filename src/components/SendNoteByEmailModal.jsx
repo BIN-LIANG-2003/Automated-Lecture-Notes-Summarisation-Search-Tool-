@@ -229,6 +229,11 @@ export default function SendNoteByEmailModal({
               </p>
 
               <div className="notion-modal-actions notion-share-email-form-actions">
+                {canManageLinks && (
+                  <button type="button" className="btn" onClick={onManageLinksOpen} disabled={isSubmitting}>
+                    Manage Links
+                  </button>
+                )}
                 <button type="button" className="btn" onClick={requestClose} disabled={isSubmitting}>
                   Cancel
                 </button>
