@@ -1,0 +1,1 @@
+var e=e=>{let t=new Date(e);return Number.isNaN(t.getTime())?``:`${t.getFullYear()}-${String(t.getMonth()+1).padStart(2,`0`)}-${String(t.getDate()).padStart(2,`0`)}`},t=()=>e(new Date),n=e=>{if(!e)return`Unknown`;let t=new Date(e);return Number.isNaN(t.getTime())?String(e):t.toLocaleString()};export{n,t as r,e as t};
