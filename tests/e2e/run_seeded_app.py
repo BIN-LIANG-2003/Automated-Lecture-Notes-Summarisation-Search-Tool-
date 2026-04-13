@@ -4,6 +4,8 @@ import tempfile
 
 from werkzeug.security import generate_password_hash
 
+os.environ.setdefault('APP_ENV', 'development')
+
 from backend import create_app
 from backend.config import DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
