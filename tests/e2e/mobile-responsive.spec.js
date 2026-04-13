@@ -1,6 +1,7 @@
 import { expect, test } from '@playwright/test';
 
 const SEEDED_SHARE_TOKEN = 'graph-share-token';
+const WORKSPACE_STATE_KEY = 'workspaceStateByAccount';
 const MOBILE_VIEWPORTS = [
   { name: 'iphone-12', width: 390, height: 844 },
   { name: 'iphone-se', width: 375, height: 667 },
@@ -111,6 +112,7 @@ for (const viewport of MOBILE_VIEWPORTS) {
     await expect(page.getByText('Shared Document')).toBeVisible();
     await expect(page.getByRole('button', { name: 'Download Shared File' })).toBeVisible();
     await expectNoHorizontalOverflow(page, `${viewport.name} shared note`);
+    await expectWithinViewport(page, page.locator('.document-detail-pre'), `${viewport.name} shared note text preview`);
     const sharedSidebarBox = await page.locator('.document-detail-sidebar').boundingBox();
     const sharedMainBox = await page.locator('.document-detail-main').boundingBox();
     expect(sharedSidebarBox?.y || 0, `${viewport.name} shared metadata should appear before preview`).toBeLessThanOrEqual(
@@ -127,3 +129,51 @@ for (const viewport of MOBILE_VIEWPORTS) {
     await expectNoHorizontalOverflow(page, `${viewport.name} invite`);
   });
 }
+
+test('home ignores stale locally stored workspace before loading documents on mobile', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(
+    ({ workspaceKey }) => {
+      window.localStorage.setItem(
+        workspaceKey,
+        JSON.stringify({
+          alice: {
+            activeWorkspaceId: 'ws-stale-mobile',
+            workspaces: [
+              {
+                id: 'ws-stale-mobile',
+                name: 'Old Local Workspace',
+                plan: 'Free',
+                members: ['alice'],
+              },
+            ],
+          },
+        })
+      );
+    },
+    { workspaceKey: WORKSPACE_STATE_KEY }
+  );
+
+  const documentResponses = [];
+  page.on('response', (response) => {
+    const url = response.url();
+    if (url.includes('/api/documents?')) {
+      documentResponses.push({ url, status: response.status() });
+    }
+  });
+
+  await loginAsAlice(page);
+  await goToMyFiles(page);
+  await expect.poll(() => documentResponses.some(
+    (item) => item.status === 200 && item.url.includes('workspace_id=ws-e2e')
+  )).toBeTruthy();
+  expect(
+    documentResponses.some((item) => item.url.includes('workspace_id=ws-stale-mobile')),
+    'documents should not be requested with a stale local workspace id'
+  ).toBe(false);
+  expect(
+    documentResponses.some((item) => item.status === 403),
+    'stale workspace should not produce an avoidable document-list 403'
+  ).toBe(false);
+  await expectNoHorizontalOverflow(page, 'stale workspace mobile home');
+});

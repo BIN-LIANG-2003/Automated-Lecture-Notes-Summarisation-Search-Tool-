@@ -146,7 +146,6 @@ export default function AuthPage() {
     try {
       const token = credentialResponse.credential;
       const decoded = jwtDecode(token);
-      console.log("Google User:", decoded);
 
       // 注意：这里使用您代码中原有的 IP 地址
       const res = await fetch('/api/auth/google', {
@@ -391,7 +390,6 @@ export default function AuthPage() {
                 <GoogleLogin
                   onSuccess={handleGoogleSuccess}
                   onError={() => {
-                    console.log('Login Failed');
                     showToast('Google Login Failed', 'error');
                   }}
                   theme="outline"

@@ -1160,8 +1160,11 @@ export default function HomePage() {
   const confirmResolverRef = useRef(null);
   const inputDialogResolverRef = useRef(null);
   const summaryProgressTimerRef = useRef(null);
+  const hasInitialAuthenticatedSession = Boolean(
+    sessionStorage.getItem('username') && sessionStorage.getItem('auth_token')
+  );
   const [isLoggedIn, setIsLoggedIn] = useState(
-    () => Boolean(sessionStorage.getItem('username') && sessionStorage.getItem('auth_token'))
+    () => hasInitialAuthenticatedSession
   );
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
@@ -1169,7 +1172,8 @@ export default function HomePage() {
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
-  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [workspaceLoading, setWorkspaceLoading] = useState(() => hasInitialAuthenticatedSession);
+  const [workspaceReady, setWorkspaceReady] = useState(() => !hasInitialAuthenticatedSession);
   const [workspaceActionLoading, setWorkspaceActionLoading] = useState(false);
   const [workspaceNameDraft, setWorkspaceNameDraft] = useState('');
   const [workspaceSettingsDraft, setWorkspaceSettingsDraft] = useState(() =>
@@ -1257,6 +1261,7 @@ export default function HomePage() {
     );
   }, [workspaceState]);
   const activeWorkspaceId = String(activeWorkspace?.id || workspaceState?.activeWorkspaceId || '');
+  const activeWorkspaceIdForDocuments = workspaceReady ? activeWorkspaceId : '';
   const starredDocIdSet = useMemo(
     () => new Set(starredNotes.map((item) => toPositiveDocId(item.id)).filter(Boolean)),
     [starredNotes]
@@ -1478,7 +1483,7 @@ export default function HomePage() {
   } = useDocumentsList({
     username,
     authToken,
-    activeWorkspaceId,
+    activeWorkspaceId: activeWorkspaceIdForDocuments,
     defaultFilters: DEFAULT_FILTERS,
     defaultDocumentsPageSize: DEFAULT_DOCUMENTS_PAGE_SIZE,
     defaultDocumentsSort: DEFAULT_DOCUMENTS_SORT,
@@ -1593,6 +1598,7 @@ export default function HomePage() {
         workspaces: localState.workspaces || [],
       };
       setWorkspaceState(nextState);
+      setWorkspaceReady(true);
       const current = nextState.workspaces.find((item) => item.id === nextState.activeWorkspaceId) || nextState.workspaces[0];
       setWorkspaceNameDraft(current?.name || '');
       setWorkspaceSettingsDraft(normalizeWorkspaceSettings(current?.settings));
@@ -1617,6 +1623,7 @@ export default function HomePage() {
         workspaces: list,
       };
       setWorkspaceState(nextState);
+      setWorkspaceReady(true);
       const current = list.find((item) => item.id === activeId) || list[0] || null;
       setWorkspaceNameDraft(current?.name || '');
       setWorkspaceSettingsDraft(normalizeWorkspaceSettings(current?.settings));
@@ -1946,6 +1953,7 @@ export default function HomePage() {
   }, [savedAccounts]);
 
   useEffect(() => {
+    setWorkspaceReady(!(isLoggedIn && username && authToken));
     refreshWorkspaces({ preserveActive: false });
     setWorkspaceInviteDraft('');
     setLatestInviteLinks([]);
@@ -1955,7 +1963,7 @@ export default function HomePage() {
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
     setTrashModalOpen(false);
-  }, [accountName, isLoggedIn, username]);
+  }, [accountName, isLoggedIn, username, authToken]);
 
   useEffect(() => {
     const nextViews = loadSavedViews(accountName, activeWorkspaceId);
