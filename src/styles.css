@@ -584,24 +584,28 @@ a{ color:inherit; }
 .document-detail{ padding:32px 0 72px; }
 .document-detail-back{ margin-bottom:18px; }
 .document-share-page{ padding-top:32px; }
-.document-share-shell{
+.document-share-shell,
+.notion-shell.document-share-shell{
+  --document-share-content-width:min(1100px, 92%);
+  display:block;
   min-height:100vh;
-  grid-template-columns:minmax(0, 1fr);
-  align-content:start;
   background:#f7f7f5;
   color:#2f2f2f;
-  gap:0;
   padding:28px 0 64px;
 }
 .document-share-shell > *{
-  width:min(1100px, 92%);
+  width:var(--document-share-content-width);
   margin-inline:auto;
+}
+.document-share-shell > .document-detail-back{
+  width:auto;
+  margin-inline:calc((100% - var(--document-share-content-width)) / 2) auto;
 }
 .document-share-shell .document-detail-back{
   margin-bottom:16px;
 }
 .document-share-hero{
-  margin:0 0 20px;
+  margin:0 auto 20px;
   padding:24px;
   border-radius:var(--radius);
   border:1px solid #e4e4e1;
@@ -3171,6 +3175,30 @@ body.notion-home-body .skip-link:focus-visible{
   margin-bottom:14px;
   font-size:14px;
   line-height:1.6;
+}
+
+.notion-login-warning-link{
+  display:block;
+  width:100%;
+  border-radius:8px;
+  text-align:left;
+  cursor:pointer;
+  font:inherit;
+}
+
+.notion-login-warning-link:hover{
+  border-color:#e4c5aa;
+  background:#fff0e2;
+}
+
+.notion-login-warning-link:focus-visible{
+  outline:3px solid rgba(37,99,235,.26);
+  outline-offset:2px;
+}
+
+.notion-login-warning-signin{
+  color:#000;
+  font-weight:700;
 }
 
 .notion-greeting{
@@ -6531,6 +6559,487 @@ body.notion-home-body .skip-link:focus-visible{
   font-size:12px;
 }
 
+.studyhub-messages-trigger{
+  position:relative;
+  min-height:32px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  padding:6px 12px;
+  border:1px solid #cfd9e8;
+  border-radius:8px;
+  background:#ffffff;
+  color:#26364f;
+  font-size:12px;
+  font-weight:800;
+  box-shadow:none;
+  cursor:pointer;
+}
+
+.studyhub-messages-trigger:hover{
+  border-color:#abc4ea;
+  background:#f7fbff;
+}
+
+.studyhub-messages-trigger--topbar{
+  position:static;
+}
+
+.studyhub-messages-badge{
+  min-width:18px;
+  height:18px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  padding:0 5px;
+  border-radius:8px;
+  background:#d92d20;
+  color:#ffffff;
+  font-size:11px;
+  font-weight:900;
+  line-height:1;
+}
+
+.studyhub-messages-backdrop{
+  position:fixed;
+  inset:0;
+  z-index:320;
+  padding:24px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(15, 23, 42, 0.34);
+}
+
+.studyhub-messages-modal{
+  width:min(980px, calc(100vw - 32px));
+  max-height:calc(100vh - 48px);
+  overflow:auto;
+  border:1px solid #dbe4f0;
+  border-radius:8px;
+  background:#ffffff;
+  box-shadow:0 24px 60px rgba(15,23,42,.2);
+  color:#253249;
+  padding:18px;
+  display:grid;
+  gap:14px;
+}
+
+.studyhub-messages-header{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:16px;
+}
+
+.studyhub-messages-header h2{
+  margin:0;
+  font-size:26px;
+  color:#24344f;
+}
+
+.studyhub-messages-kicker{
+  margin:0 0 5px;
+  color:#667085;
+  font-size:11px;
+  font-weight:900;
+  letter-spacing:0;
+  text-transform:uppercase;
+}
+
+.studyhub-messages-close{
+  width:34px;
+  height:34px;
+  border:1px solid #d6deeb;
+  border-radius:8px;
+  background:#fff;
+  color:#43546e;
+  font-size:22px;
+  line-height:1;
+  cursor:pointer;
+}
+
+.studyhub-friend-code-row{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  padding:12px;
+  border:1px solid #dfe7f2;
+  border-radius:8px;
+  background:#f8fbff;
+}
+
+.studyhub-friend-code-row div{
+  display:grid;
+  gap:3px;
+}
+
+.studyhub-friend-code-row span,
+.studyhub-chat-title span,
+.studyhub-site-message small,
+.studyhub-request-card small{
+  color:#6b7587;
+  font-size:12px;
+}
+
+.studyhub-friend-code-row strong{
+  color:#111827;
+  font-size:20px;
+  letter-spacing:0;
+}
+
+.studyhub-messages-tabs,
+.studyhub-request-mode{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.studyhub-messages-tabs button,
+.studyhub-request-mode button{
+  min-height:32px;
+  padding:6px 12px;
+  border:1px solid #d7dfeb;
+  border-radius:8px;
+  background:#ffffff;
+  color:#35465f;
+  font-weight:800;
+  cursor:pointer;
+}
+
+.studyhub-messages-tabs button.is-active,
+.studyhub-request-mode button.is-active{
+  border-color:#a9c7f6;
+  background:#edf5ff;
+  color:#2458b8;
+}
+
+.studyhub-messages-status{
+  display:flex;
+  gap:8px;
+  align-items:center;
+  padding:9px 10px;
+  border:1px solid #dfe7f2;
+  border-radius:8px;
+  background:#fbfdff;
+  color:#46566f;
+  font-size:13px;
+}
+
+.studyhub-messages-status .is-error{
+  color:#a51d2d;
+}
+
+.studyhub-messages-grid{
+  min-height:420px;
+  display:grid;
+  grid-template-columns:270px minmax(0, 1fr);
+  gap:14px;
+}
+
+.studyhub-friends-list,
+.studyhub-chat-panel,
+.studyhub-requests-panel,
+.studyhub-site-messages{
+  min-height:0;
+  border:1px solid #dfe7f2;
+  border-radius:8px;
+  background:#ffffff;
+}
+
+.studyhub-friends-list{
+  padding:8px;
+  display:grid;
+  align-content:start;
+  gap:8px;
+}
+
+.studyhub-friend-row{
+  width:100%;
+  min-height:58px;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  border:1px solid #e0e7f0;
+  border-radius:8px;
+  background:#ffffff;
+  color:#28364c;
+  padding:9px 10px;
+  text-align:left;
+  cursor:pointer;
+}
+
+.studyhub-friend-row.is-active{
+  border-color:#9ec0f4;
+  background:#f3f8ff;
+}
+
+.studyhub-friend-row span{
+  min-width:0;
+  display:grid;
+  gap:3px;
+}
+
+.studyhub-friend-row strong,
+.studyhub-friend-row small{
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+}
+
+.studyhub-friend-row small{
+  color:#6b7587;
+  font-size:12px;
+}
+
+.studyhub-friend-row em{
+  min-width:20px;
+  height:20px;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+  border-radius:8px;
+  background:#d92d20;
+  color:#ffffff;
+  font-size:11px;
+  font-style:normal;
+  font-weight:900;
+}
+
+.studyhub-chat-panel{
+  min-height:420px;
+  display:grid;
+  grid-template-rows:auto minmax(0, 1fr) auto;
+}
+
+.studyhub-chat-title{
+  padding:12px 14px;
+  border-bottom:1px solid #dfe7f2;
+  display:grid;
+  gap:3px;
+}
+
+.studyhub-chat-messages{
+  min-height:260px;
+  overflow:auto;
+  padding:14px;
+  display:flex;
+  flex-direction:column;
+  gap:10px;
+}
+
+.studyhub-chat-bubble{
+  width:fit-content;
+  max-width:min(72%, 520px);
+  padding:9px 10px;
+  border:1px solid #dfe7f2;
+  border-radius:8px;
+  background:#f8fafc;
+}
+
+.studyhub-chat-bubble.is-sent{
+  align-self:flex-end;
+  border-color:#b7d0f8;
+  background:#edf5ff;
+}
+
+.studyhub-chat-bubble p{
+  margin:0;
+  color:#223047;
+  line-height:1.45;
+  word-break:break-word;
+}
+
+.studyhub-chat-bubble span{
+  display:block;
+  margin-top:5px;
+  color:#667085;
+  font-size:11px;
+}
+
+.studyhub-chat-form{
+  display:flex;
+  gap:8px;
+  padding:12px;
+  border-top:1px solid #dfe7f2;
+}
+
+.studyhub-chat-form input,
+.studyhub-add-friend-form input,
+.studyhub-add-friend-form textarea{
+  width:100%;
+  border:1px solid #d8e1ee;
+  border-radius:8px;
+  background:#ffffff;
+  color:#202b3f;
+  font:inherit;
+  padding:9px 10px;
+}
+
+.studyhub-add-friend-form textarea{
+  min-height:72px;
+  resize:vertical;
+}
+
+.studyhub-requests-panel{
+  padding:14px;
+  display:grid;
+  gap:16px;
+}
+
+.studyhub-add-friend-form{
+  display:grid;
+  gap:12px;
+}
+
+.studyhub-add-friend-form label{
+  display:grid;
+  gap:6px;
+  color:#34445d;
+  font-size:13px;
+  font-weight:800;
+}
+
+.studyhub-add-friend-two-col{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:10px;
+}
+
+.studyhub-request-lists{
+  display:grid;
+  grid-template-columns:1fr 1fr;
+  gap:14px;
+}
+
+.studyhub-request-lists h3{
+  margin:0 0 8px;
+  color:#24344f;
+  font-size:16px;
+}
+
+.studyhub-request-lists p{
+  margin:0;
+  color:#6b7587;
+}
+
+.studyhub-request-card,
+.studyhub-site-message{
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  border:1px solid #dfe7f2;
+  border-radius:8px;
+  background:#ffffff;
+  padding:11px;
+  margin-bottom:10px;
+}
+
+.studyhub-request-card div,
+.studyhub-site-message div{
+  min-width:0;
+  display:grid;
+  gap:4px;
+}
+
+.studyhub-request-card span,
+.studyhub-site-message p{
+  margin:0;
+  color:#536176;
+  line-height:1.45;
+  word-break:break-word;
+}
+
+.studyhub-request-actions{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+}
+
+.studyhub-site-messages{
+  padding:14px;
+}
+
+.studyhub-site-messages-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  margin-bottom:12px;
+}
+
+.studyhub-site-message.is-unread{
+  border-color:#9ec0f4;
+  background:#f3f8ff;
+}
+
+.studyhub-site-message a{
+  color:#2458b8;
+  font-weight:800;
+  text-decoration:none;
+}
+
+.studyhub-empty-state{
+  min-height:120px;
+  display:flex;
+  flex-direction:column;
+  align-items:flex-start;
+  justify-content:center;
+  gap:8px;
+  padding:14px;
+  color:#6b7587;
+}
+
+.studyhub-empty-state strong{
+  color:#253249;
+}
+
+@media (max-width: 760px){
+  .studyhub-messages-backdrop{
+    padding:10px;
+    align-items:flex-start;
+  }
+
+  .studyhub-messages-modal{
+    width:calc(100vw - 20px);
+    max-height:calc(100vh - 20px);
+    padding:14px;
+  }
+
+  .studyhub-friend-code-row,
+  .studyhub-chat-form,
+  .studyhub-site-message,
+  .studyhub-request-card{
+    align-items:stretch;
+    flex-direction:column;
+  }
+
+  .studyhub-messages-grid,
+  .studyhub-request-lists,
+  .studyhub-add-friend-two-col{
+    grid-template-columns:1fr;
+  }
+
+  .studyhub-friends-list{
+    max-height:210px;
+    overflow:auto;
+  }
+
+  .studyhub-chat-bubble{
+    max-width:92%;
+  }
+
+  .studyhub-chat-panel{
+    min-height:360px;
+  }
+}
+
 .studyhub-feedback-modal{
   width:min(860px, 100%);
   display:grid;
@@ -7366,6 +7875,7 @@ body.notion-home-body .skip-link:focus-visible{
   }
 
   .document-share-shell{
+    --document-share-content-width:min(1100px, calc(100% - 24px));
     padding:16px 0 40px;
   }
 
@@ -7782,6 +8292,7 @@ body.notion-home-body .skip-link:focus-visible{
     width:auto;
   }
 
+  .notion-top-actions > .studyhub-messages-trigger--topbar,
   .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-more-btn{
     flex:0 0 auto;
@@ -7953,6 +8464,7 @@ body.notion-home-body .skip-link:focus-visible{
     flex:1 1 100%;
   }
 
+  .notion-top-actions > .studyhub-messages-trigger--topbar,
   .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-more-btn{
     flex:0 0 auto;

@@ -115,16 +115,18 @@ def build_document_filter_clauses(
     table_alias='d',
     include_deleted=False,
 ):
+    safe_workspace_id = str(workspace_id or '').strip()
     where_parts = [
-        f'{table_alias}.username = ?',
         _trashed_deleted_sql(table_alias) if include_deleted else _active_deleted_sql(table_alias),
     ]
-    params = [str(username or '').strip()]
+    params = []
 
-    safe_workspace_id = str(workspace_id or '').strip()
     if safe_workspace_id:
         where_parts.append(f'{table_alias}.workspace_id = ?')
         params.append(safe_workspace_id)
+    else:
+        where_parts.insert(0, f'{table_alias}.username = ?')
+        params.insert(0, str(username or '').strip())
 
     safe_category_filter = str(category_filter or '').strip().lower()
     if safe_category_filter:

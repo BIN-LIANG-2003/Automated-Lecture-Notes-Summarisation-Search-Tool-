@@ -5,6 +5,7 @@ from flask import jsonify, request
 
 from .config import DEFAULT_WORKSPACE_SETTINGS, INVITE_EXPIRY_DAYS
 from .db import get_db_connection
+from .friend_service import create_system_notification
 from .security import get_authenticated_username
 from .storage import remove_document_file_from_storage
 from .utils import invitation_is_expired, normalize_email, parse_int, row_to_dict, utcnow_iso
@@ -642,6 +643,31 @@ def review_workspace_invitation(workspace_id, invitation_id):
             ''',
             (next_status, username, utcnow_iso(), note, invitation_id),
         )
+        if requested_username:
+            workspace_name = str(workspace_row.get('name') or 'workspace').strip()
+            invite_token = str(invitation.get('token') or '').strip()
+            if action == 'approve':
+                create_system_notification(
+                    conn,
+                    requested_username,
+                    'Workspace access approved',
+                    f'{username} approved your access to {workspace_name}.',
+                    notification_type='workspace',
+                    actor_username=username,
+                    link_url=f'/#/invite/{invite_token}' if invite_token else '',
+                    metadata={'workspace_id': workspace_id},
+                )
+            else:
+                create_system_notification(
+                    conn,
+                    requested_username,
+                    'Workspace request declined',
+                    f'{username} declined your request to join {workspace_name}.',
+                    notification_type='workspace',
+                    actor_username=username,
+                    link_url=f'/#/invite/{invite_token}' if invite_token else '',
+                    metadata={'workspace_id': workspace_id},
+                )
         conn.commit()
 
         updated_cursor = conn.execute('SELECT * FROM workspace_invitations WHERE id = ?', (invitation_id,))
@@ -774,6 +800,20 @@ def request_join_by_invitation(token):
             ''',
             (username, utcnow_iso(), safe_token),
         )
+        owner_username = str(invitation.get('owner_username') or '').strip()
+        workspace_name = str(invitation.get('workspace_name') or 'workspace').strip()
+        workspace_id = str(invitation.get('workspace_id') or '').strip()
+        if owner_username and owner_username != username:
+            create_system_notification(
+                conn,
+                owner_username,
+                'Workspace request received',
+                f'{username} requested access to {workspace_name}.',
+                notification_type='workspace',
+                actor_username=username,
+                link_url=f'/#/?workspace_id={workspace_id}' if workspace_id else '',
+                metadata={'workspace_id': workspace_id, 'invitation_token': safe_token},
+            )
         conn.commit()
 
         refreshed_cursor = conn.execute(

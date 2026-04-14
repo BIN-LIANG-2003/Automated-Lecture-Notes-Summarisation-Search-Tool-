@@ -69,6 +69,10 @@ def get_request_auth_token():
 
 
 def extract_request_username():
+    endpoint_leaf = str(request.endpoint or '').rsplit('.', 1)[-1]
+    if endpoint_leaf in {'create_friend_request'}:
+        return ''
+
     query_username = (request.args.get('username') or '').strip()
     if query_username:
         return query_username

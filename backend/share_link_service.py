@@ -6,6 +6,7 @@ from .config import DEFAULT_WORKSPACE_SETTINGS
 from .db import get_db_connection
 from .document_domain import plaintext_to_html
 from .email_service import send_resend_email
+from .friend_service import are_friends, create_system_notification
 from .security import get_authenticated_username
 from .utils import normalize_email, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .share_domain import (
@@ -330,6 +331,25 @@ def send_document_share_link_email(doc_id):
                 'expires_at': payload.get('expires_at'),
                 'error': send_error or 'Failed to send share email',
             }), 503
+
+        recipient_cursor = conn.execute(
+            'SELECT username FROM users WHERE LOWER(email) = ? LIMIT 1',
+            (recipient_email,),
+        )
+        recipient_user = row_to_dict(recipient_cursor.fetchone()) or {}
+        recipient_username = str(recipient_user.get('username') or '').strip()
+        doc_title = context['doc_data'].get('title') or context['doc_data'].get('filename') or 'Untitled Note'
+        if recipient_username and recipient_username != username and are_friends(conn, username, recipient_username):
+            create_system_notification(
+                conn,
+                recipient_username,
+                'Shared note from a friend',
+                f'{username} shared {doc_title} with you.',
+                notification_type='share',
+                actor_username=username,
+                link_url=share_url,
+                metadata={'document_id': doc_id, 'share_token': payload.get('token') or ''},
+            )
 
         conn.commit()
         return jsonify({

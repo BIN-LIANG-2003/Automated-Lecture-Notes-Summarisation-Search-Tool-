@@ -43,7 +43,7 @@ from .config import (
     WORKSPACE_SUMMARY_LENGTH_LEVELS,
     s3_client,
 )
-from .db import get_db_connection
+from .db import ensure_user_friend_code, generate_unique_friend_code, get_db_connection
 from .document_domain import (
     PDF_NEEDS_OCR_ERROR,
     PDF_NEEDS_OCR_STATUS,
@@ -446,21 +446,24 @@ def register():
         verification_token = create_email_verification_token()
         expires_at = email_verification_expires_at()
         verification_url = build_email_verification_url(verification_token)
+        friend_code = generate_unique_friend_code(conn)
         conn.execute(
             '''
             INSERT INTO users (
                 username,
                 email,
+                friend_code,
                 password_hash,
                 email_verified,
                 email_verification_token,
                 email_verification_expires_at,
                 verified_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 username,
                 email,
+                friend_code,
                 hashed_pw,
                 False if conn.db_type == 'postgres' else 0,
                 verification_token,
@@ -677,15 +680,18 @@ def me():
         return jsonify({'error': 'Database connection failed'}), 500
     try:
         cursor = conn.execute(
-            'SELECT username, email FROM users WHERE username = ?',
+            'SELECT username, email, friend_code FROM users WHERE username = ?',
             (token_username,),
         )
         user = cursor.fetchone()
         if not user:
             return jsonify({'error': 'User account not found for this session'}), 404
+        friend_code = ensure_user_friend_code(conn, token_username)
+        conn.commit()
         return jsonify({
             'username': user['username'],
             'email': user.get('email') if hasattr(user, 'get') else user['email'],
+            'friend_code': friend_code or (user.get('friend_code') if hasattr(user, 'get') else user['friend_code']),
             'authenticated': True,
         }), 200
     finally:
@@ -722,22 +728,25 @@ def google_login():
             username = f"{name.split()[0]}_{uuid.uuid4().hex[:4]}"
             random_password = uuid.uuid4().hex
             hashed_password = generate_password_hash(random_password, method='pbkdf2:sha256')
+            friend_code = generate_unique_friend_code(conn)
             try:
                 conn.execute(
                     '''
                     INSERT INTO users (
                         username,
                         email,
+                        friend_code,
                         password_hash,
                         email_verified,
                         email_verification_token,
                         email_verification_expires_at,
                         verified_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                     ''',
                     (
                         username,
                         email,
+                        friend_code,
                         hashed_password,
                         True if conn.db_type == 'postgres' else 1,
                         None,

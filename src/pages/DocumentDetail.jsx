@@ -308,7 +308,7 @@ export default function DocumentDetail() {
               : 'Cannot Open This Shared Document';
       return (
         <>
-          <main className="notion-shell document-share-shell document-detail document-share-page" role="main">
+          <main className="document-share-shell document-detail document-share-page" role="main">
             <section className="document-share-hero document-share-hero-error">
               <span className="document-share-kicker">Shared Document</span>
               <h1>{shareErrorTitle}</h1>
@@ -480,14 +480,6 @@ export default function DocumentDetail() {
     setShareEmailResult(null);
     setShareModalMode('manage');
     setSendNoteEmailOpen(true);
-    if (document?.id && username && canManageShareLinks) {
-      void refreshShareLinks(document.id);
-    }
-  };
-
-  const openShareManagerInModal = () => {
-    resetShareEmailDraft();
-    setShareModalMode('manage');
     if (document?.id && username && canManageShareLinks) {
       void refreshShareLinks(document.id);
     }
@@ -1021,7 +1013,7 @@ export default function DocumentDetail() {
     <>
       <main
         className={isSharedView
-          ? 'notion-shell document-share-shell document-detail document-share-page'
+          ? 'document-share-shell document-detail document-share-page'
           : 'container document-detail'}
         role="main"
       >
@@ -1367,7 +1359,6 @@ export default function DocumentDetail() {
         onSubmit={handleSendNoteByEmail}
         onSendAnother={handleSendAnotherShareEmail}
         onCopyLink={handleCopySentShareLink}
-        onManageLinksOpen={openShareManagerInModal}
         onBackToSend={handleSendAnotherShareEmail}
         recipientEmail={shareEmailRecipient}
         onRecipientEmailChange={setShareEmailRecipient}

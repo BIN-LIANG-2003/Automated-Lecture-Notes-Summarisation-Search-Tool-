@@ -77,6 +77,16 @@ export default function InviteJoinPage() {
     }
   };
 
+  const openInvitedWorkspace = () => {
+    const workspaceId = String(data?.workspace_id || '').trim();
+    navigate('/', {
+      state: {
+        preferredWorkspaceId: workspaceId,
+        showFiles: true,
+      },
+    });
+  };
+
   return (
     <main className="container document-detail" role="main">
       <button className="btn document-detail-back" type="button" onClick={() => navigate('/')}>
@@ -136,7 +146,12 @@ export default function InviteJoinPage() {
                   <p className="muted">You have already requested to join. Please wait for owner approval.</p>
                 )}
                 {data.status === 'approved' && (
-                  <p className="muted">Your request was approved. Refresh Home to see the new workspace.</p>
+                  <div className="invite-join-actions">
+                    <p className="muted">Your request was approved. Open the shared workspace to view its notes.</p>
+                    <button type="button" className="btn btn-primary" onClick={openInvitedWorkspace}>
+                      Open Workspace
+                    </button>
+                  </div>
                 )}
                 {canSubmit && (
                   <button type="button" className="btn btn-primary" onClick={handleRequestJoin} disabled={submitting}>

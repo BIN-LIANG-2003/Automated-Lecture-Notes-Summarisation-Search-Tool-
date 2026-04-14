@@ -7,7 +7,6 @@ export default function SendNoteByEmailModal({
   onSubmit,
   onSendAnother,
   onCopyLink,
-  onManageLinksOpen,
   onBackToSend,
   recipientEmail = '',
   onRecipientEmailChange,
@@ -148,11 +147,6 @@ export default function SendNoteByEmailModal({
                 >
                   Copy Link
                 </button>
-                {canManageLinks && (
-                  <button type="button" className="btn" onClick={onManageLinksOpen}>
-                    Manage Links
-                  </button>
-                )}
                 <button type="button" className="btn" onClick={onSendAnother}>
                   Send Another
                 </button>
@@ -229,11 +223,6 @@ export default function SendNoteByEmailModal({
               </p>
 
               <div className="notion-modal-actions notion-share-email-form-actions">
-                {canManageLinks && (
-                  <button type="button" className="btn" onClick={onManageLinksOpen} disabled={isSubmitting}>
-                    Manage Links
-                  </button>
-                )}
                 <button type="button" className="btn" onClick={requestClose} disabled={isSubmitting}>
                   Cancel
                 </button>

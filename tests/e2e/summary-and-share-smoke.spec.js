@@ -165,9 +165,7 @@ test('files workspace summary center opens summary result modal with export and 
   await goToMyFiles(page);
 
   const topbarActions = page.locator('.notion-top-actions');
-  await expect(topbarActions.getByText(/Notes/)).toBeVisible();
-  await expect(topbarActions.getByText(/Tags/)).toBeVisible();
-  await expect(topbarActions.getByText(/Starred/)).toBeVisible();
+  await expect(topbarActions.locator('.notion-top-pill')).toHaveCount(0);
   await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
 
   await page.locator('.notion-top-summary-btn').click();
@@ -316,7 +314,8 @@ test('files list shows OCR-needed PDFs as action required', async ({ page }) => 
   await expect(scannedCard.getByRole('button', { name: 'Summarize' })).toBeDisabled();
 });
 
-test('home embedded reader sharing keeps link management inside the send modal', async ({ page }) => {
+test('home embedded reader exposes link management in the top bar', async ({ page }) => {
+  await mockShareLinksList(page, 3);
   await loginAsAlice(page);
   await mockDocumentEmailShare(page);
   await goToMyFiles(page);
@@ -334,34 +333,36 @@ test('home embedded reader sharing keeps link management inside the send modal',
   await expect(embeddedReader.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
   await expect(embeddedReader.getByRole('button', { name: 'Manage Links', exact: true })).toHaveCount(0);
 
-  await embeddedReader.getByRole('button', { name: 'Send', exact: true }).click();
-  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
-  await expect(sendModal).toBeVisible();
-  await expect(sendModal.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
-  await expect(sendModal.getByRole('button', { name: 'Manage Links', exact: true })).toBeVisible();
-  await sendModal.getByRole('button', { name: 'Manage Links', exact: true }).click();
+  const topbarActions = page.locator('.notion-top-actions');
+  await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
+  const topbarManageLinks = topbarActions.getByRole('button', { name: 'Manage Links', exact: true });
+  await expect(topbarManageLinks).toBeVisible();
+  await topbarManageLinks.click();
 
   const initialManageModal = page.getByRole('dialog', { name: 'Manage Links' });
   await expect(initialManageModal).toBeVisible();
   await expect(initialManageModal.locator('.document-detail-share-links-panel')).toBeVisible();
+  await expect(initialManageModal.locator('.notion-doc-share-list li')).toHaveCount(3);
+  await expect(initialManageModal).toContainText('long-share-token-1');
+  await expect(initialManageModal).toContainText('long-share-token-2');
+  await expect(initialManageModal).toContainText('long-share-token-3');
   await expect(initialManageModal.getByLabel('Recipient email')).toHaveCount(0);
-  await initialManageModal.getByRole('button', { name: 'Back to Send' }).click();
+  await initialManageModal.getByRole('button', { name: 'Done' }).click();
+  await expect(page.getByRole('dialog', { name: 'Manage Links' })).toHaveCount(0);
 
-  const sendModalAfterManage = page.getByRole('dialog', { name: 'Send Note' });
-  await expect(sendModalAfterManage).toBeVisible();
-  await sendModalAfterManage.getByLabel('Recipient email').fill('classmate@example.com');
-  await sendModalAfterManage.getByRole('button', { name: 'Send Email' }).click();
+  await embeddedReader.getByRole('button', { name: 'Send', exact: true }).click();
+  const sendModal = page.getByRole('dialog', { name: 'Send Note' });
+  await expect(sendModal).toBeVisible();
+  await expect(sendModal.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
+  await expect(sendModal.getByRole('button', { name: 'Manage Links', exact: true })).toHaveCount(0);
+  await sendModal.getByLabel('Recipient email').fill('classmate@example.com');
+  await sendModal.getByRole('button', { name: 'Send Email' }).click();
 
   const successModal = page.getByRole('dialog', { name: 'Note Sent' });
   await expect(successModal).toBeVisible();
   await expect(successModal).toContainText('Sent to classmate@example.com');
   await expect(successModal.getByRole('button', { name: 'Copy Link' })).toBeVisible();
-  await successModal.getByRole('button', { name: 'Manage Links' }).click();
-
-  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
-  await expect(manageModal).toBeVisible();
-  await expect(manageModal.locator('.document-detail-share-links-panel')).toBeVisible();
-  await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
+  await expect(successModal.getByRole('button', { name: 'Manage Links' })).toHaveCount(0);
 });
 
 test('document detail sharing defaults to send-by-email flow', async ({ page }) => {
@@ -387,16 +388,8 @@ test('document detail sharing defaults to send-by-email flow', async ({ page }) 
   await expect(successModal).toContainText(/until/i);
   await expect(successModal).not.toContainText('2026-04-19T12:00:00Z');
   await expect(successModal.getByRole('button', { name: 'Copy Link' })).toBeVisible();
-  await expect(successModal.getByRole('button', { name: 'Manage Links' })).toBeVisible();
+  await expect(successModal.getByRole('button', { name: 'Manage Links' })).toHaveCount(0);
   await expect(successModal.getByRole('button', { name: 'Send Another' })).toBeVisible();
-
-  await successModal.getByRole('button', { name: 'Manage Links' }).click();
-  const manageModal = page.getByRole('dialog', { name: 'Manage Links' });
-  await expect(manageModal).toBeVisible();
-  await expect(manageModal.locator('.document-detail-share-links-panel')).toBeVisible();
-  await expect(manageModal.getByRole('button', { name: 'Refresh' })).toBeVisible();
-  await expect(manageModal.getByRole('button', { name: 'Revoke All' })).toBeVisible();
-  await expect(manageModal.getByLabel('Recipient email')).toHaveCount(0);
 });
 
 test('document detail share modal resets after done and send another', async ({ page }) => {
@@ -520,4 +513,11 @@ test('public share link opens document view without sign in', async ({ page }) =
   await expect(page.getByRole('button', { name: 'Sign In For Full Access' })).toBeVisible();
   await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
   await expect(page.locator('.document-detail-card')).toContainText('graph traversal bfs dfs shortest path');
+
+  const shareHeroBox = await page.locator('.document-share-hero').boundingBox();
+  const detailCardBox = await page.locator('.document-detail-card').boundingBox();
+  expect(shareHeroBox, 'share hero should have a bounding box').toBeTruthy();
+  expect(detailCardBox, 'shared detail card should have a bounding box').toBeTruthy();
+  expect(Math.abs(detailCardBox.x - shareHeroBox.x), 'shared detail card should align with share hero').toBeLessThanOrEqual(2);
+  expect(Math.abs(detailCardBox.width - shareHeroBox.width), 'shared detail card should match share hero width').toBeLessThanOrEqual(2);
 });

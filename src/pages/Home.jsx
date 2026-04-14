@@ -3,6 +3,7 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
 import SendNoteByEmailModal from '../components/SendNoteByEmailModal.jsx';
 import FeedbackWidget from '../components/FeedbackWidget.jsx';
+import FriendsMessagesWidget from '../components/FriendsMessagesWidget.jsx';
 import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
 import TrashModal from '../components/TrashModal.jsx';
@@ -56,6 +57,7 @@ const DEFAULT_DOCUMENTS_PAGE_SIZE = 20;
 const DOCUMENTS_PAGE_SIZE_OPTIONS = [12, 20, 40];
 const DEFAULT_DOCUMENTS_SORT = 'newest';
 const DEFAULT_DOCUMENTS_LAYOUT = 'grid';
+const WORKSPACE_INVITE_REFRESH_MS = 5000;
 const DOCUMENTS_LAYOUT_OPTIONS = [
   { value: 'grid', label: 'Grid' },
   { value: 'compact', label: 'Compact' },
@@ -1204,6 +1206,18 @@ export default function HomePage() {
   const [advancedFiltersOpen, setAdvancedFiltersOpen] = useState(false);
   const navigate = useNavigate();
   const location = useLocation();
+  const preferredWorkspaceIdFromNavigation = useMemo(() => {
+    const stateWorkspaceId = String(
+      location.state?.preferredWorkspaceId || location.state?.workspaceId || ''
+    ).trim();
+    if (stateWorkspaceId) return stateWorkspaceId;
+    try {
+      const params = new URLSearchParams(location.search || '');
+      return String(params.get('workspace_id') || params.get('workspaceId') || '').trim();
+    } catch {
+      return '';
+    }
+  }, [location.search, location.state]);
   const workspaceMenuRef = useRef(null);
   const recentMenuRef = useRef(null);
   const savedViewsMenuRef = useRef(null);
@@ -1333,19 +1347,6 @@ export default function HomePage() {
   const trustedInviteDomains = useMemo(
     () => parseWorkspaceDomainList(activeWorkspaceSettings.allowed_email_domains),
     [activeWorkspaceSettings.allowed_email_domains]
-  );
-  const enabledWorkspaceNotificationCount = useMemo(
-    () =>
-      [
-        activeWorkspaceSettings.notify_upload_events,
-        activeWorkspaceSettings.notify_summary_events,
-        activeWorkspaceSettings.notify_sharing_events,
-      ].filter(Boolean).length,
-    [
-      activeWorkspaceSettings.notify_upload_events,
-      activeWorkspaceSettings.notify_summary_events,
-      activeWorkspaceSettings.notify_sharing_events,
-    ]
   );
   const canCurrentUserManageShareLinks = useMemo(() => {
     if (!isLoggedIn || !username || !activeWorkspace) return false;
@@ -1693,6 +1694,71 @@ export default function HomePage() {
     }
   };
 
+  useEffect(() => {
+    const workspaceId = String(activeWorkspace?.id || '').trim();
+    const canRefreshInvites =
+      workspaceInviteOpen &&
+      isLoggedIn &&
+      username &&
+      authToken &&
+      workspaceId &&
+      activeWorkspace?.is_owner !== false;
+
+    if (!canRefreshInvites) return undefined;
+
+    let stopped = false;
+
+    const refreshOpenInvitations = async () => {
+      try {
+        const res = await authFetch(
+          `/api/workspaces/${encodeURIComponent(workspaceId)}/invitations`,
+          {},
+          { authToken }
+        );
+        const payload = await res.json().catch(() => []);
+        if (!res.ok) throw new Error(payload.error || 'Failed to refresh invitations');
+        if (stopped || !Array.isArray(payload)) return;
+
+        const openInvites = payload.filter((item) =>
+          ['pending', 'requested'].includes(String(item?.status || '').toLowerCase())
+        );
+        const pendingRequests = openInvites.filter((item) => item?.status === 'requested');
+
+        setWorkspaceState((prev) => ({
+          ...prev,
+          workspaces: (prev.workspaces || []).map((workspace) =>
+            workspace.id === workspaceId
+              ? {
+                  ...workspace,
+                  invites: openInvites,
+                  pending_requests: pendingRequests,
+                }
+              : workspace
+          ),
+        }));
+      } catch (err) {
+        if (!stopped) {
+          console.error('Failed to refresh workspace invitations', err);
+        }
+      }
+    };
+
+    void refreshOpenInvitations();
+    const intervalId = window.setInterval(refreshOpenInvitations, WORKSPACE_INVITE_REFRESH_MS);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(intervalId);
+    };
+  }, [
+    activeWorkspace?.id,
+    activeWorkspace?.is_owner,
+    authToken,
+    isLoggedIn,
+    username,
+    workspaceInviteOpen,
+  ]);
+
   const refreshDocumentsAfterUpload = async () => {
     const shouldRefetchViaPageReset = documentsPage !== 1;
     setDocumentsPage(1);
@@ -2010,7 +2076,10 @@ export default function HomePage() {
 
   useEffect(() => {
     setWorkspaceReady(!(isLoggedIn && username && authToken));
-    refreshWorkspaces({ preserveActive: false });
+    refreshWorkspaces({
+      preserveActive: false,
+      preferredWorkspaceId: preferredWorkspaceIdFromNavigation,
+    });
     setWorkspaceInviteDraft('');
     setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
@@ -2019,7 +2088,7 @@ export default function HomePage() {
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
     setTrashModalOpen(false);
-  }, [accountName, isLoggedIn, username, authToken]);
+  }, [accountName, isLoggedIn, username, authToken, preferredWorkspaceIdFromNavigation]);
 
   useEffect(() => {
     const nextViews = loadSavedViews(accountName, activeWorkspaceId);
@@ -2330,7 +2399,6 @@ export default function HomePage() {
     setTrashPage(trashPageCount);
   }, [trashPage, trashPageCount]);
   const dashboardStats = useMemo(() => {
-    const extCounts = new Map();
     const tagBag = new Set();
     const categoryBag = new Set();
     const sevenDaysAgo = Date.now() - (7 * 24 * 60 * 60 * 1000);
@@ -2342,89 +2410,15 @@ export default function HomePage() {
 
       const uploadedMs = toTimeMs(doc.uploadedAt);
       if (uploadedMs >= sevenDaysAgo) recentUploads += 1;
-
-      const ext = getDocExt(doc) || 'unknown';
-      extCounts.set(ext, (extCounts.get(ext) || 0) + 1);
     });
-
-    const topTypes = Array.from(extCounts.entries())
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 3);
 
     return {
       total: Number(documentsTotal) || documents.length,
       categories: categoryBag.size,
       tags: tagBag.size,
       recentUploads,
-      topTypes,
     };
   }, [documents, documentsTotal]);
-  const recentDocumentActivity = useMemo(
-    () =>
-      [...documents]
-        .sort((a, b) => toTimeMs(b?.uploadedAt) - toTimeMs(a?.uploadedAt))
-        .slice(0, 5),
-    [documents]
-  );
-  const recentSummaryActivity = useMemo(
-    () =>
-      [...summaryHistory]
-        .sort((a, b) => toTimeMs(b?.generatedAt) - toTimeMs(a?.generatedAt))
-        .slice(0, 4),
-    [summaryHistory]
-  );
-  const overviewPreferenceCards = useMemo(
-    () => [
-      {
-        id: 'landing',
-        label: 'Default landing',
-        value: activeWorkspaceSettings.default_home_tab === 'files' ? 'Notes' : 'Home overview',
-        detail: `${activeWorkspaceSettings.default_documents_layout} layout · ${activeWorkspaceSettings.default_documents_sort.replace('_', ' ')}`,
-      },
-      {
-        id: 'sidebar',
-        label: 'Sidebar',
-        value: `${activeWorkspaceSettings.sidebar_density} density`,
-        detail: `${activeWorkspaceSettings.show_starred_section ? 'Starred' : 'Starred hidden'} · ${
-          activeWorkspaceSettings.show_recent_section ? 'Recent visible' : 'Recent hidden'
-        }`,
-      },
-      {
-        id: 'sharing',
-        label: 'Sharing policy',
-        value:
-          activeWorkspaceSettings.link_sharing_mode === 'public'
-            ? 'Anyone with link'
-            : activeWorkspaceSettings.link_sharing_mode === 'workspace'
-              ? 'Workspace members'
-              : 'Restricted',
-        detail: trustedInviteDomains.length
-          ? `${trustedInviteDomains.length} trusted domain${trustedInviteDomains.length > 1 ? 's' : ''}`
-          : 'No trusted domains configured',
-      },
-      {
-        id: 'alerts',
-        label: 'In-app alerts',
-        value: `${enabledWorkspaceNotificationCount}/3 enabled`,
-        detail: activeWorkspaceSettings.show_usage_chart
-          ? 'Usage chart visible on overview'
-          : 'Usage chart hidden on overview',
-      },
-    ],
-    [
-      activeWorkspaceSettings.default_documents_layout,
-      activeWorkspaceSettings.default_documents_sort,
-      activeWorkspaceSettings.default_home_tab,
-      activeWorkspaceSettings.link_sharing_mode,
-      activeWorkspaceSettings.show_recent_section,
-      activeWorkspaceSettings.show_starred_section,
-      activeWorkspaceSettings.show_usage_chart,
-      activeWorkspaceSettings.sidebar_density,
-      enabledWorkspaceNotificationCount,
-      trustedInviteDomains.length,
-    ]
-  );
-
   useEffect(() => {
     if (!savedViews.length) {
       if (activeSavedViewId) setActiveSavedViewId('');
@@ -5918,7 +5912,7 @@ export default function HomePage() {
       <div className="notion-doc-share-manager-head">
         <div>
           <h3>Manage Links</h3>
-          <p className="muted tiny">Advanced access controls stay here so sending remains the default workflow.</p>
+          <p className="muted tiny">All share links for this note are listed together here.</p>
         </div>
         <div className="notion-doc-share-actions">
           <button
@@ -6205,15 +6199,29 @@ export default function HomePage() {
             <span className="notion-top-time">{nowLabel}</span>
           </div>
           <div className="notion-top-actions">
-            <span className="notion-top-pill">{Number(documentsTotal) || 0} Notes</span>
-            <span className="notion-top-pill">{dashboardStats.tags} Tags</span>
-            <span className="notion-top-pill">{starredNotes.length} Starred</span>
+            <FriendsMessagesWidget
+              enabled={isLoggedIn}
+              authToken={authToken}
+              username={username}
+              variant="topbar"
+            />
             <FeedbackWidget
               enabled={isLoggedIn}
               workspaceId={activeWorkspaceId}
               documentId={activeDoc?.id || ''}
               variant="topbar"
             />
+            {activeDocCanShowShareManagement && (
+              <button
+                type="button"
+                className="btn notion-top-summary-btn notion-top-manage-links-btn"
+                onClick={openActiveDocShareManagerInModal}
+                disabled={Boolean(activeDocShareDisabledReason)}
+                title={activeDocShareDisabledReason || 'Review, copy, revoke, or delete existing share links'}
+              >
+                Manage Links
+              </button>
+            )}
             <button
               type="button"
               className="btn notion-top-summary-btn"
@@ -6240,9 +6248,16 @@ export default function HomePage() {
 
         <main id="main" className="notion-content" role="main">
           {!isLoggedIn && (
-            <div id="login-warning" className="notion-warning" role="alert">
-              You are not signed in yet. Uploading, viewing, summarizing, deleting, and tag editing require sign-in.
-            </div>
+            <button
+              id="login-warning"
+              type="button"
+              className="notion-warning notion-login-warning-link"
+              onClick={() => navigate('/login')}
+            >
+              <span>You are not signed in yet. Uploading, viewing, summarizing, deleting, and tag editing require </span>
+              <span className="notion-login-warning-signin">sign-in</span>
+              <span>.</span>
+            </button>
           )}
 
           {summaryProgress.active && (
@@ -6397,7 +6412,7 @@ export default function HomePage() {
                       <div>
                         <strong>Share this note</strong>
                         <p className="muted tiny">
-                          Send by email first. Link controls stay inside the send flow when needed.
+                          Send by email first. Manage links from the top bar when this note is open.
                         </p>
                       </div>
                       <div className="notion-doc-share-actions">
@@ -6521,83 +6536,6 @@ export default function HomePage() {
                 <h3>Uploaded in 7 Days</h3>
                 <strong>{dashboardStats.recentUploads}</strong>
                 <span>Recent revision activity</span>
-              </article>
-              <article className="notion-dashboard-card notion-dashboard-card-wide">
-                <h3>File Type Mix</h3>
-                <strong>
-                  {dashboardStats.topTypes.length
-                    ? dashboardStats.topTypes.map(([ext, count]) => `${ext.toUpperCase()}: ${count}`).join(' · ')
-                    : 'No data yet'}
-                </strong>
-                <span>Distribution of your note formats</span>
-              </article>
-              {overviewPreferenceCards.map((item) => (
-                <article key={item.id} className="notion-dashboard-card">
-                  <h3>{item.label}</h3>
-                  <strong>{item.value}</strong>
-                  <span>{item.detail}</span>
-                </article>
-              ))}
-            </section>
-          )}
-
-          {!showFiles && !docPaneVisible && activeWorkspaceSettings.show_recent_activity && (
-            <section className="notion-overview-activity-grid" aria-label="Recent activity">
-              <article className="notion-panel-block notion-overview-activity-panel">
-                <div className="notion-panel-head">
-                  <h2 className="section-title">Recent uploads</h2>
-                  <p>Quickly reopen the latest notes added to this workspace.</p>
-                </div>
-                {recentDocumentActivity.length ? (
-                  <ul className="notion-overview-activity-list">
-                    {recentDocumentActivity.map((doc) => (
-                      <li key={`overview-doc-${doc.id}`}>
-                        <button
-                          type="button"
-                          className="notion-overview-activity-item"
-                          onClick={() => openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc })}
-                        >
-                          <strong>{doc.title}</strong>
-                          <span>
-                            {normalizeCategory(doc.category)} · {formatDateTimeLabel(doc.uploadedAt)}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="notion-settings-help">
-                    No uploads yet. Add your first note to populate the workspace activity feed.
-                  </p>
-                )}
-              </article>
-              <article className="notion-panel-block notion-overview-activity-panel">
-                <div className="notion-panel-head">
-                  <h2 className="section-title">Summary activity</h2>
-                  <p>Recent AI outputs and the models or sources behind them.</p>
-                </div>
-                {recentSummaryActivity.length ? (
-                  <ul className="notion-overview-activity-list">
-                    {recentSummaryActivity.map((entry) => (
-                      <li key={`overview-summary-${entry.id}`}>
-                        <button
-                          type="button"
-                          className="notion-overview-activity-item"
-                          onClick={() => handleApplySummaryHistoryItem(entry)}
-                        >
-                          <strong>{entry.title}</strong>
-                          <span>
-                            {getSummarySourceLabel(entry.summarySource)} · {formatDateTimeLabel(entry.generatedAt)}
-                          </span>
-                        </button>
-                      </li>
-                    ))}
-                  </ul>
-                ) : (
-                  <p className="notion-settings-help">
-                    No summaries yet. Use Scan Image or summarize a note to build this feed.
-                  </p>
-                )}
               </article>
             </section>
           )}
@@ -7500,7 +7438,6 @@ export default function HomePage() {
         onSubmit={handleSendActiveDocByEmail}
         onSendAnother={handleActiveDocShareSendAnother}
         onCopyLink={handleCopySentActiveDocShareLink}
-        onManageLinksOpen={openActiveDocShareManagerInModal}
         onBackToSend={handleActiveDocShareSendAnother}
         recipientEmail={activeDocShareEmailRecipient}
         onRecipientEmailChange={setActiveDocShareEmailRecipient}

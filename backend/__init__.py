@@ -8,6 +8,7 @@ from . import config, db, document_service, security, shared
 from .auth import auth_bp
 from .documents import documents_bp
 from .feedback import feedback_bp
+from .friends import friends_bp
 from .frontend import frontend_bp
 from .ocr import ocr_bp
 from .share_links import share_links_bp
@@ -35,6 +36,7 @@ def create_app():
     app.register_blueprint(documents_bp)
     app.register_blueprint(share_links_bp)
     app.register_blueprint(feedback_bp)
+    app.register_blueprint(friends_bp)
     app.register_blueprint(ocr_bp)
     app.register_blueprint(summarize_bp)
     app.register_blueprint(frontend_bp)

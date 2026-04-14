@@ -251,6 +251,121 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['total'], 1)
         self.assertEqual(payload['items'][0]['title'], 'Protected Notes')
 
+    def test_workspace_member_document_listing_includes_owner_files(self):
+        self._insert_document(
+            'Shared Workspace Notes',
+            'shared content from the workspace owner',
+            filename='shared-workspace-notes.txt',
+        )
+        self._insert_user('bob', 'bob@example.com')
+        self._insert_user('charlie', 'charlie@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.get(
+            f'/api/documents?include_meta=1&workspace_id={self.workspace_id}',
+            headers=self._auth_headers('bob'),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['total'], 1)
+        self.assertEqual(payload['items'][0]['title'], 'Shared Workspace Notes')
+        self.assertEqual(payload['items'][0]['username'], self.username)
+
+        personal_response = self.client.get('/api/documents?include_meta=1', headers=self._auth_headers('bob'))
+        self.assertEqual(personal_response.status_code, 200)
+        self.assertEqual(personal_response.get_json()['total'], 0)
+
+        denied_response = self.client.get(
+            f'/api/documents?include_meta=1&workspace_id={self.workspace_id}',
+            headers=self._auth_headers('charlie'),
+        )
+        self.assertEqual(denied_response.status_code, 403)
+
+    def test_friend_requests_messages_and_notifications_flow(self):
+        self._insert_user('bob', 'bob@example.com')
+        self._insert_user('charlie', 'charlie@example.com')
+
+        create_response = self.client.post(
+            '/api/friends/requests',
+            headers=self._auth_headers(),
+            json={
+                'mode': 'email',
+                'email': 'bob@example.com',
+                'message': 'Study partner?',
+            },
+        )
+        self.assertEqual(create_response.status_code, 201)
+        self.assertEqual(create_response.get_json()['message'], 'Friend request sent.')
+
+        bob_summary_response = self.client.get('/api/friends/summary', headers=self._auth_headers('bob'))
+        self.assertEqual(bob_summary_response.status_code, 200)
+        bob_summary = bob_summary_response.get_json()
+        self.assertEqual(len(bob_summary['incoming_requests']), 1)
+        self.assertGreaterEqual(bob_summary['unread_count'], 1)
+        request_id = bob_summary['incoming_requests'][0]['id']
+
+        accept_response = self.client.post(
+            f'/api/friends/requests/{request_id}/respond',
+            headers=self._auth_headers('bob'),
+            json={'action': 'accept'},
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        accepted_summary = accept_response.get_json()['summary']
+        self.assertEqual([friend['username'] for friend in accepted_summary['friends']], ['alice'])
+
+        alice_summary_response = self.client.get('/api/friends/summary', headers=self._auth_headers())
+        self.assertEqual(alice_summary_response.status_code, 200)
+        alice_summary = alice_summary_response.get_json()
+        self.assertEqual([friend['username'] for friend in alice_summary['friends']], ['bob'])
+        self.assertTrue(
+            any(item['title'] == 'Friend request accepted' for item in alice_summary['notifications'])
+        )
+
+        message_response = self.client.post(
+            '/api/friends/messages',
+            headers=self._auth_headers(),
+            json={'recipient_username': 'bob', 'body': 'Can you see this note?'},
+        )
+        self.assertEqual(message_response.status_code, 201)
+
+        bob_after_message = self.client.get('/api/friends/summary', headers=self._auth_headers('bob')).get_json()
+        unread_messages = [item for item in bob_after_message['messages'] if item.get('is_unread')]
+        self.assertEqual(len(unread_messages), 1)
+        self.assertEqual(unread_messages[0]['body'], 'Can you see this note?')
+
+        read_response = self.client.post(
+            '/api/friends/read',
+            headers=self._auth_headers('bob'),
+            json={'peer_username': 'alice'},
+        )
+        self.assertEqual(read_response.status_code, 200)
+        read_summary = read_response.get_json()['summary']
+        self.assertFalse(any(item.get('is_unread') for item in read_summary['messages']))
+
+        charlie_summary = self.client.get('/api/friends/summary', headers=self._auth_headers('charlie')).get_json()
+        charlie_code = charlie_summary['user']['friend_code']
+        username_request = self.client.post(
+            '/api/friends/requests',
+            headers=self._auth_headers(),
+            json={
+                'mode': 'username',
+                'username': 'charlie',
+                'friend_code': charlie_code,
+            },
+        )
+        self.assertEqual(username_request.status_code, 201)
+
     def test_auth_secret_policy_requires_strong_secret_or_explicit_development(self):
         def run_config_import(env_updates):
             env = os.environ.copy()

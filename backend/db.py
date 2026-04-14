@@ -1,10 +1,14 @@
 import os
+import secrets
 import sqlite3
 
 import psycopg2
 from psycopg2.extras import RealDictCursor
 
 from .utils import utcnow_iso
+
+
+FRIEND_CODE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 
 
 class DBWrapper:
@@ -58,6 +62,72 @@ def get_db_connection():
     conn = sqlite3.connect('database.db')
     conn.row_factory = sqlite3.Row
     return DBWrapper(conn, 'sqlite')
+
+
+def row_value(row, key, default=None):
+    if not row:
+        return default
+    if hasattr(row, 'get'):
+        return row.get(key, default)
+    try:
+        return row[key]
+    except Exception:
+        return default
+
+
+def generate_friend_code(length=8):
+    safe_length = max(6, int(length or 8))
+    return ''.join(secrets.choice(FRIEND_CODE_ALPHABET) for _ in range(safe_length))
+
+
+def generate_unique_friend_code(conn, length=8):
+    for _ in range(100):
+        code = generate_friend_code(length)
+        cursor = conn.execute('SELECT username FROM users WHERE friend_code = ? LIMIT 1', (code,))
+        if not cursor.fetchone():
+            return code
+    return generate_friend_code(12)
+
+
+def ensure_user_friend_code(conn, username):
+    safe_username = str(username or '').strip()
+    if not safe_username:
+        return ''
+    ensure_users_column(conn, 'friend_code', 'TEXT')
+    cursor = conn.execute(
+        'SELECT username, friend_code FROM users WHERE username = ? LIMIT 1',
+        (safe_username,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return ''
+    current_code = str(row_value(row, 'friend_code', '') or '').strip().upper()
+    if current_code:
+        return current_code
+    for _ in range(100):
+        next_code = generate_unique_friend_code(conn)
+        try:
+            conn.execute(
+                'UPDATE users SET friend_code = ? WHERE username = ?',
+                (next_code, safe_username),
+            )
+            return next_code
+        except Exception:
+            continue
+    return ''
+
+
+def backfill_user_friend_codes(conn):
+    ensure_users_column(conn, 'friend_code', 'TEXT')
+    cursor = conn.execute(
+        '''
+        SELECT username
+        FROM users
+        WHERE friend_code IS NULL OR TRIM(CAST(friend_code AS TEXT)) = ''
+        '''
+    )
+    for row in cursor.fetchall():
+        ensure_user_friend_code(conn, row_value(row, 'username', ''))
 
 
 def table_column_exists(conn, table_name, column_name):
@@ -148,6 +218,7 @@ def ensure_users_column(conn, column_name, column_type='TEXT'):
 
 def ensure_users_columns(conn, timestamp_type='TEXT'):
     email_verified_type = 'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'
+    ensure_users_column(conn, 'friend_code', 'TEXT')
     ensure_users_column(conn, 'email_verified', email_verified_type)
     ensure_users_column(conn, 'email_verification_token', 'TEXT')
     ensure_users_column(conn, 'email_verification_expires_at', timestamp_type)
@@ -203,6 +274,7 @@ def init_db():
             id {id_type},
             username TEXT UNIQUE NOT NULL,
             email TEXT UNIQUE,
+            friend_code TEXT,
             password_hash TEXT NOT NULL,
             email_verified {'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'},
             email_verification_token TEXT,
@@ -341,6 +413,53 @@ def init_db():
         );
     '''
 
+    friend_requests_sql = f'''
+        CREATE TABLE IF NOT EXISTS friend_requests (
+            id {id_type},
+            requester_username TEXT NOT NULL,
+            target_username TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            message TEXT,
+            created_at {timestamp_type},
+            responded_at {optional_timestamp_type}
+        );
+    '''
+
+    friendships_sql = f'''
+        CREATE TABLE IF NOT EXISTS friendships (
+            id {id_type},
+            user_a TEXT NOT NULL,
+            user_b TEXT NOT NULL,
+            created_at {timestamp_type}
+        );
+    '''
+
+    friend_messages_sql = f'''
+        CREATE TABLE IF NOT EXISTS friend_messages (
+            id {id_type},
+            sender_username TEXT NOT NULL,
+            recipient_username TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at {timestamp_type},
+            read_at {optional_timestamp_type}
+        );
+    '''
+
+    user_notifications_sql = f'''
+        CREATE TABLE IF NOT EXISTS user_notifications (
+            id {id_type},
+            username TEXT NOT NULL,
+            type TEXT NOT NULL DEFAULT 'system',
+            title TEXT NOT NULL,
+            body TEXT,
+            actor_username TEXT,
+            link_url TEXT,
+            metadata_json TEXT,
+            created_at {timestamp_type},
+            read_at {optional_timestamp_type}
+        );
+    '''
+
     workspace_members_unique_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
         ON workspace_members(workspace_id, username);
@@ -354,6 +473,12 @@ def init_db():
     users_email_verification_token_idx_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_verification_token
         ON users(email_verification_token);
+    '''
+
+    users_friend_code_idx_sql = '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_users_friend_code
+        ON users(friend_code)
+        WHERE friend_code IS NOT NULL AND friend_code <> '';
     '''
 
     workspace_invitation_lookup_sql = '''
@@ -411,6 +536,46 @@ def init_db():
         ON feedback_events(feedback_id, created_at);
     '''
 
+    friend_requests_target_status_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friend_requests_target_status
+        ON friend_requests(target_username, status, created_at);
+    '''
+
+    friend_requests_requester_status_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friend_requests_requester_status
+        ON friend_requests(requester_username, status, created_at);
+    '''
+
+    friendships_pair_unique_sql = '''
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_friendships_pair
+        ON friendships(user_a, user_b);
+    '''
+
+    friendships_user_a_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friendships_user_a
+        ON friendships(user_a, created_at);
+    '''
+
+    friendships_user_b_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friendships_user_b
+        ON friendships(user_b, created_at);
+    '''
+
+    friend_messages_recipient_read_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friend_messages_recipient_read
+        ON friend_messages(recipient_username, read_at, created_at);
+    '''
+
+    friend_messages_pair_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_friend_messages_pair
+        ON friend_messages(sender_username, recipient_username, created_at);
+    '''
+
+    user_notifications_username_read_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_user_notifications_username_read
+        ON user_notifications(username, read_at, created_at);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
@@ -421,12 +586,18 @@ def init_db():
         conn.execute(document_summary_cache_sql)
         conn.execute(feedback_items_sql)
         conn.execute(feedback_events_sql)
+        conn.execute(friend_requests_sql)
+        conn.execute(friendships_sql)
+        conn.execute(friend_messages_sql)
+        conn.execute(user_notifications_sql)
         ensure_users_columns(conn, optional_timestamp_type)
+        backfill_user_friend_codes(conn)
         ensure_documents_columns(conn, optional_timestamp_type)
         ensure_workspaces_columns(conn)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(users_email_verification_token_idx_sql)
+        conn.execute(users_friend_code_idx_sql)
         conn.execute(workspace_invitation_lookup_sql)
         conn.execute(document_share_links_doc_idx_sql)
         conn.execute(document_summary_cache_lookup_idx_sql)
@@ -438,6 +609,14 @@ def init_db():
         conn.execute(feedback_items_user_updated_idx_sql)
         conn.execute(feedback_items_status_updated_idx_sql)
         conn.execute(feedback_events_feedback_created_idx_sql)
+        conn.execute(friend_requests_target_status_idx_sql)
+        conn.execute(friend_requests_requester_status_idx_sql)
+        conn.execute(friendships_pair_unique_sql)
+        conn.execute(friendships_user_a_idx_sql)
+        conn.execute(friendships_user_b_idx_sql)
+        conn.execute(friend_messages_recipient_read_idx_sql)
+        conn.execute(friend_messages_pair_idx_sql)
+        conn.execute(user_notifications_username_read_idx_sql)
 
         from .document_search import ensure_document_search_support
         from .workspace_domain import backfill_documents_workspace_ids
