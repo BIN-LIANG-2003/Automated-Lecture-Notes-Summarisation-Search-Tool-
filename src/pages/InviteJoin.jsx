@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router-dom';
+import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { authFetch } from '../lib/authFetch.js';
 
 const statusLabel = (status) => {
@@ -14,6 +14,7 @@ const statusLabel = (status) => {
 
 export default function InviteJoinPage() {
   const { token } = useParams();
+  const location = useLocation();
   const navigate = useNavigate();
 
   const [loading, setLoading] = useState(true);
@@ -24,6 +25,7 @@ export default function InviteJoinPage() {
   const authToken = sessionStorage.getItem('auth_token') || '';
   const username = authToken ? (sessionStorage.getItem('username') || '') : '';
   const email = authToken ? (sessionStorage.getItem('email') || '') : '';
+  const returnPath = `${location.pathname}${location.search}${location.hash}`;
 
   const fetchInvitation = async () => {
     if (!token) {
@@ -122,7 +124,14 @@ export default function InviteJoinPage() {
 
             {!username && (
               <div className="invite-join-actions">
-                <Link className="btn btn-primary" to="/login">
+                <Link
+                  className="btn btn-primary"
+                  to="/login"
+                  state={{
+                    from: returnPath,
+                    prefillEmail: data.email || '',
+                  }}
+                >
                   Sign in
                 </Link>
                 <p className="muted invite-join-inline-note">

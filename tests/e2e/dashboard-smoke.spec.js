@@ -26,6 +26,54 @@ test('guest sign-in warning links to login', async ({ page }) => {
   await expect(page).toHaveURL(/#\/login$/);
 });
 
+test('invite sign-in returns to the invitation link after login', async ({ page }) => {
+  const token = 'return-to-invite-token';
+  await page.route(new RegExp(`/api/invitations/${token}(?:\\\\?.*)?$`), async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 903,
+        workspace_id: 'ws-e2e',
+        workspace_name: 'E2E Workspace',
+        owner_username: 'alice',
+        email: 'alice@example.com',
+        token,
+        status: 'pending',
+        expires_at: '2026-04-21T09:18:00.000Z',
+        created_at: '2026-04-14T09:18:00.000Z',
+        requested_username: '',
+        requested_at: '',
+        invite_url: `http://127.0.0.1:5001/#/invite/${token}`,
+        requires_owner_confirmation: true,
+        can_request: true,
+        viewer_username: '',
+        viewer_email: '',
+      }),
+    });
+  });
+
+  await page.goto(`/#/invite/${token}`);
+  await expect(page.getByRole('heading', { name: 'Workspace Invitation' })).toBeVisible();
+
+  await page.getByRole('link', { name: 'Sign in' }).click();
+  await expect(page).toHaveURL(/#\/login$/);
+  await expect(page.locator('#login-username')).toHaveValue('alice@example.com');
+
+  await page.locator('#login-username').fill('alice');
+  await page.locator('#login-password').fill('password123');
+  const loginResponsePromise = page.waitForResponse(
+    (response) =>
+      response.url().includes('/api/auth/login') &&
+      response.request().method() === 'POST'
+  );
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect((await loginResponsePromise).ok()).toBeTruthy();
+
+  await expect(page).toHaveURL(new RegExp(`#\\/invite\\/${token}$`));
+  await expect(page.getByRole('button', { name: 'Request to Join Workspace' })).toBeVisible();
+});
+
 test('workspace invitation list refreshes while modal is open', async ({ page }) => {
   let inviteRefreshCount = 0;
   await page.route(/\/api\/workspaces\/ws-e2e\/invitations$/, async (route) => {
