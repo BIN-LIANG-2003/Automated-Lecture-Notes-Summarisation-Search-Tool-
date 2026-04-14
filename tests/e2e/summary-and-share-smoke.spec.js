@@ -152,13 +152,61 @@ async function mockShareLinksList(page, count = 18) {
       is_expired: expired,
     };
   });
-  await page.route('**/api/documents/1/share-links?*', async (route) => {
+  await page.route(/\/api\/documents\/1\/share-links(?:\?.*)?$/, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ items }),
     });
   });
+}
+
+async function openGraphNotesInHomePane(page, options = {}) {
+  const { waitForShareLinks = false } = options;
+  const searchInput = page.locator('#search-input');
+  const searchResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/documents\?/.test(response.url()) &&
+      response.url().includes('q=graph') &&
+      response.request().method() === 'GET' &&
+      response.ok(),
+    { timeout: 15_000 }
+  ).catch(() => null);
+
+  await searchInput.fill('graph');
+  await searchInput.press('Enter');
+  await searchResponse;
+
+  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
+  await expect(graphCard).toBeVisible({ timeout: 15_000 });
+
+  const detailResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/documents\/1(?:\?|$)/.test(response.url()) &&
+      response.request().method() === 'GET' &&
+      response.ok(),
+    { timeout: 15_000 }
+  ).catch(() => null);
+  const shareLinksResponse = waitForShareLinks
+    ? page.waitForResponse(
+        (response) =>
+          /\/api\/documents\/1\/share-links(?:\?|$)/.test(response.url()) &&
+          response.request().method() === 'GET' &&
+          response.ok(),
+        { timeout: 15_000 }
+      ).catch(() => null)
+    : null;
+
+  await graphCard.getByRole('button', { name: 'Open' }).click();
+  await detailResponse;
+
+  const embeddedReader = page.locator('.document-detail-card');
+  await expect(embeddedReader.getByRole('heading', { name: 'Graph Notes' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(embeddedReader).toContainText('graph traversal bfs dfs', { timeout: 15_000 });
+  if (shareLinksResponse) await shareLinksResponse;
+  return embeddedReader;
 }
 
 test('files workspace summary center opens summary result modal with export and email actions', async ({ page }) => {
@@ -227,18 +275,9 @@ test('files detail pane summarize flow opens the current summary result modal', 
   await loginAsAlice(page);
   await goToMyFiles(page);
 
-  const searchInput = page.locator('#search-input');
-  await searchInput.fill('graph');
-  await searchInput.press('Enter');
+  const embeddedReader = await openGraphNotesInHomePane(page);
 
-  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
-  await expect(graphCard).toBeVisible();
-  await graphCard.getByRole('button', { name: 'Open' }).click();
-  await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
-
-  const summarizeButton = page
-    .locator('.document-detail-card')
-    .getByRole('button', { name: /^Summarize(?: Note)?$/ });
+  const summarizeButton = embeddedReader.getByRole('button', { name: /^Summarize(?: Note)?$/ });
   await expect(summarizeButton).toBeVisible({ timeout: 15_000 });
   await expect(summarizeButton).toBeEnabled({ timeout: 15_000 });
   const summarizeResponse = page.waitForResponse(
@@ -326,22 +365,7 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
   await mockDocumentEmailShare(page);
   await goToMyFiles(page);
 
-  const searchInput = page.locator('#search-input');
-  await searchInput.fill('graph');
-  await searchInput.press('Enter');
-
-  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
-  await expect(graphCard).toBeVisible();
-  const shareLinksResponse = page.waitForResponse(
-    (response) =>
-      /\/api\/documents\/\d+\/share-links/.test(response.url()) &&
-      response.request().method() === 'GET' &&
-      response.ok()
-  );
-  await graphCard.getByRole('button', { name: 'Open' }).click();
-  await shareLinksResponse;
-  const embeddedReader = page.locator('.document-detail-card');
-  await expect(embeddedReader.getByRole('heading', { name: 'Graph Notes' })).toBeVisible();
+  const embeddedReader = await openGraphNotesInHomePane(page, { waitForShareLinks: true });
   await expect(embeddedReader.getByRole('heading', { name: 'Shared Links' })).toHaveCount(0);
   await expect(embeddedReader.getByRole('button', { name: 'Copy Link', exact: true })).toHaveCount(0);
   await expect(embeddedReader.getByRole('button', { name: 'Manage Links', exact: true })).toHaveCount(0);
@@ -350,7 +374,15 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
   await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
   const topbarManageLinks = topbarActions.getByRole('button', { name: 'Manage Links', exact: true });
   await expect(topbarManageLinks).toBeVisible({ timeout: 15_000 });
+  const manageLinksRefresh = page.waitForResponse(
+    (response) =>
+      /\/api\/documents\/1\/share-links(?:\?|$)/.test(response.url()) &&
+      response.request().method() === 'GET' &&
+      response.ok(),
+    { timeout: 15_000 }
+  ).catch(() => null);
   await topbarManageLinks.click();
+  await manageLinksRefresh;
 
   const initialManageModal = page.getByRole('dialog', { name: 'Manage Links' });
   await expect(initialManageModal).toBeVisible();

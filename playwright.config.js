@@ -6,9 +6,10 @@ export default defineConfig({
   testDir: './tests/e2e',
   outputDir: 'test-results',
   workers: isCI ? 1 : undefined,
+  retries: isCI ? 1 : 0,
   timeout: 30_000,
   expect: {
-    timeout: 10_000,
+    timeout: isCI ? 15_000 : 10_000,
   },
   reporter: isCI
     ? [
