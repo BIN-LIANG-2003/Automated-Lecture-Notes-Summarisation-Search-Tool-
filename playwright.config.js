@@ -5,6 +5,7 @@ const isCI = Boolean(process.env.CI);
 export default defineConfig({
   testDir: './tests/e2e',
   outputDir: 'test-results',
+  workers: isCI ? 1 : undefined,
   timeout: 30_000,
   expect: {
     timeout: 10_000,
