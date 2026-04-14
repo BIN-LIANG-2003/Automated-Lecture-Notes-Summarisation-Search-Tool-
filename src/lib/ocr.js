@@ -77,6 +77,7 @@ export const formatOcrErrorMessage = (payload) => {
     details?.external,
     details?.huggingface,
     details?.local,
+    details?.hint,
     ...runtimeHints,
   ]
     .map(normalizeOcrErrorPart)

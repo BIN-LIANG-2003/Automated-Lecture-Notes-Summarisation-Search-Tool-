@@ -66,7 +66,9 @@ async function loginAsAlice(page) {
   }
   await expect(page.locator('.notion-shell')).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('#main')).toBeVisible({ timeout: 15_000 });
-  await expect(page.locator('.notion-top-summary-btn')).toBeVisible({ timeout: 15_000 });
+  await expect(page.getByRole('button', { name: /Summaries \(\d+\)/ })).toBeVisible({
+    timeout: 15_000,
+  });
 }
 
 async function goToMyFiles(page) {
@@ -168,7 +170,7 @@ test('files workspace summary center opens summary result modal with export and 
   await expect(topbarActions.locator('.notion-top-pill')).toHaveCount(0);
   await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
 
-  await page.locator('.notion-top-summary-btn').click();
+  await page.getByRole('button', { name: /Summaries \(\d+\)/ }).click();
   const summaryCenter = page.getByRole('dialog', { name: 'Summaries' });
   await expect(summaryCenter).toBeVisible();
   await expect(summaryCenter.getByRole('button', { name: 'Open Summary' })).toBeVisible();
@@ -234,17 +236,21 @@ test('files detail pane summarize flow opens the current summary result modal', 
   await graphCard.getByRole('button', { name: 'Open' }).click();
   await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
 
+  const summarizeButton = page
+    .locator('.document-detail-card')
+    .getByRole('button', { name: /^Summarize(?: Note)?$/ });
+  await expect(summarizeButton).toBeVisible({ timeout: 15_000 });
+  await expect(summarizeButton).toBeEnabled({ timeout: 15_000 });
   const summarizeResponse = page.waitForResponse(
     (response) =>
       response.url().includes('/api/analyze-text') &&
       response.request().method() === 'POST' &&
       response.ok()
   );
-  await page.locator('.document-detail-card').getByRole('button', { name: 'Summarize' }).click();
-  await summarizeResponse;
+  await Promise.all([summarizeResponse, summarizeButton.click()]);
 
   const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });
-  await expect(summaryModal).toBeVisible();
+  await expect(summaryModal).toBeVisible({ timeout: 15_000 });
   await expect(summaryModal.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
   await expect(summaryModal.getByRole('button', { name: 'Export TXT' })).toBeVisible();
   await expect(summaryModal.getByRole('button', { name: 'Export PDF' })).toBeVisible();
@@ -326,7 +332,14 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
 
   const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
   await expect(graphCard).toBeVisible();
+  const shareLinksResponse = page.waitForResponse(
+    (response) =>
+      /\/api\/documents\/\d+\/share-links/.test(response.url()) &&
+      response.request().method() === 'GET' &&
+      response.ok()
+  );
   await graphCard.getByRole('button', { name: 'Open' }).click();
+  await shareLinksResponse;
   const embeddedReader = page.locator('.document-detail-card');
   await expect(embeddedReader.getByRole('heading', { name: 'Graph Notes' })).toBeVisible();
   await expect(embeddedReader.getByRole('heading', { name: 'Shared Links' })).toHaveCount(0);
@@ -336,7 +349,7 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
   const topbarActions = page.locator('.notion-top-actions');
   await expect(topbarActions.getByRole('button', { name: 'Feedback' })).toBeVisible();
   const topbarManageLinks = topbarActions.getByRole('button', { name: 'Manage Links', exact: true });
-  await expect(topbarManageLinks).toBeVisible();
+  await expect(topbarManageLinks).toBeVisible({ timeout: 15_000 });
   await topbarManageLinks.click();
 
   const initialManageModal = page.getByRole('dialog', { name: 'Manage Links' });

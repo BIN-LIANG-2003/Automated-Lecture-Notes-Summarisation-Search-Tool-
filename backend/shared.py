@@ -1356,11 +1356,47 @@ def assess_ocr_text_quality(text):
     }
 
 
-def get_ocr_runtime_status():
+def _probe_external_ocr_service():
+    endpoint = str(EXTERNAL_OCR_SERVICE_URL or '').strip()
+    if not endpoint:
+        return {
+            'checked': False,
+            'ok': False,
+            'error': 'External OCR service is not configured',
+        }
+    try:
+        response = requests.request(
+            'HEAD',
+            endpoint,
+            timeout=min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS)),
+            allow_redirects=True,
+        )
+    except requests.exceptions.Timeout:
+        return {
+            'checked': True,
+            'ok': False,
+            'error': f'External OCR health check timed out after {min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS))}s',
+        }
+    except Exception as exc:
+        return {
+            'checked': True,
+            'ok': False,
+            'error': f'External OCR health check failed: {exc}',
+        }
+
+    status_code = getattr(response, 'status_code', 0) or 0
+    return {
+        'checked': True,
+        'ok': bool(status_code < 400 or status_code == 405),
+        'status_code': status_code,
+        'error': '' if status_code < 400 or status_code == 405 else f'External OCR health check returned HTTP {status_code}',
+    }
+
+
+def get_ocr_runtime_status(probe_external=False):
     ocrmypdf_path = shutil.which(OCRMYPDF_BINARY)
     status = {
         'external_ocr_configured': bool(EXTERNAL_OCR_SERVICE_URL),
-        'external_ocr_service_url': EXTERNAL_OCR_SERVICE_URL,
         'external_ocr_timeout_seconds': EXTERNAL_OCR_TIMEOUT_SECONDS,
         'hf_token_configured': bool(HF_TOKEN),
         'hf_ocr_model': OCR_MODEL_ID,
@@ -1373,10 +1409,15 @@ def get_ocr_runtime_status():
         'hints': [],
     }
 
+    if probe_external and status['external_ocr_configured']:
+        status['external_ocr_probe'] = _probe_external_ocr_service()
     if not status['external_ocr_configured'] and not status['hf_token_configured']:
         status['hints'].append('Set HF_API_TOKEN in environment variables to enable Hugging Face OCR.')
     if status['external_ocr_configured']:
         status['hints'].append('External OCR service is configured and will be tried before Hugging Face.')
+        probe = status.get('external_ocr_probe') or {}
+        if probe.get('checked') and not probe.get('ok'):
+            status['hints'].append('External OCR service is not currently reachable; Hugging Face will be used if configured.')
     if ENABLE_PDF_OCR_FALLBACK and not status['ocrmypdf_available']:
         status['hints'].append('Install ocrmypdf binary to enable automatic PDF OCR fallback for low-quality text extraction.')
 
@@ -1384,8 +1425,10 @@ def get_ocr_runtime_status():
 
 
 def ocr_health():
-    status = get_ocr_runtime_status()
-    ok = bool(status.get('external_ocr_configured') or status.get('hf_token_configured'))
+    status = get_ocr_runtime_status(probe_external=True)
+    external_probe = status.get('external_ocr_probe') or {}
+    external_ready = bool(status.get('external_ocr_configured') and external_probe.get('ok'))
+    ok = bool(external_ready or status.get('hf_token_configured'))
     status['ok'] = ok
     status['checked_at'] = utcnow_iso()
     if not ok:
@@ -1537,6 +1580,33 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
         + (f' ({"; ".join(attempt_errors)})' if attempt_errors else '')
     )
 
+
+def call_huggingface_ocr_service(img_bytes, mimetype='application/octet-stream'):
+    if not img_bytes:
+        return False, '', 'Empty image payload'
+
+    hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
+    if not hf_headers:
+        return False, '', 'HF_API_TOKEN is not configured on server'
+
+    try:
+        target_url = hf_model_url(OCR_MODEL_ID)
+        print(f"☁️ [OCR route] Using Hugging Face OCR endpoint: {target_url}")
+        response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
+        if response.status_code >= 400:
+            return False, '', f'HF OCR failed ({response.status_code}): {hf_error_message(response)}'
+        try:
+            ocr_result = response.json()
+        except Exception:
+            return False, '', f'HF OCR returned non-JSON response: {hf_error_message(response)}'
+        extracted_text = normalize_ocr_text(ocr_result)
+        if extracted_text:
+            return True, extracted_text, ''
+        return False, '', 'HF OCR returned empty text'
+    except Exception as exc:
+        return False, '', f'HF OCR error: {exc}'
+
+
 # ==========================================
 # 专家 1 号：视觉专家 (负责看图识字)
 # 对应前端的【按钮 1】
@@ -1637,70 +1707,32 @@ def extract_text_from_image(doc_id=None):
     if not img_bytes:
         return jsonify({"error": "Empty image file"}), 400
 
-    # ================== 👇 从这里开始向下覆盖 👇 ==================
-    import os
-    import requests
+    external_error = ''
+    if str(EXTERNAL_OCR_SERVICE_URL or '').strip():
+        external_ok, extracted_text, external_error = call_external_ocr_service(
+            img_bytes,
+            mimetype=mimetype,
+            source_filename=source_filename,
+        )
+        if external_ok and extracted_text:
+            return jsonify({"text": extracted_text, "source": "external"})
 
-    # 1. 动态嗅探：去读取你在 Render 里配置的 ngrok 专属路线
-    custom_endpoint = os.environ.get("EXTERNAL_OCR_SERVICE_URL")
+    hf_ok, extracted_text, hf_error = call_huggingface_ocr_service(
+        img_bytes,
+        mimetype=mimetype,
+    )
+    if hf_ok and extracted_text:
+        return jsonify({"text": extracted_text, "source": "huggingface"})
 
-    if custom_endpoint and custom_endpoint.strip() != "":
-        # 🟢 走私有算力中心 (Colab)
-        url = custom_endpoint.strip()
-        # 核心防坑：把水流装进标准文件盒子里！
-        files = {"file": ("upload.png", img_bytes, mimetype)}
-        print(f"🚀 [OCR路由] 正在将图片表单发送至私人算力中心: {url}")
-
-        try:
-            # 发送标准表单，不要自带 headers 里的 Content-Type
-            response = requests.post(url, files=files, timeout=90)
-            if response.status_code == 200:
-                ocr_result = response.json()
-                extracted_text = normalize_ocr_text(ocr_result)
-                if extracted_text:
-                    return jsonify({"text": extracted_text, "source": "private_ngrok"})
-                return jsonify({"error": "OCR failed: Private endpoint returned empty text"}), 502
-            else:
-                return jsonify({"error": f"OCR failed: Private endpoint returned HTTP {response.status_code}"}), 502
-        except Exception as e:
-            return jsonify({"error": f"OCR failed: Private endpoint error: {str(e)}"}), 502
-
-    else:
-        # 🔵 降级走 Hugging Face 官方免费通道
-        hf_error = ''
-        hf_headers = get_hf_headers(mimetype or 'application/octet-stream')
-        if hf_headers:
-            try:
-                target_url = hf_model_url(OCR_MODEL_ID)
-                print(f"☁️ [OCR路由] 正在使用 Hugging Face 官方接口: {target_url}")
-                # 官方通道用二进制流
-                response = requests.post(target_url, headers=hf_headers, data=img_bytes, timeout=90)
-                if response.status_code < 400:
-                    try:
-                        ocr_result = response.json()
-                        extracted_text = normalize_ocr_text(ocr_result)
-                        if extracted_text:
-                            return jsonify({"text": extracted_text, "source": "huggingface"})
-                        hf_error = "HF OCR returned empty text"
-                    except Exception:
-                        hf_error = f"HF OCR returned non-JSON response: {hf_error_message(response)}"
-                else:
-                    hf_error = f"HF OCR failed ({response.status_code}): {hf_error_message(response)}"
-            except Exception as e:
-                hf_error = f"HF OCR error: {e}"
-        else:
-            hf_error = "HF_API_TOKEN is not configured on server"
-
-        runtime_status = get_ocr_runtime_status()
-        return jsonify({
-            "error": f"OCR failed: {hf_error}" if hf_error else "OCR failed",
-            "details": {
-                "huggingface": hf_error,
-                "runtime": runtime_status,
-                "hint": "Configure EXTERNAL_OCR_SERVICE_URL or HF_API_TOKEN."
-            }
-        }), 502
-    # ================== 👆 到此为止 👆 ==================
+    return jsonify({
+        "error": "OCR failed",
+        "details": {
+            "external": external_error,
+            "huggingface": hf_error,
+            "runtime": get_ocr_runtime_status(),
+            "hint": "Configure EXTERNAL_OCR_SERVICE_URL or HF_API_TOKEN."
+        }
+    }), 502
 
 
 # ==========================================

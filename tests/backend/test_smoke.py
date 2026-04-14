@@ -234,6 +234,21 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         buffer.seek(0)
         return buffer
 
+    def _fake_http_response(self, status_code=200, payload=None, text='', headers=None):
+        class FakeResponse:
+            def __init__(self, status_code, payload, text, headers):
+                self.status_code = status_code
+                self._payload = payload
+                self.text = text
+                self.headers = headers or {'content-type': 'application/json'}
+
+            def json(self):
+                if isinstance(self._payload, Exception):
+                    raise self._payload
+                return self._payload
+
+        return FakeResponse(status_code, payload, text, headers)
+
     def test_documents_requires_auth_and_returns_items_when_authenticated(self):
         self._insert_document(
             'Protected Notes',
@@ -365,6 +380,46 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             },
         )
         self.assertEqual(username_request.status_code, 201)
+
+    @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
+    @patch('backend.shared.HF_TOKEN', 'hf-test-token')
+    @patch('backend.shared.requests.post')
+    def test_image_ocr_falls_back_to_huggingface_after_external_404(self, mock_post):
+        mock_post.side_effect = [
+            self._fake_http_response(404, {'error': 'not found'}),
+            self._fake_http_response(200, [{'generated_text': 'Fallback OCR lecture text'}]),
+        ]
+
+        response = self.client.post(
+            '/api/extract-text',
+            headers=self._auth_headers(),
+            data={
+                'image': (io.BytesIO(b'not-a-real-image-but-route-sends-bytes'), 'lecture.png'),
+            },
+            content_type='multipart/form-data',
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('source'), 'huggingface')
+        self.assertEqual(payload.get('text'), 'Fallback OCR lecture text')
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
+    @patch('backend.shared.HF_TOKEN', '')
+    @patch('backend.shared.requests.request')
+    def test_ocr_health_redacts_external_url_and_checks_reachability(self, mock_request):
+        mock_request.return_value = self._fake_http_response(404, {'error': 'not found'})
+
+        response = self.client.get('/api/ocr/health')
+
+        self.assertEqual(response.status_code, 503)
+        payload = response.get_json()
+        self.assertFalse(payload.get('ok'))
+        self.assertTrue(payload.get('external_ocr_configured'))
+        self.assertNotIn('external_ocr_service_url', payload)
+        self.assertNotIn('private.example.invalid', str(payload))
+        self.assertEqual(payload.get('external_ocr_probe', {}).get('status_code'), 404)
 
     def test_auth_secret_policy_requires_strong_secret_or_explicit_development(self):
         def run_config_import(env_updates):
