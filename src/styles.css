@@ -2069,6 +2069,10 @@ body.notion-home-body .skip-link:focus-visible{
   padding:18px;
 }
 
+.notion-confirm-backdrop{
+  z-index:320;
+}
+
 .notion-modal-card{
   width:min(760px, 100%);
   max-height:min(88vh, 980px);
@@ -2330,6 +2334,25 @@ body.notion-home-body .skip-link:focus-visible{
   max-height:min(44vh, 420px);
   overflow:auto;
   padding-right:4px;
+}
+
+.notion-invite-access-grid{
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:14px;
+  align-items:start;
+}
+
+.notion-invite-access-column{
+  display:grid;
+  gap:10px;
+  min-width:0;
+}
+
+.notion-invite-access-column h5{
+  margin:0;
+  font-size:14px;
+  color:#3f3f3c;
 }
 
 .notion-account-manager-modal h3{
@@ -4418,6 +4441,10 @@ body.notion-home-body .skip-link:focus-visible{
   }
 
   .notion-invite-modal-layout{
+    grid-template-columns:1fr;
+  }
+
+  .notion-invite-access-grid{
     grid-template-columns:1fr;
   }
 

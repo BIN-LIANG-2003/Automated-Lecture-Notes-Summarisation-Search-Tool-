@@ -525,7 +525,7 @@ export default function DocumentsList({
                                 ? 'Please sign in'
                                 : canShare
                                   ? undefined
-                                  : 'Link sharing is restricted in workspace settings'
+                                  : 'Link sharing is restricted in Invite Members'
                             }
                             disabled={!isLoggedIn || !canShare}
                             type="button"

@@ -11,7 +11,7 @@ import subprocess
 import uuid
 import requests
 from datetime import datetime, timedelta
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 from flask import request, jsonify, send_from_directory, redirect
 from werkzeug.utils import secure_filename
@@ -1381,7 +1381,7 @@ def _probe_external_ocr_service():
         return {
             'checked': True,
             'ok': False,
-            'error': f'External OCR health check failed: {exc}',
+            'error': f'External OCR health check failed: {redact_external_ocr_diagnostic(exc)}',
         }
 
     status_code = getattr(response, 'status_code', 0) or 0
@@ -1424,15 +1424,46 @@ def get_ocr_runtime_status(probe_external=False):
     return status
 
 
+def redact_external_ocr_diagnostic(value):
+    message = str(value or '').strip()
+    if not message:
+        return ''
+
+    endpoint = str(EXTERNAL_OCR_SERVICE_URL or '').strip()
+    endpoint_host = ''
+    if endpoint:
+        try:
+            endpoint_host = str(urlparse(endpoint).netloc or '').strip()
+        except Exception:
+            endpoint_host = ''
+        message = message.replace(endpoint, '[external OCR endpoint]')
+    if endpoint_host:
+        message = message.replace(endpoint_host, '[external OCR host]')
+
+    message = re.sub(r'https?://[^\s)>\]\'"]+', '[url]', message)
+    message = re.sub(r"host='[^']+'", "host='[external OCR host]'", message)
+    message = re.sub(r'host="[^"]+"', 'host="[external OCR host]"', message)
+    return message
+
+
 def ocr_health():
     status = get_ocr_runtime_status(probe_external=True)
     external_probe = status.get('external_ocr_probe') or {}
     external_ready = bool(status.get('external_ocr_configured') and external_probe.get('ok'))
     ok = bool(external_ready or status.get('hf_token_configured'))
+    checked_at = utcnow_iso()
     status['ok'] = ok
-    status['checked_at'] = utcnow_iso()
+    status['checked_at'] = checked_at
     if not ok:
         status['hints'].append('No OCR provider is ready. Configure EXTERNAL_OCR_SERVICE_URL or HF_API_TOKEN.')
+
+    if not get_authenticated_username():
+        return jsonify({
+            'ok': ok,
+            'checked_at': checked_at,
+            'details': 'Sign in to view OCR provider diagnostics.',
+        }), (200 if ok else 503)
+
     return jsonify(status), (200 if ok else 503)
 
 
@@ -1523,10 +1554,10 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
         except requests.exceptions.Timeout:
             return False, '', f'External OCR timeout after {EXTERNAL_OCR_TIMEOUT_SECONDS}s'
         except Exception as e:
-            return False, '', f'External OCR request failed: {e}'
+            return False, '', f'External OCR request failed: {redact_external_ocr_diagnostic(e)}'
 
         if response.status_code >= 400:
-            error_message = hf_error_message(response)
+            error_message = redact_external_ocr_diagnostic(hf_error_message(response))
             attempt_errors.append(f'{attempt_name}: HTTP {response.status_code} - {error_message}')
             if response.status_code == 422 and attempt_name != attempts[-1][0]:
                 continue
@@ -1559,7 +1590,7 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
                 json.dumps(
                     {
                         'provider': 'external',
-                        'url': endpoint,
+                        'endpoint_configured': True,
                         'attempt': attempt_name,
                         'filename': safe_filename,
                         'reason': quality.get('reason') or 'Suspicious OCR output',

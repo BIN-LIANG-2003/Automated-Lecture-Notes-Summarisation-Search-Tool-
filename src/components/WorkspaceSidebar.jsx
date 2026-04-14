@@ -100,7 +100,7 @@ export default function WorkspaceSidebar({
                 {isLoggedIn
                   ? `${activeWorkspace?.plan || 'Free'} · ${workspaceMemberCount || 1} member${
                       workspaceMemberCount === 1 ? '' : 's'
-                    }${pendingRequestCount ? ` · ${pendingRequestCount} pending` : ''}`
+                    }`
                   : 'Guest mode'}
               </p>
             </div>

@@ -30,6 +30,11 @@ def list_workspace_invitations(workspace_id):
     return workspace_service.list_workspace_invitations(workspace_id)
 
 
+@workspaces_bp.route('/api/workspaces/<workspace_id>/members/<member_username>', methods=['DELETE'])
+def remove_workspace_member(workspace_id, member_username):
+    return workspace_service.remove_workspace_member(workspace_id, member_username)
+
+
 @workspaces_bp.route('/api/workspaces/<workspace_id>/invitations', methods=['POST'])
 def create_workspace_invitations(workspace_id):
     return workspace_service.create_workspace_invitations(workspace_id)

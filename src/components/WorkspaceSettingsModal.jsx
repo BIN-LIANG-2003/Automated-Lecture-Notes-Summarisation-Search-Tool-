@@ -1,20 +1,3 @@
-const formatDomains = (value) =>
-  String(value || '')
-    .split(/,\s*/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-
-const getLinkSharingModeHelp = (mode) => {
-  const safeMode = String(mode || '').trim().toLowerCase();
-  if (safeMode === 'restricted') {
-    return 'Restricted blocks document share links. People must already be inside the workspace to open files.';
-  }
-  if (safeMode === 'public') {
-    return 'Anyone With Link makes document access public. Shared links still work, and direct document access is no longer limited to workspace members.';
-  }
-  return 'Workspace Members keeps documents private by default, but valid share links still open the document while workspace members keep their normal access.';
-};
-
 export default function WorkspaceSettingsModal({
   open = false,
   workspaceActionLoading = false,
@@ -35,17 +18,15 @@ export default function WorkspaceSettingsModal({
   documentsPageSizeOptions = [],
   sidebarDensityOptions = [],
   accentColorPresets = [],
-  sharePolicyPresets = [],
-  activeSharePolicyPresetId = '',
   onClearWorkspaceDocuments,
   onDeleteWorkspace,
+  onLeaveWorkspace,
   isLoggedIn = false,
   activeWorkspace = null,
   workspaceInsights = null,
 }) {
   if (!open) return null;
 
-  const trustedDomains = formatDomains(workspaceSettingsDraft.allowed_email_domains);
   const activeTabMeta =
     workspaceSettingsTabs.find((item) => item.id === workspaceSettingsTab) || workspaceSettingsTabs[0] || null;
   const enabledNotificationCount = [
@@ -54,7 +35,8 @@ export default function WorkspaceSettingsModal({
     workspaceSettingsDraft.notify_sharing_events,
   ].filter(Boolean).length;
   const totalNotes = Number(workspaceInsights?.totalNotes) || 0;
-  const ownerOnlyDisabled = workspaceActionLoading || !isLoggedIn || activeWorkspace?.is_owner === false;
+  const isWorkspaceOwner = activeWorkspace?.is_owner !== false;
+  const ownerOnlyDisabled = workspaceActionLoading || (isLoggedIn && !isWorkspaceOwner);
 
   return (
     <div
@@ -76,7 +58,9 @@ export default function WorkspaceSettingsModal({
           <div>
             <h3 id="workspace-settings-title">Workspace Settings</h3>
             <p className="notion-settings-subtitle">
-              Manage how this workspace looks, who can collaborate, and what defaults new study flows start with.
+              {isWorkspaceOwner
+                ? 'Manage how this workspace looks, who can collaborate, and what defaults new study flows start with.'
+                : 'View this workspace configuration or leave the shared workspace from your account.'}
             </p>
           </div>
           <button
@@ -126,7 +110,7 @@ export default function WorkspaceSettingsModal({
                       value={workspaceSettingsDraft.workspace_icon}
                       onChange={(event) => updateWorkspaceSettingsDraft?.({ workspace_icon: event.target.value })}
                       placeholder="📚"
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                   <div className="notion-settings-row">
@@ -143,7 +127,7 @@ export default function WorkspaceSettingsModal({
                         }
                       }}
                       placeholder="Enter workspace name"
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                       autoFocus
                     />
                   </div>
@@ -155,7 +139,7 @@ export default function WorkspaceSettingsModal({
                       value={workspaceSettingsDraft.description}
                       onChange={(event) => updateWorkspaceSettingsDraft?.({ description: event.target.value })}
                       placeholder="What this workspace is for"
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                 </section>
@@ -170,7 +154,7 @@ export default function WorkspaceSettingsModal({
                       value={workspaceSettingsDraft.accent_color}
                       onChange={(event) => updateWorkspaceSettingsDraft?.({ accent_color: event.target.value })}
                       placeholder="#2f76e8"
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                   <div className="notion-settings-color-grid" role="group" aria-label="Accent color presets">
@@ -182,7 +166,7 @@ export default function WorkspaceSettingsModal({
                           workspaceSettingsDraft.accent_color === preset.value ? ' active' : ''
                         }`}
                         onClick={() => updateWorkspaceSettingsDraft?.({ accent_color: preset.value })}
-                        disabled={workspaceActionLoading}
+                        disabled={ownerOnlyDisabled}
                         title={preset.label}
                         style={{ background: preset.value }}
                       >
@@ -211,7 +195,7 @@ export default function WorkspaceSettingsModal({
                         updateWorkspaceSettingsDraft?.({ default_category: event.target.value })
                       }
                       placeholder="Uncategorized"
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                   <label className="notion-checkbox-row">
@@ -221,7 +205,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ auto_categorize: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Auto-categorize uploads when category is empty</span>
                   </label>
@@ -237,7 +221,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ default_home_tab: event.target.value })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       <option value="home">Home overview</option>
                       <option value="files">Notes</option>
@@ -251,7 +235,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ default_documents_layout: event.target.value })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       {documentsLayoutOptions.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -268,7 +252,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ default_documents_sort: event.target.value })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       {documentsSortOptions.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -287,7 +271,7 @@ export default function WorkspaceSettingsModal({
                           default_documents_page_size: Number(event.target.value) || 20,
                         })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       {documentsPageSizeOptions.map((size) => (
                         <option key={`page-size-${size}`} value={size}>
@@ -317,7 +301,7 @@ export default function WorkspaceSettingsModal({
                           recent_items_limit: Number(event.target.value) || defaultSidebarRecentLimit,
                         })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                   <div className="notion-settings-row">
@@ -328,7 +312,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ sidebar_density: event.target.value })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       {sidebarDensityOptions.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -344,7 +328,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ show_starred_section: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show Starred section in sidebar</span>
                   </label>
@@ -355,7 +339,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ show_recent_section: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show Recent section in sidebar</span>
                   </label>
@@ -370,7 +354,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ show_quick_actions: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show quick actions panel on the overview page</span>
                   </label>
@@ -381,7 +365,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ show_usage_chart: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show usage chart on the overview page</span>
                   </label>
@@ -392,7 +376,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ show_recent_activity: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show recent uploads and summary activity blocks</span>
                   </label>
@@ -411,7 +395,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ notify_upload_events: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show success toasts for uploads</span>
                   </label>
@@ -422,7 +406,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ notify_summary_events: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show success toasts for AI summaries and summary history actions</span>
                   </label>
@@ -433,7 +417,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ notify_sharing_events: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Show success toasts for invites and share links</span>
                   </label>
@@ -470,7 +454,7 @@ export default function WorkspaceSettingsModal({
                     onChange={(event) =>
                       updateWorkspaceSettingsDraft?.({ allow_uploads: event.target.checked })
                     }
-                    disabled={workspaceActionLoading}
+                    disabled={ownerOnlyDisabled}
                   />
                   <span>Allow file uploads</span>
                 </label>
@@ -481,7 +465,7 @@ export default function WorkspaceSettingsModal({
                     onChange={(event) =>
                       updateWorkspaceSettingsDraft?.({ allow_note_editing: event.target.checked })
                     }
-                    disabled={workspaceActionLoading}
+                    disabled={ownerOnlyDisabled}
                   />
                   <span>Allow note editing (category, tags, content, PDF)</span>
                 </label>
@@ -492,7 +476,7 @@ export default function WorkspaceSettingsModal({
                     onChange={(event) =>
                       updateWorkspaceSettingsDraft?.({ allow_export: event.target.checked })
                     }
-                    disabled={workspaceActionLoading}
+                    disabled={ownerOnlyDisabled}
                   />
                   <span>Allow summary export (copy / txt / email)</span>
                 </label>
@@ -510,7 +494,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ allow_ai_tools: event.target.checked })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                     <span>Allow AI assistant</span>
                   </label>
@@ -521,7 +505,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ allow_ocr: event.target.checked })
                       }
-                      disabled={workspaceActionLoading || !workspaceSettingsDraft.allow_ai_tools}
+                      disabled={ownerOnlyDisabled || !workspaceSettingsDraft.allow_ai_tools}
                     />
                     <span>Allow OCR image extraction</span>
                   </label>
@@ -537,7 +521,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ summary_length: event.target.value })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     >
                       <option value="short">Short</option>
                       <option value="medium">Medium</option>
@@ -555,7 +539,7 @@ export default function WorkspaceSettingsModal({
                       onChange={(event) =>
                         updateWorkspaceSettingsDraft?.({ keyword_limit: Number(event.target.value) || 5 })
                       }
-                      disabled={workspaceActionLoading}
+                      disabled={ownerOnlyDisabled}
                     />
                   </div>
                   <p className="notion-settings-help">
@@ -565,201 +549,56 @@ export default function WorkspaceSettingsModal({
               </>
             )}
 
-            {workspaceSettingsTab === 'access' && (
-              <>
-                <section className="notion-settings-block">
-                  <h4>Sharing templates</h4>
-                  <div className="notion-settings-preset-grid">
-                    {sharePolicyPresets.map((preset) => (
-                      <button
-                        key={preset.id}
-                        type="button"
-                        className={`btn notion-settings-preset-btn ${
-                          activeSharePolicyPresetId === preset.id ? 'active' : ''
-                        }`}
-                        onClick={() => updateWorkspaceSettingsDraft?.(preset.patch)}
-                        disabled={workspaceActionLoading}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
-                  <p className="notion-settings-help">
-                    Presets are inspired by common collaboration models: strict ownership, classroom balance, and open sharing.
-                  </p>
-                </section>
-
-                <section className="notion-settings-block">
-                  <h4>Invitations and trusted domains</h4>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.allow_member_invites}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ allow_member_invites: event.target.checked })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                    <span>Allow members to invite others</span>
-                  </label>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.restrict_invites_to_domains}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ restrict_invites_to_domains: event.target.checked })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                    <span>Restrict invitations to trusted email domains</span>
-                  </label>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-domain-list-input">Trusted Domains</label>
-                    <textarea
-                      id="workspace-domain-list-input"
-                      rows={2}
-                      value={workspaceSettingsDraft.allowed_email_domains}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ allowed_email_domains: event.target.value })
-                      }
-                      placeholder="school.edu, club.org"
-                      disabled={workspaceActionLoading}
-                    />
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-invite-expiry-input">Invitation Link Expiry (days)</label>
-                    <input
-                      id="workspace-invite-expiry-input"
-                      type="number"
-                      min="1"
-                      max="30"
-                      value={workspaceSettingsDraft.default_invite_expiry_days}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          default_invite_expiry_days: Number(event.target.value) || 7,
-                        })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                  </div>
-                  <p className="notion-settings-help">
-                    {trustedDomains.length
-                      ? `Trusted domains: ${trustedDomains.join(', ')}`
-                      : 'No trusted domains configured. Leave the toggle off if invites should remain open to any valid email.'}
-                  </p>
-                </section>
-
-                <section className="notion-settings-block">
-                  <h4>Link sharing</h4>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-link-mode-select">Link Sharing</label>
-                    <select
-                      id="workspace-link-mode-select"
-                      value={workspaceSettingsDraft.link_sharing_mode}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ link_sharing_mode: event.target.value })
-                      }
-                      disabled={workspaceActionLoading}
-                    >
-                      <option value="restricted">Restricted</option>
-                      <option value="workspace">Workspace Members</option>
-                      <option value="public">Anyone With Link</option>
-                    </select>
-                  </div>
-                  <p className="notion-settings-help">
-                    {getLinkSharingModeHelp(workspaceSettingsDraft.link_sharing_mode)}
-                  </p>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-share-expiry-input">Share Link Expiry (days)</label>
-                    <input
-                      id="workspace-share-expiry-input"
-                      type="number"
-                      min="1"
-                      max="30"
-                      value={workspaceSettingsDraft.default_share_expiry_days}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          default_share_expiry_days: Number(event.target.value) || 7,
-                        })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-share-link-limit-input">Max Active Links Per Note</label>
-                    <input
-                      id="workspace-share-link-limit-input"
-                      type="number"
-                      min="1"
-                      max="20"
-                      value={workspaceSettingsDraft.max_active_share_links_per_document}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          max_active_share_links_per_document: Number(event.target.value) || 5,
-                        })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                  </div>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.allow_member_share_management}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          allow_member_share_management: event.target.checked,
-                        })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                    <span>Allow members to manage share links</span>
-                  </label>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.auto_revoke_previous_share_links}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          auto_revoke_previous_share_links: event.target.checked,
-                        })
-                      }
-                      disabled={workspaceActionLoading}
-                    />
-                    <span>Auto revoke existing active links when creating a new one</span>
-                  </label>
-                </section>
-              </>
-            )}
-
             {workspaceSettingsTab === 'danger' && (
               <section className="notion-settings-block notion-settings-danger">
                 <h4>Danger Zone</h4>
-                <p className="muted tiny">
-                  Permanently delete notes or remove this entire workspace. These actions cannot be undone.
-                </p>
-                <div className="notion-settings-danger-actions">
-                  <button
-                    type="button"
-                    className="btn btn-delete"
-                    onClick={onClearWorkspaceDocuments}
-                    disabled={ownerOnlyDisabled}
-                  >
-                    Clear Workspace Notes
-                  </button>
-                  <button
-                    type="button"
-                    className="btn btn-delete"
-                    onClick={onDeleteWorkspace}
-                    disabled={ownerOnlyDisabled}
-                  >
-                    Delete Workspace
-                  </button>
-                </div>
-                <p className="muted tiny notion-settings-danger-note">
-                  {activeWorkspace?.is_owner === false
-                    ? 'Only the workspace owner can use these actions.'
-                    : `${totalNotes} note${totalNotes === 1 ? '' : 's'} will be removed if you delete this workspace.`}
-                </p>
+                {isWorkspaceOwner ? (
+                  <>
+                    <p className="muted tiny">
+                      Permanently delete notes or remove this entire workspace. These actions cannot be undone.
+                    </p>
+                    <div className="notion-settings-danger-actions">
+                      <button
+                        type="button"
+                        className="btn btn-delete"
+                        onClick={onClearWorkspaceDocuments}
+                        disabled={ownerOnlyDisabled}
+                      >
+                        Clear Workspace Notes
+                      </button>
+                      <button
+                        type="button"
+                        className="btn btn-delete"
+                        onClick={onDeleteWorkspace}
+                        disabled={ownerOnlyDisabled}
+                      >
+                        Delete Workspace
+                      </button>
+                    </div>
+                    <p className="muted tiny notion-settings-danger-note">
+                      {`${totalNotes} note${totalNotes === 1 ? '' : 's'} will be removed if you delete this workspace.`}
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <p className="muted tiny">
+                      Remove this shared workspace from your account. This does not delete the workspace or its notes for other members.
+                    </p>
+                    <div className="notion-settings-danger-actions">
+                      <button
+                        type="button"
+                        className="btn btn-delete"
+                        onClick={onLeaveWorkspace}
+                        disabled={workspaceActionLoading || !isLoggedIn}
+                      >
+                        Leave Workspace
+                      </button>
+                    </div>
+                    <p className="muted tiny notion-settings-danger-note">
+                      You can rejoin later only if the owner sends a new invitation.
+                    </p>
+                  </>
+                )}
               </section>
             )}
           </div>
@@ -770,7 +609,7 @@ export default function WorkspaceSettingsModal({
             type="button"
             className="btn btn-primary"
             onClick={onSaveWorkspaceSettings}
-            disabled={workspaceActionLoading}
+            disabled={ownerOnlyDisabled}
           >
             {workspaceActionLoading ? 'Saving...' : 'Save changes'}
           </button>

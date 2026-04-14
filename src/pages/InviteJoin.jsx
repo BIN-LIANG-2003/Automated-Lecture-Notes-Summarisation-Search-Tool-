@@ -1,11 +1,11 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { authFetch } from '../lib/authFetch.js';
 
 const statusLabel = (status) => {
-  if (status === 'pending') return 'Pending request';
-  if (status === 'requested') return 'Requested, awaiting approval';
-  if (status === 'approved') return 'Approved';
+  if (status === 'pending') return 'Ready to join';
+  if (status === 'requested') return 'Ready to join';
+  if (status === 'approved') return 'Joined';
   if (status === 'rejected') return 'Rejected';
   if (status === 'expired') return 'Expired';
   if (status === 'cancelled') return 'Cancelled';
@@ -21,13 +21,14 @@ export default function InviteJoinPage() {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState('');
   const [data, setData] = useState(null);
+  const acceptingRef = useRef(false);
 
   const authToken = sessionStorage.getItem('auth_token') || '';
   const username = authToken ? (sessionStorage.getItem('username') || '') : '';
   const email = authToken ? (sessionStorage.getItem('email') || '') : '';
   const returnPath = `${location.pathname}${location.search}${location.hash}`;
 
-  const fetchInvitation = async () => {
+  const fetchInvitation = useCallback(async () => {
     if (!token) {
       setError('Invalid invitation link.');
       setLoading(false);
@@ -46,21 +47,31 @@ export default function InviteJoinPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [token, username]);
 
   useEffect(() => {
     fetchInvitation();
-  }, [token, username]);
+  }, [fetchInvitation]);
 
   const canSubmit = useMemo(() => {
     if (!username) return false;
     if (!data) return false;
-    if (data.status === 'requested' && data.requested_username === username) return false;
-    return Boolean(data.can_request && data.status === 'pending');
+    return Boolean(data.can_request && ['pending', 'requested'].includes(data.status));
   }, [username, data]);
+  const hasActiveWorkspaceAccess = Boolean(
+    username &&
+      data?.status === 'approved' &&
+      data?.viewer_is_active_member === true &&
+      data?.can_open_workspace === true
+  );
+  const approvedWithoutActiveAccess = Boolean(
+    username && data?.status === 'approved' && data?.viewer_is_active_member === false
+  );
 
-  const handleRequestJoin = async () => {
+  const handleRequestJoin = useCallback(async () => {
     if (!username || !token) return;
+    if (acceptingRef.current) return;
+    acceptingRef.current = true;
     setSubmitting(true);
     setError('');
     try {
@@ -70,24 +81,42 @@ export default function InviteJoinPage() {
         body: JSON.stringify({ username }),
       });
       const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Failed to request to join');
-      await fetchInvitation();
+      if (!res.ok) throw new Error(payload.error || 'Failed to join workspace');
+      if (payload && typeof payload === 'object') {
+        setData(payload);
+      } else {
+        await fetchInvitation();
+      }
     } catch (err) {
-      setError(err.message || 'Failed to request to join');
+      setError(err.message || 'Failed to join workspace');
     } finally {
       setSubmitting(false);
+      acceptingRef.current = false;
     }
-  };
+  }, [fetchInvitation, token, username]);
 
-  const openInvitedWorkspace = () => {
+  useEffect(() => {
+    if (!canSubmit || submitting) return;
+    handleRequestJoin();
+  }, [canSubmit, handleRequestJoin, submitting]);
+
+  const openInvitedWorkspace = useCallback(() => {
     const workspaceId = String(data?.workspace_id || '').trim();
+    if (!workspaceId) return;
     navigate('/', {
+      replace: true,
       state: {
         preferredWorkspaceId: workspaceId,
         showFiles: true,
+        fromInvite: true,
       },
     });
-  };
+  }, [data?.workspace_id, navigate]);
+
+  useEffect(() => {
+    if (!hasActiveWorkspaceAccess) return;
+    openInvitedWorkspace();
+  }, [hasActiveWorkspaceAccess, openInvitedWorkspace]);
 
   return (
     <main className="container document-detail" role="main">
@@ -118,9 +147,12 @@ export default function InviteJoinPage() {
               Invited email: <strong>{data.email || '-'}</strong>
             </p>
             <p>
-              Status: <strong>{statusLabel(data.status)}</strong>
+              Status:{' '}
+              <strong>
+                {approvedWithoutActiveAccess ? 'No active access' : statusLabel(data.status)}
+              </strong>
             </p>
-            <p className="muted">This invitation requires owner approval before it becomes active.</p>
+            <p className="muted">This invitation lets the invited account join the workspace directly.</p>
 
             {!username && (
               <div className="invite-join-actions">
@@ -135,7 +167,7 @@ export default function InviteJoinPage() {
                   Sign in
                 </Link>
                 <p className="muted invite-join-inline-note">
-                  Sign in first, then return to this invitation link to submit your join request.
+                  Sign in first, then this invitation will add the workspace to your account.
                 </p>
               </div>
             )}
@@ -152,11 +184,16 @@ export default function InviteJoinPage() {
                   </p>
                 )}
                 {data.status === 'requested' && data.requested_username === username && (
-                  <p className="muted">You have already requested to join. Please wait for owner approval.</p>
+                  <p className="muted">Joining this workspace...</p>
                 )}
-                {data.status === 'approved' && (
+                {approvedWithoutActiveAccess && (
+                  <p className="muted" role="alert">
+                    This invitation was already used, but this account no longer has access to the workspace.
+                  </p>
+                )}
+                {hasActiveWorkspaceAccess && (
                   <div className="invite-join-actions">
-                    <p className="muted">Your request was approved. Open the shared workspace to view its notes.</p>
+                    <p className="muted">Workspace joined. Opening the shared workspace...</p>
                     <button type="button" className="btn btn-primary" onClick={openInvitedWorkspace}>
                       Open Workspace
                     </button>
@@ -164,7 +201,7 @@ export default function InviteJoinPage() {
                 )}
                 {canSubmit && (
                   <button type="button" className="btn btn-primary" onClick={handleRequestJoin} disabled={submitting}>
-                    {submitting ? 'Submitting...' : 'Request to Join Workspace'}
+                    {submitting ? 'Joining...' : 'Join Workspace'}
                   </button>
                 )}
               </>

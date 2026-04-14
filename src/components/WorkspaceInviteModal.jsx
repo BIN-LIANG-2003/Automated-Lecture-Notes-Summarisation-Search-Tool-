@@ -1,6 +1,6 @@
 const formatInviteStatusLabel = (status) => {
-  if (status === 'requested') return 'Pending approval';
-  if (status === 'pending') return 'Awaiting request';
+  if (status === 'requested') return 'Opened';
+  if (status === 'pending') return 'Ready to join';
   if (status === 'approved') return 'Approved';
   if (status === 'rejected') return 'Rejected';
   if (status === 'cancelled') return 'Cancelled';
@@ -13,6 +13,34 @@ const formatInviteDateTime = (value) => {
   const dt = new Date(value);
   if (Number.isNaN(dt.getTime())) return String(value);
   return dt.toLocaleString();
+};
+
+const normalizeMemberRecord = (member) => {
+  if (typeof member === 'string') {
+    return {
+      username: member,
+      role: 'member',
+      status: 'active',
+      email: '',
+      created_at: '',
+    };
+  }
+  if (!member || typeof member !== 'object') {
+    return {
+      username: '',
+      role: 'member',
+      status: 'active',
+      email: '',
+      created_at: '',
+    };
+  }
+  return {
+    username: String(member.username || '').trim(),
+    role: String(member.role || 'member').trim().toLowerCase(),
+    status: String(member.status || 'active').trim().toLowerCase(),
+    email: String(member.email || '').trim(),
+    created_at: String(member.created_at || member.createdAt || '').trim(),
+  };
 };
 
 const summarizeInviteDelivery = (delivery) => {
@@ -30,7 +58,7 @@ const summarizeInviteDelivery = (delivery) => {
   if (delivery.type === 'resend' && failedCount === 0) {
     return {
       title: 'Invitation email resent',
-      body: 'The recipient has a fresh invitation email and can use the same invite flow again.',
+      body: 'The recipient has a fresh invitation email and can join from the link.',
     };
   }
   if (failedCount > 0 && sentCount > 0) {
@@ -51,6 +79,23 @@ const summarizeInviteDelivery = (delivery) => {
   };
 };
 
+const formatDomains = (value) =>
+  String(value || '')
+    .split(/[\s,;]+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+const getLinkSharingModeHelp = (mode) => {
+  const safeMode = String(mode || '').trim().toLowerCase();
+  if (safeMode === 'restricted') {
+    return 'Restricted blocks document share links. People must already be inside the workspace to open files.';
+  }
+  if (safeMode === 'public') {
+    return 'Anyone With Link makes document access public. Shared links still work, and direct document access is no longer limited to workspace members.';
+  }
+  return 'Workspace Members keeps documents private by default, but valid share links still open the document while workspace members keep their normal access.';
+};
+
 export default function WorkspaceInviteModal({
   open = false,
   workspaceActionLoading = false,
@@ -66,15 +111,33 @@ export default function WorkspaceInviteModal({
   latestInviteDelivery = null,
   trustedInviteDomains = [],
   defaultInviteExpiryDays = 7,
+  workspaceSettingsDraft = {},
+  updateWorkspaceSettingsDraft,
+  onSaveWorkspaceAccessSettings,
+  canManageAccessSettings = false,
   inviteItems = [],
   onResendInvitation,
-  onReviewInvitation,
   onRemoveInvite,
+  memberItems = [],
+  currentUsername = '',
+  canManageMembers = false,
+  onRemoveMember,
 }) {
   if (!open) return null;
 
   const inviteDeliverySummary = summarizeInviteDelivery(latestInviteDelivery);
   const inviteOpenCount = Array.isArray(inviteItems) ? inviteItems.length : 0;
+  const accessSettings = workspaceSettingsDraft || {};
+  const ownerOnlyDisabled = workspaceActionLoading || (isLoggedIn && !canManageAccessSettings);
+  const trustedDomainsFromDraft = formatDomains(accessSettings.allowed_email_domains);
+  const displayedTrustedDomains = trustedDomainsFromDraft.length
+    ? trustedDomainsFromDraft
+    : trustedInviteDomains;
+  const displayedInviteExpiryDays =
+    Number(accessSettings.default_invite_expiry_days) || defaultInviteExpiryDays || 7;
+  const normalizedMembers = Array.isArray(memberItems)
+    ? memberItems.map(normalizeMemberRecord).filter((member) => member.username)
+    : [];
 
   return (
     <div
@@ -98,16 +161,16 @@ export default function WorkspaceInviteModal({
             <h3 id="workspace-invite-title">Invite Members</h3>
             <p className="notion-settings-subtitle">
               {isLoggedIn
-                ? 'Paste email addresses, send invitations, and track who still needs approval.'
+                ? 'Paste email addresses, send invitations, and track active invite links.'
                 : 'Guest mode only saves local invite targets. Sign in to send real invitation emails.'}
             </p>
           </div>
           <div className="notion-settings-header-badges">
             <span className="notion-summary-chip">{inviteOpenCount} open</span>
-            <span className="notion-summary-chip">Expiry {defaultInviteExpiryDays || 7}d</span>
+            <span className="notion-summary-chip">Expiry {displayedInviteExpiryDays}d</span>
             <span className="notion-summary-chip">
-              {trustedInviteDomains?.length
-                ? `Domains: ${trustedInviteDomains.join(', ')}`
+              {displayedTrustedDomains?.length
+                ? `Domains: ${displayedTrustedDomains.join(', ')}`
                 : 'Any valid email'}
             </span>
             <span className="notion-summary-chip">
@@ -131,7 +194,7 @@ export default function WorkspaceInviteModal({
           <section className="notion-settings-block">
             <h4>Invite People</h4>
             <p className="notion-settings-help">
-              Invitees must sign in with the same email address that was invited before they can request access.
+              Invitees must sign in with the same email address that was invited. Then the link adds them directly.
             </p>
             <label htmlFor="workspace-invite-email-input" className="sr-only">
               Invite email
@@ -220,11 +283,240 @@ export default function WorkspaceInviteModal({
           </section>
         </div>
 
+        <section className="notion-settings-block" aria-label="Access settings">
+          <div className="notion-doc-share-manager-head">
+            <h4>Access Settings</h4>
+            <span className="notion-settings-help">
+              Invitation rules and document link behavior for this workspace.
+            </span>
+          </div>
+
+          <div className="notion-invite-access-grid">
+            <div className="notion-invite-access-column">
+              <h5>Invitations and trusted domains</h5>
+              <label className="notion-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(accessSettings.allow_member_invites)}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({ allow_member_invites: event.target.checked })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+                <span>Allow members to invite others</span>
+              </label>
+              <label className="notion-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(accessSettings.restrict_invites_to_domains)}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({ restrict_invites_to_domains: event.target.checked })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+                <span>Restrict invitations to trusted email domains</span>
+              </label>
+              <div className="notion-settings-row">
+                <label htmlFor="workspace-invite-domain-list-input">Trusted Domains</label>
+                <textarea
+                  id="workspace-invite-domain-list-input"
+                  rows={2}
+                  value={accessSettings.allowed_email_domains || ''}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({ allowed_email_domains: event.target.value })
+                  }
+                  placeholder="school.edu, club.org"
+                  disabled={ownerOnlyDisabled}
+                />
+              </div>
+              <div className="notion-settings-row">
+                <label htmlFor="workspace-invite-expiry-days-input">Invitation Link Expiry (days)</label>
+                <input
+                  id="workspace-invite-expiry-days-input"
+                  type="number"
+                  min="1"
+                  max="30"
+                  value={accessSettings.default_invite_expiry_days || 7}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({
+                      default_invite_expiry_days: Number(event.target.value) || 7,
+                    })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+              </div>
+              <p className="notion-settings-help">
+                {trustedDomainsFromDraft.length
+                  ? `Trusted domains: ${trustedDomainsFromDraft.join(', ')}`
+                  : 'No trusted domains configured. Leave the restriction off if any valid email can be invited.'}
+              </p>
+            </div>
+
+            <div className="notion-invite-access-column">
+              <h5>Link sharing</h5>
+              <div className="notion-settings-row">
+                <label htmlFor="workspace-invite-link-mode-select">Link Sharing</label>
+                <select
+                  id="workspace-invite-link-mode-select"
+                  value={accessSettings.link_sharing_mode || 'workspace'}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({ link_sharing_mode: event.target.value })
+                  }
+                  disabled={ownerOnlyDisabled}
+                >
+                  <option value="restricted">Restricted</option>
+                  <option value="workspace">Workspace Members</option>
+                  <option value="public">Anyone With Link</option>
+                </select>
+              </div>
+              <p className="notion-settings-help">
+                {getLinkSharingModeHelp(accessSettings.link_sharing_mode)}
+              </p>
+              <div className="notion-settings-row">
+                <label htmlFor="workspace-invite-share-expiry-input">Share Link Expiry (days)</label>
+                <input
+                  id="workspace-invite-share-expiry-input"
+                  type="number"
+                  min="1"
+                  max="30"
+                  value={accessSettings.default_share_expiry_days || 7}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({
+                      default_share_expiry_days: Number(event.target.value) || 7,
+                    })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+              </div>
+              <div className="notion-settings-row">
+                <label htmlFor="workspace-invite-share-link-limit-input">Max Active Links Per Note</label>
+                <input
+                  id="workspace-invite-share-link-limit-input"
+                  type="number"
+                  min="1"
+                  max="20"
+                  value={accessSettings.max_active_share_links_per_document || 5}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({
+                      max_active_share_links_per_document: Number(event.target.value) || 5,
+                    })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+              </div>
+              <label className="notion-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(accessSettings.allow_member_share_management)}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({
+                      allow_member_share_management: event.target.checked,
+                    })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+                <span>Allow members to manage share links</span>
+              </label>
+              <label className="notion-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={Boolean(accessSettings.auto_revoke_previous_share_links)}
+                  onChange={(event) =>
+                    updateWorkspaceSettingsDraft?.({
+                      auto_revoke_previous_share_links: event.target.checked,
+                    })
+                  }
+                  disabled={ownerOnlyDisabled}
+                />
+                <span>Auto revoke existing active links when creating a new one</span>
+              </label>
+            </div>
+          </div>
+
+          <div className="notion-modal-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onSaveWorkspaceAccessSettings}
+              disabled={ownerOnlyDisabled}
+            >
+              {workspaceActionLoading ? 'Saving...' : 'Save Access Settings'}
+            </button>
+            {!canManageAccessSettings && (
+              <p className="notion-settings-help">
+                Only the workspace owner can change access settings.
+              </p>
+            )}
+          </div>
+        </section>
+
+        {canManageMembers && (
+          <section className="notion-settings-block" aria-label="Workspace members">
+            <div className="notion-doc-share-manager-head">
+              <h4>Workspace Members</h4>
+              <span className="notion-settings-help">
+                {normalizedMembers.length} active member{normalizedMembers.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            {normalizedMembers.length > 0 ? (
+              <ul className="notion-inline-list notion-invite-list notion-invite-modal-list">
+                {normalizedMembers.map((member) => {
+                  const isOwner = member.role === 'owner';
+                  const isCurrentUser = member.username === currentUsername;
+                  const canRemoveThisMember = !isOwner && !isCurrentUser;
+                  return (
+                    <li key={member.username} className="notion-invite-card">
+                      <div className="notion-invite-card-main">
+                        <div className="notion-invite-card-head">
+                          <strong>{member.username}</strong>
+                          <span
+                            className={`notion-invite-status ${
+                              isOwner ? 'notion-invite-status-approved' : 'notion-invite-status-pending'
+                            }`}
+                          >
+                            {isOwner ? 'Owner' : 'Member'}
+                          </span>
+                        </div>
+                        <p className="notion-invite-card-meta">
+                          {[
+                            member.email || '',
+                            member.created_at ? `Joined ${formatInviteDateTime(member.created_at)}` : '',
+                          ]
+                            .filter(Boolean)
+                            .join(' · ') || 'Active workspace access'}
+                        </p>
+                      </div>
+                      <div className="notion-inline-list-actions notion-invite-card-actions">
+                        {canRemoveThisMember ? (
+                          <button
+                            type="button"
+                            className="notion-inline-list-remove"
+                            onClick={() => onRemoveMember?.(member)}
+                            disabled={workspaceActionLoading}
+                          >
+                            Remove
+                          </button>
+                        ) : (
+                          <span className="notion-settings-help">
+                            {isOwner ? 'Cannot remove owner' : 'Current account'}
+                          </span>
+                        )}
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            ) : (
+              <p className="notion-settings-help">No active members yet.</p>
+            )}
+          </section>
+        )}
+
         <section className="notion-settings-block" aria-label="Open invitations">
           <div className="notion-doc-share-manager-head">
             <h4>Open Invitations</h4>
             <span className="notion-settings-help">
-              Review pending requests, resend emails, or remove old invitation links.
+              Resend emails or remove old invitation links before they are used.
             </span>
           </div>
           {inviteOpenCount > 0 ? (
@@ -258,7 +550,7 @@ export default function WorkspaceInviteModal({
                       </div>
                       <p className="notion-invite-card-meta">
                         {isRequested
-                          ? `Requested by ${requestedUsername || 'member'}${
+                          ? `Opened by ${requestedUsername || 'member'}${
                               requestedAt ? ` · ${formatInviteDateTime(requestedAt)}` : ''
                             }`
                           : expiresAt
@@ -280,67 +572,46 @@ export default function WorkspaceInviteModal({
                     </div>
 
                     <div className="notion-inline-list-actions notion-invite-card-actions">
-                      {isRequested ? (
-                        <>
+                      <>
+                        {inviteUrl && (
+                          <button
+                            type="button"
+                            className="notion-inline-list-secondary"
+                            onClick={() => onCopyInviteLink?.(invite)}
+                            disabled={workspaceActionLoading}
+                          >
+                            Copy link
+                          </button>
+                        )}
+                        {inviteUrl && (
+                          <button
+                            type="button"
+                            className="notion-inline-list-secondary"
+                            onClick={() => onCopyInviteMessage?.(invite)}
+                            disabled={workspaceActionLoading}
+                          >
+                            Copy message
+                          </button>
+                        )}
+                        {hasServerInvitation && !isRequested && (
                           <button
                             type="button"
                             className="notion-inline-list-switch"
-                            onClick={() => onReviewInvitation?.(invite, 'approve')}
+                            onClick={() => onResendInvitation?.(invite)}
                             disabled={workspaceActionLoading}
                           >
-                            Approve
+                            Resend email
                           </button>
-                          <button
-                            type="button"
-                            className="notion-inline-list-remove"
-                            onClick={() => onReviewInvitation?.(invite, 'reject')}
-                            disabled={workspaceActionLoading}
-                          >
-                            Reject
-                          </button>
-                        </>
-                      ) : (
-                        <>
-                          {inviteUrl && (
-                            <button
-                              type="button"
-                              className="notion-inline-list-secondary"
-                              onClick={() => onCopyInviteLink?.(invite)}
-                              disabled={workspaceActionLoading}
-                            >
-                              Copy link
-                            </button>
-                          )}
-                          {inviteUrl && (
-                            <button
-                              type="button"
-                              className="notion-inline-list-secondary"
-                              onClick={() => onCopyInviteMessage?.(invite)}
-                              disabled={workspaceActionLoading}
-                            >
-                              Copy message
-                            </button>
-                          )}
-                          {hasServerInvitation && (
-                            <button
-                              type="button"
-                              className="notion-inline-list-switch"
-                              onClick={() => onResendInvitation?.(invite)}
-                              disabled={workspaceActionLoading}
-                            >
-                              Resend email
-                            </button>
-                          )}
-                          <button
-                            type="button"
-                            className="notion-inline-list-remove"
-                            onClick={() => onRemoveInvite?.(invite)}
-                            disabled={workspaceActionLoading}
-                          >
-                            {hasServerInvitation ? 'Cancel' : 'Remove'}
-                          </button>
-                        </>
-                      )}
+                        )}
+                        <button
+                          type="button"
+                          className="notion-inline-list-remove"
+                          onClick={() => onRemoveInvite?.(invite)}
+                          disabled={workspaceActionLoading}
+                        >
+                          {hasServerInvitation ? 'Cancel' : 'Remove'}
+                        </button>
+                      </>
                     </div>
                   </li>
                 );

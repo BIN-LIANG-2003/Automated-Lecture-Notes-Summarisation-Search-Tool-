@@ -173,46 +173,7 @@ const WORKSPACE_SETTINGS_TABS = [
   { id: 'notifications', label: 'Notifications', description: 'Control in-app upload, AI, and sharing toasts.' },
   { id: 'permissions', label: 'Permissions', description: 'What members can upload, edit, and export.' },
   { id: 'ai', label: 'AI', description: 'Summaries, OCR, and keyword defaults.' },
-  { id: 'access', label: 'Access', description: 'Invites, trusted domains, and link sharing.' },
   { id: 'danger', label: 'Danger', description: 'Irreversible workspace cleanup actions.' },
-];
-const SHARE_POLICY_PRESETS = [
-  {
-    id: 'strict',
-    label: 'Strict',
-    description: 'Owner-only management, 3-day expiry, single active link.',
-    patch: {
-      link_sharing_mode: 'workspace',
-      default_share_expiry_days: 3,
-      max_active_share_links_per_document: 1,
-      allow_member_share_management: false,
-      auto_revoke_previous_share_links: true,
-    },
-  },
-  {
-    id: 'classroom',
-    label: 'Classroom',
-    description: 'Balanced default for team study with controlled link volume.',
-    patch: {
-      link_sharing_mode: 'workspace',
-      default_share_expiry_days: 7,
-      max_active_share_links_per_document: 5,
-      allow_member_share_management: false,
-      auto_revoke_previous_share_links: false,
-    },
-  },
-  {
-    id: 'open',
-    label: 'Open',
-    description: 'Public sharing enabled with higher active-link capacity.',
-    patch: {
-      link_sharing_mode: 'public',
-      default_share_expiry_days: 14,
-      max_active_share_links_per_document: 10,
-      allow_member_share_management: true,
-      auto_revoke_previous_share_links: false,
-    },
-  },
 ];
 const KEYBOARD_SHORTCUT_ITEMS = [
   { keys: 'Ctrl/⌘ + K', action: 'Focus search and open Notes view' },
@@ -1360,14 +1321,6 @@ export default function HomePage() {
     isLoggedIn,
     username,
   ]);
-  const activeSharePolicyPresetId = useMemo(() => {
-    const matched = SHARE_POLICY_PRESETS.find((preset) =>
-      Object.entries(preset.patch).every(
-        ([key, value]) => String(workspaceSettingsDraft?.[key]) === String(value)
-      )
-    );
-    return matched?.id || '';
-  }, [workspaceSettingsDraft]);
   const activeRecentLimit = useMemo(
     () =>
       clamp(
@@ -1458,6 +1411,10 @@ export default function HomePage() {
   const workspaceMemberCount = useMemo(
     () => memberCountOfWorkspace(activeWorkspace, accountName),
     [activeWorkspace, accountName]
+  );
+  const memberItems = useMemo(
+    () => (Array.isArray(activeWorkspace?.members) ? activeWorkspace.members : []),
+    [activeWorkspace?.members]
   );
   const inviteItems = useMemo(
     () => (Array.isArray(activeWorkspace?.invites) ? activeWorkspace.invites : []),
@@ -1670,11 +1627,16 @@ export default function HomePage() {
       if (!res.ok) throw new Error(payload.error || 'Failed to load workspaces');
 
       const list = Array.isArray(payload) ? payload : [];
+      const ownWorkspaceId =
+        list.find((item) => String(item?.owner_username || '') === username)?.id ||
+        list.find((item) => item?.is_owner)?.id ||
+        '';
       const candidateId =
         preferredWorkspaceId ||
-        (preserveActive ? workspaceState?.activeWorkspaceId || '' : '');
+        (preserveActive ? workspaceState?.activeWorkspaceId || '' : '') ||
+        ownWorkspaceId;
       const hasCandidate = list.some((item) => item.id === candidateId);
-      const activeId = hasCandidate ? candidateId : (list[0]?.id || '');
+      const activeId = hasCandidate ? candidateId : (ownWorkspaceId || list[0]?.id || '');
       const nextState = {
         activeWorkspaceId: activeId,
         workspaces: list,
@@ -1722,14 +1684,45 @@ export default function HomePage() {
         const openInvites = payload.filter((item) =>
           ['pending', 'requested'].includes(String(item?.status || '').toLowerCase())
         );
-        const pendingRequests = openInvites.filter((item) => item?.status === 'requested');
+        const pendingRequests = openInvites.filter(
+          (item) => String(item?.status || '').toLowerCase() === 'requested'
+        );
+        let memberPatch = {};
 
+        try {
+          const workspaceRes = await authFetch(
+            `/api/workspaces?username=${encodeURIComponent(username)}`,
+            {},
+            { authToken }
+          );
+          const workspacePayload = await workspaceRes.json().catch(() => []);
+          if (workspaceRes.ok && Array.isArray(workspacePayload)) {
+            const refreshedWorkspace = workspacePayload.find((item) => item?.id === workspaceId);
+            if (refreshedWorkspace) {
+              const refreshedMembers = Array.isArray(refreshedWorkspace.members)
+                ? refreshedWorkspace.members
+                : [];
+              const refreshedMemberCount = Number(refreshedWorkspace.members_count);
+              memberPatch = {
+                members: refreshedMembers,
+                members_count: Number.isFinite(refreshedMemberCount)
+                  ? refreshedMemberCount
+                  : refreshedMembers.length,
+              };
+            }
+          }
+        } catch (memberErr) {
+          console.error('Failed to refresh workspace member snapshot', memberErr);
+        }
+
+        if (stopped) return;
         setWorkspaceState((prev) => ({
           ...prev,
           workspaces: (prev.workspaces || []).map((workspace) =>
             workspace.id === workspaceId
               ? {
                   ...workspace,
+                  ...memberPatch,
                   invites: openInvites,
                   pending_requests: pendingRequests,
                 }
@@ -1977,10 +1970,16 @@ export default function HomePage() {
   }, [activeWorkspaceId, showFiles, docPaneVisible, isLoggedIn]);
 
   useEffect(() => {
-    if (location.state?.showFiles) {
-      setShowFiles(true);
+    if (!location.state?.showFiles) return;
+    if (
+      preferredWorkspaceIdFromNavigation &&
+      activeWorkspaceId &&
+      activeWorkspaceId !== preferredWorkspaceIdFromNavigation
+    ) {
+      return;
     }
-  }, [location.state]);
+    setShowFiles(true);
+  }, [activeWorkspaceId, location.state?.showFiles, preferredWorkspaceIdFromNavigation]);
 
   useEffect(() => {
     const handleStorage = () => {
@@ -2221,13 +2220,14 @@ export default function HomePage() {
   }, [documents]);
 
   useEffect(() => {
-    if (workspaceSettingsOpen) return;
+    if (workspaceSettingsOpen || workspaceInviteOpen) return;
     setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
     setWorkspaceSettingsDraft(activeWorkspaceSettings);
   }, [
     activeWorkspaceId,
     activeWorkspace?.name,
     activeWorkspaceSettings,
+    workspaceInviteOpen,
     workspaceSettingsOpen,
     accountName,
   ]);
@@ -2558,7 +2558,7 @@ export default function HomePage() {
   const openWorkspaceSettingsPanel = () => {
     setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
     setWorkspaceSettingsDraft(normalizeWorkspaceSettings(activeWorkspace?.settings));
-    setWorkspaceSettingsTab('general');
+    setWorkspaceSettingsTab(activeWorkspace?.is_owner === false ? 'danger' : 'general');
     setWorkspaceSettingsOpen(true);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
@@ -2566,6 +2566,8 @@ export default function HomePage() {
   };
 
   const openWorkspaceInvitePanel = () => {
+    setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
+    setWorkspaceSettingsDraft(normalizeWorkspaceSettings(activeWorkspace?.settings));
     setWorkspaceInviteOpen(true);
     setWorkspaceSettingsOpen(false);
     setAccountManagerOpen(false);
@@ -2824,7 +2826,12 @@ export default function HomePage() {
     applyWorkspaceLandingView(targetWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
   };
 
-  const handleSaveWorkspaceSettings = () => {
+  const handleSaveWorkspaceSettings = (options = {}) => {
+    const {
+      closeSettings = true,
+      closeInvite = false,
+      successMessage = 'Workspace settings saved.',
+    } = options || {};
     if (!activeWorkspace) return;
     const nextName = workspaceNameDraft.trim();
     if (!nextName) {
@@ -2848,8 +2855,9 @@ export default function HomePage() {
           if (!res.ok) throw new Error(payload.error || 'Failed to save workspace settings');
           await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
           applyWorkspaceLandingView(nextSettings);
-          setWorkspaceSettingsOpen(false);
-          showToast('Workspace settings saved.', 'success');
+          if (closeSettings) setWorkspaceSettingsOpen(false);
+          if (closeInvite) setWorkspaceInviteOpen(false);
+          showToast(successMessage, 'success');
         })
         .catch((err) => {
           showToast(err.message || 'Failed to save workspace settings', 'error');
@@ -2870,8 +2878,17 @@ export default function HomePage() {
       ),
     }));
     applyWorkspaceLandingView(nextSettings);
-    setWorkspaceSettingsOpen(false);
-    showToast('Workspace settings saved.', 'success');
+    if (closeSettings) setWorkspaceSettingsOpen(false);
+    if (closeInvite) setWorkspaceInviteOpen(false);
+    showToast(successMessage, 'success');
+  };
+
+  const handleSaveWorkspaceAccessSettings = () => {
+    handleSaveWorkspaceSettings({
+      closeSettings: false,
+      closeInvite: false,
+      successMessage: 'Workspace access settings saved.',
+    });
   };
 
   const buildWorkspaceInviteMessage = (inviteItem = null) => {
@@ -2892,10 +2909,9 @@ export default function HomePage() {
       recipientLabel ? `Hello ${recipientLabel},` : 'Hello,',
       '',
       `${inviterLabel} invited you to join "${workspaceLabel}" on StudyHub.`,
-      'Open the invitation link below, sign in with the same invited email address, and request access:',
+      'Open the invitation link below and sign in with the same invited email address to join the workspace:',
       inviteUrl,
       expiryLabel ? `This invitation link expires at ${expiryLabel}.` : '',
-      'After you request access, the workspace owner still needs to approve it before you can join.',
     ]
       .filter(Boolean)
       .join('\n');
@@ -3088,31 +3104,64 @@ export default function HomePage() {
     }));
   };
 
-  const handleReviewInvitation = async (inviteItem, action) => {
-    if (!activeWorkspace || !isLoggedIn || !username) return;
-    const invitationId = Number(inviteItem?.id);
-    if (!Number.isFinite(invitationId) || invitationId <= 0) return;
-    if (!['approve', 'reject'].includes(action)) return;
+  const handleRemoveWorkspaceMember = async (memberItem) => {
+    if (!activeWorkspace) return;
+    const targetUsername = String(
+      typeof memberItem === 'string' ? memberItem : memberItem?.username || ''
+    ).trim();
+    if (!targetUsername) return;
+    if (!isLoggedIn || !username) {
+      showToast('Please sign in first.', 'warning');
+      return;
+    }
+    if (activeWorkspace.is_owner === false) {
+      showToast('Only the workspace owner can remove members.', 'warning');
+      return;
+    }
+    if (targetUsername === username || targetUsername === activeWorkspace.owner_username) {
+      showToast('Workspace owner cannot be removed.', 'warning');
+      return;
+    }
+
+    const confirmed = await requestConfirmation({
+      title: 'Remove Member',
+      description: `Remove ${targetUsername} from "${activeWorkspace.name || 'this workspace'}"? They will lose access to this workspace.`,
+      confirmLabel: 'Remove',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
 
     setWorkspaceActionLoading(true);
     try {
       const res = await authFetch(
-        `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/invitations/${invitationId}/review`,
+        `/api/workspaces/${encodeURIComponent(activeWorkspace.id)}/members/${encodeURIComponent(targetUsername)}`,
         {
-          method: 'POST',
+          method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            username,
-            action,
-          }),
+          body: JSON.stringify({ username }),
         },
         { authToken }
       );
       const payload = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(payload.error || 'Review failed');
-      await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+      if (!res.ok) throw new Error(payload.error || 'Failed to remove workspace member');
+
+      if (payload?.workspace?.id) {
+        const updatedWorkspace = payload.workspace;
+        setWorkspaceState((prev) => ({
+          ...prev,
+          workspaces: (prev.workspaces || []).map((item) =>
+            item.id === updatedWorkspace.id ? updatedWorkspace : item
+          ),
+        }));
+        setWorkspaceNameDraft(updatedWorkspace.name || '');
+        setWorkspaceSettingsDraft(normalizeWorkspaceSettings(updatedWorkspace.settings));
+      } else {
+        await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
+      }
+      showWorkspaceToast('sharing', `Removed ${targetUsername} from the workspace.`, 'success');
     } catch (err) {
-      showToast(err.message || 'Review failed', 'error');
+      showToast(err.message || 'Failed to remove workspace member', 'error');
     } finally {
       setWorkspaceActionLoading(false);
     }
@@ -4170,7 +4219,7 @@ export default function HomePage() {
 
   const getShareDisabledReasonForDoc = (doc = activeDoc) => {
     if (activeWorkspaceSettings.link_sharing_mode === 'restricted') {
-      return 'Link sharing is restricted. Change this in Workspace Settings.';
+      return 'Link sharing is restricted. Change this in Invite Members.';
     }
     if (!username) {
       return 'Please sign in to share this note.';
@@ -4464,6 +4513,74 @@ export default function HomePage() {
       }
     } catch (err) {
       showToast(err.message || 'Failed to delete workspace', 'error');
+    } finally {
+      setWorkspaceActionLoading(false);
+    }
+  };
+
+  const handleLeaveWorkspace = async () => {
+    if (!activeWorkspaceId || !username || !isLoggedIn) {
+      showToast('Please sign in first.', 'warning');
+      return;
+    }
+    if (activeWorkspace?.is_owner !== false) {
+      showToast('Workspace owner cannot leave their own workspace. Delete the workspace instead.', 'warning');
+      return;
+    }
+
+    const workspaceLabel = String(activeWorkspace?.name || 'this workspace').trim();
+    const confirmed = await requestConfirmation({
+      title: 'Leave Workspace',
+      description: `Leave "${workspaceLabel}"? This removes it from your workspace list and you will lose access to its files.`,
+      confirmLabel: 'Leave Workspace',
+      cancelLabel: 'Cancel',
+      danger: true,
+    });
+    if (!confirmed) return;
+
+    setWorkspaceActionLoading(true);
+    try {
+      const res = await authFetch(
+        `/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/members/${encodeURIComponent(username)}`,
+        {
+          method: 'DELETE',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username }),
+        },
+        { authToken }
+      );
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to leave workspace');
+
+      resetDocumentsData();
+      setSidebarRecentIds([]);
+      setSidebarRecentMeta({});
+      setStarredNotes([]);
+      setSummaryHistory([]);
+      setSummaryCenterOpen(false);
+      setSummaryCenterQuery('');
+      setSidebarMenuDocId(null);
+      setActiveDoc(null);
+      setActiveDocError('');
+      setActiveDocLoading(false);
+      setActiveDocFileVersion(0);
+      setActiveDocEditMode(false);
+      setActiveDocDraftHtml('');
+      setActiveDocSaveError('');
+      clearActiveDocShareState();
+      closeWorkspaceDialogs();
+
+      const nextWorkspaceState = await refreshWorkspaces({ preserveActive: false });
+      const nextWorkspace =
+        (nextWorkspaceState?.workspaces || []).find(
+          (item) => item.id === nextWorkspaceState?.activeWorkspaceId
+        ) ||
+        nextWorkspaceState?.workspaces?.[0] ||
+        null;
+      const followup = nextWorkspace?.name ? ` Switched to "${nextWorkspace.name}".` : '';
+      showToast(`Left workspace "${workspaceLabel}".${followup}`, 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to leave workspace', 'error');
     } finally {
       setWorkspaceActionLoading(false);
     }
@@ -6101,8 +6218,7 @@ export default function HomePage() {
         canOpenWorkspaceSettings={
           Boolean(activeWorkspace) &&
           !workspaceLoading &&
-          !workspaceActionLoading &&
-          !(isLoggedIn && activeWorkspace?.is_owner === false)
+          !workspaceActionLoading
         }
         onOpenWorkspaceInvite={() => {
           setMobileSidebarOpen(false);
@@ -7633,7 +7749,7 @@ export default function HomePage() {
 
       {confirmDialogState.open && (
         <div
-          className="notion-modal-backdrop"
+          className="notion-modal-backdrop notion-confirm-backdrop"
           role="presentation"
           onClick={() => closeConfirmDialog(false)}
         >
@@ -7796,12 +7912,11 @@ export default function HomePage() {
             documentsPageSizeOptions={DOCUMENTS_PAGE_SIZE_OPTIONS}
             sidebarDensityOptions={SIDEBAR_DENSITY_OPTIONS}
             accentColorPresets={WORKSPACE_ACCENT_PRESETS}
-            sharePolicyPresets={SHARE_POLICY_PRESETS}
-            activeSharePolicyPresetId={activeSharePolicyPresetId}
             onClearWorkspaceDocuments={handleClearWorkspaceDocuments}
             onDeleteWorkspace={handleDeleteWorkspace}
             isLoggedIn={isLoggedIn}
             activeWorkspace={activeWorkspace}
+            onLeaveWorkspace={handleLeaveWorkspace}
             workspaceInsights={{
               totalNotes: dashboardStats.total,
               categoryCount: dashboardStats.categories,
@@ -7829,10 +7944,17 @@ export default function HomePage() {
             latestInviteDelivery={latestInviteDelivery}
             trustedInviteDomains={trustedInviteDomains}
             defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
+            workspaceSettingsDraft={workspaceSettingsDraft}
+            updateWorkspaceSettingsDraft={updateWorkspaceSettingsDraft}
+            onSaveWorkspaceAccessSettings={handleSaveWorkspaceAccessSettings}
+            canManageAccessSettings={isLoggedIn && activeWorkspace?.is_owner !== false}
             inviteItems={inviteItems}
             onResendInvitation={handleResendInvitation}
-            onReviewInvitation={handleReviewInvitation}
             onRemoveInvite={handleRemoveInvite}
+            memberItems={memberItems}
+            currentUsername={username}
+            canManageMembers={isLoggedIn && activeWorkspace?.is_owner !== false}
+            onRemoveMember={handleRemoveWorkspaceMember}
           />
         </Suspense>
       )}

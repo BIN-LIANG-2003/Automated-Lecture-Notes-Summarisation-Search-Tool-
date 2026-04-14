@@ -307,6 +307,478 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(denied_response.status_code, 403)
 
+    def test_workspace_invitation_link_directly_adds_member(self):
+        self._insert_user('bob', 'bob@example.com')
+        token = 'direct-join-token'
+        expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id,
+                    email,
+                    token,
+                    status,
+                    expires_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob@example.com', token, 'pending', expires_at, utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        invitation_response = self.client.get(
+            f'/api/invitations/{token}',
+            headers=self._auth_headers('bob'),
+        )
+        self.assertEqual(invitation_response.status_code, 200)
+        invitation_payload = invitation_response.get_json()
+        self.assertFalse(invitation_payload['requires_owner_confirmation'])
+        self.assertTrue(invitation_payload['can_request'])
+
+        join_response = self.client.post(
+            f'/api/invitations/{token}/request-join',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+        self.assertEqual(join_response.status_code, 200)
+        join_payload = join_response.get_json()
+        self.assertEqual(join_payload['status'], 'approved')
+        self.assertEqual(join_payload['workspace_id'], self.workspace_id)
+        self.assertFalse(join_payload['requires_owner_confirmation'])
+
+        conn = self._connection()
+        try:
+            member_cursor = conn.execute(
+                '''
+                SELECT role, status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (self.workspace_id, 'bob'),
+            )
+            member = row_to_dict(member_cursor.fetchone())
+            invite_cursor = conn.execute(
+                'SELECT status, requested_username FROM workspace_invitations WHERE token = ?',
+                (token,),
+            )
+            invite = row_to_dict(invite_cursor.fetchone())
+        finally:
+            conn.close()
+
+        self.assertEqual(member['role'], 'member')
+        self.assertEqual(member['status'], 'active')
+        self.assertEqual(invite['status'], 'approved')
+        self.assertEqual(invite['requested_username'], 'bob')
+
+        workspaces_response = self.client.get('/api/workspaces', headers=self._auth_headers('bob'))
+        self.assertEqual(workspaces_response.status_code, 200)
+        workspace_ids = [item['id'] for item in workspaces_response.get_json()]
+        self.assertIn(self.workspace_id, workspace_ids)
+
+    def test_workspace_owner_can_view_and_remove_members(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        list_response = self.client.get('/api/workspaces', headers=self._auth_headers())
+        self.assertEqual(list_response.status_code, 200)
+        workspace = next(
+            item for item in list_response.get_json() if item['id'] == self.workspace_id
+        )
+        member_rows = workspace['members']
+        member_usernames = [item['username'] for item in member_rows]
+        self.assertIn(self.username, member_usernames)
+        self.assertIn('bob', member_usernames)
+        bob_member = next(item for item in member_rows if item['username'] == 'bob')
+        self.assertEqual(bob_member['email'], 'bob@example.com')
+
+        remove_response = self.client.delete(
+            f'/api/workspaces/{self.workspace_id}/members/bob',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(remove_response.status_code, 200)
+        remove_payload = remove_response.get_json()
+        self.assertEqual(remove_payload['removed_username'], 'bob')
+        self.assertNotIn(
+            'bob',
+            [item['username'] for item in remove_payload['workspace']['members']],
+        )
+
+        conn = self._connection()
+        try:
+            member_cursor = conn.execute(
+                '''
+                SELECT status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (self.workspace_id, 'bob'),
+            )
+            member = row_to_dict(member_cursor.fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(member['status'], 'removed')
+
+        denied_response = self.client.get(
+            f'/api/documents?include_meta=1&workspace_id={self.workspace_id}',
+            headers=self._auth_headers('bob'),
+        )
+        self.assertEqual(denied_response.status_code, 403)
+
+        owner_remove_response = self.client.delete(
+            f'/api/workspaces/{self.workspace_id}/members/{self.username}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(owner_remove_response.status_code, 400)
+
+    def test_non_owner_workspace_payload_hides_member_details(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.get('/api/workspaces', headers=self._auth_headers('bob'))
+        self.assertEqual(response.status_code, 200)
+        workspace = next(item for item in response.get_json() if item['id'] == self.workspace_id)
+        self.assertFalse(workspace['is_owner'])
+        self.assertEqual(workspace['members_count'], 2)
+        self.assertEqual(workspace['members'], [])
+
+    def test_approved_invitation_cannot_reactivate_removed_member(self):
+        self._insert_user('bob', 'bob@example.com')
+        token = 'approved-consumed-token'
+        expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id,
+                    email,
+                    token,
+                    status,
+                    expires_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob@example.com', token, 'pending', expires_at, utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        join_response = self.client.post(
+            f'/api/invitations/{token}/request-join',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+        self.assertEqual(join_response.status_code, 200)
+
+        remove_response = self.client.delete(
+            f'/api/workspaces/{self.workspace_id}/members/bob',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(remove_response.status_code, 200)
+
+        invitation_response = self.client.get(
+            f'/api/invitations/{token}?username=bob',
+            headers=self._auth_headers('bob'),
+        )
+        self.assertEqual(invitation_response.status_code, 200)
+        invitation_payload = invitation_response.get_json()
+        self.assertFalse(invitation_payload['viewer_is_active_member'])
+        self.assertFalse(invitation_payload['can_open_workspace'])
+        self.assertEqual(
+            invitation_payload['mismatch_reason'],
+            'This invitation was already used and this account no longer has workspace access',
+        )
+
+        retry_response = self.client.post(
+            f'/api/invitations/{token}/request-join',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+        self.assertEqual(retry_response.status_code, 409)
+        self.assertEqual(retry_response.get_json()['error'], 'Invitation has already been used')
+
+        conn = self._connection()
+        try:
+            member_cursor = conn.execute(
+                '''
+                SELECT status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (self.workspace_id, 'bob'),
+            )
+            member = row_to_dict(member_cursor.fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(member['status'], 'removed')
+
+    def test_removing_member_cancels_open_invitations_for_that_user(self):
+        self._insert_user('bob', 'bob@example.com')
+        token = 'pending-token-for-removed-member'
+        expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id,
+                    email,
+                    token,
+                    status,
+                    expires_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob@example.com', token, 'pending', expires_at, utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        remove_response = self.client.delete(
+            f'/api/workspaces/{self.workspace_id}/members/bob',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(remove_response.status_code, 200)
+
+        retry_response = self.client.post(
+            f'/api/invitations/{token}/request-join',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+        self.assertEqual(retry_response.status_code, 400)
+        self.assertEqual(retry_response.get_json()['error'], 'Invitation is cancelled')
+
+        conn = self._connection()
+        try:
+            member_cursor = conn.execute(
+                '''
+                SELECT status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (self.workspace_id, 'bob'),
+            )
+            member = row_to_dict(member_cursor.fetchone())
+            invite_cursor = conn.execute(
+                'SELECT status, reviewed_by, review_note FROM workspace_invitations WHERE token = ?',
+                (token,),
+            )
+            invite = row_to_dict(invite_cursor.fetchone())
+        finally:
+            conn.close()
+
+        self.assertEqual(member['status'], 'removed')
+        self.assertEqual(invite['status'], 'cancelled')
+        self.assertEqual(invite['reviewed_by'], self.username)
+        self.assertEqual(invite['review_note'], 'Cancelled because member was removed')
+
+    @patch('backend.workspace_service.send_workspace_invite_email', return_value=(True, ''))
+    def test_member_invite_does_not_replace_existing_owner_invite(self, _mock_send_invite):
+        self._insert_user('bob', 'bob@example.com')
+        owner_token = 'owner-open-invite-token'
+        expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        conn = self._connection()
+        try:
+            next_settings = {
+                **DEFAULT_WORKSPACE_SETTINGS,
+                'allow_member_invites': True,
+            }
+            conn.execute(
+                'UPDATE workspaces SET settings_json = ? WHERE id = ?',
+                (workspace_settings_to_json(next_settings), self.workspace_id),
+            )
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id,
+                    email,
+                    token,
+                    status,
+                    expires_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    self.workspace_id,
+                    'charlie@example.com',
+                    owner_token,
+                    'pending',
+                    expires_at,
+                    utcnow_iso(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace_id}/invitations',
+            headers=self._auth_headers('bob'),
+            json={'emails': ['charlie@example.com']},
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual(len(payload['created']), 1)
+        self.assertEqual(payload['created'][0]['email'], 'charlie@example.com')
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                '''
+                SELECT token, status
+                FROM workspace_invitations
+                WHERE workspace_id = ? AND email = ?
+                ORDER BY created_at ASC, id ASC
+                ''',
+                (self.workspace_id, 'charlie@example.com'),
+            )
+            invitations = [row_to_dict(item) for item in cursor.fetchall()]
+        finally:
+            conn.close()
+
+        self.assertEqual(len(invitations), 2)
+        original = next(item for item in invitations if item['token'] == owner_token)
+        self.assertEqual(original['status'], 'pending')
+        self.assertTrue(any(item['token'] != owner_token and item['status'] == 'pending' for item in invitations))
+
+    def test_non_owner_cannot_resend_workspace_invitation(self):
+        self._insert_user('bob', 'bob@example.com')
+        token = 'owner-resend-invite-token'
+        expires_at = (datetime.utcnow() + timedelta(days=7)).isoformat()
+        conn = self._connection()
+        try:
+            next_settings = {
+                **DEFAULT_WORKSPACE_SETTINGS,
+                'allow_member_invites': True,
+            }
+            conn.execute(
+                'UPDATE workspaces SET settings_json = ? WHERE id = ?',
+                (workspace_settings_to_json(next_settings), self.workspace_id),
+            )
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            cursor = conn.execute(
+                '''
+                INSERT INTO workspace_invitations (
+                    workspace_id,
+                    email,
+                    token,
+                    status,
+                    expires_at,
+                    created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    self.workspace_id,
+                    'charlie@example.com',
+                    token,
+                    'pending',
+                    expires_at,
+                    utcnow_iso(),
+                ),
+            )
+            invitation_id = cursor.lastrowid
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace_id}/invitations/{invitation_id}/resend',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.get_json()['error'], 'Only workspace owner can resend invitations')
+
+    def test_workspace_member_can_leave_shared_workspace(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ''',
+                (self.workspace_id, 'bob', 'member', 'active', utcnow_iso()),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        leave_response = self.client.delete(
+            f'/api/workspaces/{self.workspace_id}/members/bob',
+            headers=self._auth_headers('bob'),
+        )
+        self.assertEqual(leave_response.status_code, 200)
+        self.assertEqual(leave_response.get_json()['removed_username'], 'bob')
+
+        conn = self._connection()
+        try:
+            member_cursor = conn.execute(
+                '''
+                SELECT status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (self.workspace_id, 'bob'),
+            )
+            member = row_to_dict(member_cursor.fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(member['status'], 'removed')
+
+        workspaces_response = self.client.get('/api/workspaces', headers=self._auth_headers('bob'))
+        self.assertEqual(workspaces_response.status_code, 200)
+        workspace_ids = [item['id'] for item in workspaces_response.get_json()]
+        self.assertNotIn(self.workspace_id, workspace_ids)
+
     def test_friend_requests_messages_and_notifications_flow(self):
         self._insert_user('bob', 'bob@example.com')
         self._insert_user('charlie', 'charlie@example.com')
@@ -407,11 +879,45 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
 
     @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
     @patch('backend.shared.HF_TOKEN', '')
+    @patch('backend.shared.requests.post')
+    def test_image_ocr_error_redacts_external_endpoint_details(self, mock_post):
+        mock_post.side_effect = RuntimeError(
+            "HTTPSConnectionPool(host='private.example.invalid', url='https://private.example.invalid/ocr') failed"
+        )
+
+        response = self.client.post(
+            '/api/extract-text',
+            headers=self._auth_headers(),
+            data={
+                'image': (io.BytesIO(b'not-a-real-image-but-route-sends-bytes'), 'lecture.png'),
+            },
+            content_type='multipart/form-data',
+        )
+
+        self.assertEqual(response.status_code, 502)
+        payload = response.get_json()
+        self.assertEqual(payload.get('error'), 'OCR failed')
+        self.assertIn('[external OCR host]', str(payload))
+        self.assertNotIn('private.example.invalid', str(payload))
+        self.assertNotIn('https://private.example.invalid/ocr', str(payload))
+
+    @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
+    @patch('backend.shared.HF_TOKEN', '')
     @patch('backend.shared.requests.request')
     def test_ocr_health_redacts_external_url_and_checks_reachability(self, mock_request):
         mock_request.return_value = self._fake_http_response(404, {'error': 'not found'})
 
-        response = self.client.get('/api/ocr/health')
+        anonymous_response = self.client.get('/api/ocr/health')
+
+        self.assertEqual(anonymous_response.status_code, 503)
+        anonymous_payload = anonymous_response.get_json()
+        self.assertFalse(anonymous_payload.get('ok'))
+        self.assertIn('details', anonymous_payload)
+        self.assertNotIn('external_ocr_configured', anonymous_payload)
+        self.assertNotIn('external_ocr_probe', anonymous_payload)
+        self.assertNotIn('private.example.invalid', str(anonymous_payload))
+
+        response = self.client.get('/api/ocr/health', headers=self._auth_headers())
 
         self.assertEqual(response.status_code, 503)
         payload = response.get_json()

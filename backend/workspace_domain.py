@@ -257,7 +257,7 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto;">
           <h2 style="margin-bottom: 12px;">You're invited to collaborate in StudyHub</h2>
           <p><strong>{html.escape(safe_inviter_username)}</strong> invited you to join <strong>{html.escape(safe_workspace_name)}</strong>.</p>
-          <p>To use this invitation, sign in with <strong>{html.escape(safe_recipient)}</strong>, open the invitation, and request access. The workspace owner still needs to approve your request before you join.</p>
+          <p>To use this invitation, sign in with <strong>{html.escape(safe_recipient)}</strong> and open the invitation. You will join the workspace right away.</p>
           <p style="margin: 18px 0;">
             <a href="{html.escape(safe_invite_url)}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; text-decoration: none; background: #2563eb; color: #ffffff;">
               Open invitation
@@ -273,8 +273,7 @@ def send_workspace_invite_email(to_email, workspace_name, inviter_username, invi
     '''
     text = (
         f'{safe_inviter_username} invited you to join "{safe_workspace_name}" on StudyHub.\n\n'
-        f'Sign in with {safe_recipient}, open the invitation link below, and request access.\n'
-        'The workspace owner still needs to approve your request before you join.\n\n'
+        f'Sign in with {safe_recipient} and open the invitation link below to join the workspace right away.\n\n'
         f'Invitation link: {safe_invite_url}\n'
         f'Expires: {safe_expiry_label}\n'
     )
@@ -459,16 +458,30 @@ def get_workspace_details(conn, workspace_row, for_username=''):
     is_owner = bool(for_username and for_username == owner_username)
     settings = normalize_workspace_settings(workspace.get('settings_json'))
 
-    members_cursor = conn.execute(
+    member_count_cursor = conn.execute(
         '''
-        SELECT username, role, status, created_at
+        SELECT COUNT(*) AS member_count
         FROM workspace_members
         WHERE workspace_id = ? AND status = 'active'
-        ORDER BY created_at ASC
         ''',
         (workspace_id,),
     )
-    members = [row_to_dict(item) for item in members_cursor.fetchall()]
+    member_count_row = row_to_dict(member_count_cursor.fetchone()) or {}
+    member_count = int(member_count_row.get('member_count') or 0)
+
+    members = []
+    if is_owner:
+        members_cursor = conn.execute(
+            '''
+            SELECT wm.username, wm.role, wm.status, wm.created_at, u.email
+            FROM workspace_members wm
+            LEFT JOIN users u ON u.username = wm.username
+            WHERE wm.workspace_id = ? AND wm.status = 'active'
+            ORDER BY wm.created_at ASC
+            ''',
+            (workspace_id,),
+        )
+        members = [row_to_dict(item) for item in members_cursor.fetchall()]
 
     pending_requests = []
     invitations = []
@@ -495,8 +508,8 @@ def get_workspace_details(conn, workspace_row, for_username=''):
         'created_at': workspace.get('created_at', ''),
         'updated_at': workspace.get('updated_at', ''),
         'is_owner': is_owner,
-        'members_count': len(members),
-        'members': members if is_owner else [],
+        'members_count': member_count,
+        'members': members,
         'invites': invitations,
         'pending_requests': pending_requests,
     }

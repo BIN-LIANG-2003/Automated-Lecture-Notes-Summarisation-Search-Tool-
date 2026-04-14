@@ -54,6 +54,101 @@ def _deliver_workspace_invitation_email(workspace_row, invitation_row, inviter_u
     return invite_payload, ok, send_error
 
 
+def _activate_workspace_member(conn, workspace_id, member_username):
+    safe_workspace_id = str(workspace_id or '').strip()
+    safe_member = str(member_username or '').strip()
+    if not safe_workspace_id or not safe_member:
+        return
+
+    member_cursor = conn.execute(
+        '''
+        SELECT role
+        FROM workspace_members
+        WHERE workspace_id = ? AND username = ?
+        ''',
+        (safe_workspace_id, safe_member),
+    )
+    existing_member = row_to_dict(member_cursor.fetchone())
+    if existing_member:
+        next_role = 'owner' if existing_member.get('role') == 'owner' else 'member'
+        conn.execute(
+            '''
+            UPDATE workspace_members
+            SET status = 'active', role = ?
+            WHERE workspace_id = ? AND username = ?
+            ''',
+            (next_role, safe_workspace_id, safe_member),
+        )
+        return
+
+    conn.execute(
+        '''
+        INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        ''',
+        (safe_workspace_id, safe_member, 'member', 'active', utcnow_iso()),
+    )
+
+
+def _is_active_workspace_member(conn, workspace_id, member_username):
+    safe_workspace_id = str(workspace_id or '').strip()
+    safe_username = str(member_username or '').strip()
+    if not safe_workspace_id or not safe_username:
+        return False
+    cursor = conn.execute(
+        '''
+        SELECT 1
+        FROM workspace_members
+        WHERE workspace_id = ? AND username = ? AND status = 'active'
+        LIMIT 1
+        ''',
+        (safe_workspace_id, safe_username),
+    )
+    return cursor.fetchone() is not None
+
+
+def _cancel_open_workspace_invitations_for_member(conn, workspace_id, member_username, reviewed_by, note):
+    safe_workspace_id = str(workspace_id or '').strip()
+    safe_member = str(member_username or '').strip()
+    reviewer = str(reviewed_by or '').strip()
+    if not safe_workspace_id or not safe_member:
+        return 0
+
+    user_cursor = conn.execute(
+        'SELECT email FROM users WHERE username = ?',
+        (safe_member,),
+    )
+    user_row = row_to_dict(user_cursor.fetchone()) or {}
+    target_email = normalize_email(user_row.get('email', ''))
+
+    where_parts = ['requested_username = ?']
+    params = [safe_member]
+    if target_email:
+        where_parts.append('LOWER(email) = ?')
+        params.append(target_email)
+
+    cursor = conn.execute(
+        f'''
+        UPDATE workspace_invitations
+        SET status = 'cancelled',
+            reviewed_by = ?,
+            reviewed_at = ?,
+            review_note = ?
+        WHERE workspace_id = ?
+          AND status IN ('pending', 'requested')
+          AND ({' OR '.join(where_parts)})
+        ''',
+        (
+            reviewer,
+            utcnow_iso(),
+            str(note or '').strip() or 'Member access removed',
+            safe_workspace_id,
+            *params,
+        ),
+    )
+    return cursor.rowcount or 0
+
+
 def get_workspaces():
     username = get_authenticated_username()
     if not username:
@@ -273,6 +368,98 @@ def delete_workspace(workspace_id):
     }), 200
 
 
+def remove_workspace_member(workspace_id, member_username):
+    username = get_authenticated_username()
+    target_username = str(member_username or '').strip()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+    if not target_username:
+        return jsonify({'error': 'member username is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        workspace_row = get_workspace_record(conn, workspace_id)
+        if not workspace_row:
+            return jsonify({'error': 'Workspace not found'}), 404
+        owner_username = str(workspace_row.get('owner_username') or '').strip()
+        is_owner_action = owner_username == username
+        is_self_leave = target_username == username
+        if not is_owner_action and not is_self_leave:
+            return jsonify({'error': 'Only workspace owner can remove members'}), 403
+        if target_username == owner_username:
+            return jsonify({'error': 'Workspace owner cannot be removed'}), 400
+
+        cursor = conn.execute(
+            '''
+            SELECT username, role, status
+            FROM workspace_members
+            WHERE workspace_id = ? AND username = ? AND status = 'active'
+            ''',
+            (workspace_id, target_username),
+        )
+        member = row_to_dict(cursor.fetchone())
+        if not member:
+            return jsonify({'error': 'Workspace member not found'}), 404
+        if member.get('role') == 'owner':
+            return jsonify({'error': 'Workspace owner cannot be removed'}), 400
+
+        conn.execute(
+            '''
+            UPDATE workspace_members
+            SET status = 'removed', role = 'member'
+            WHERE workspace_id = ? AND username = ?
+            ''',
+            (workspace_id, target_username),
+        )
+        _cancel_open_workspace_invitations_for_member(
+            conn,
+            workspace_id,
+            target_username,
+            username,
+            'Cancelled because member left workspace' if is_self_leave else 'Cancelled because member was removed',
+        )
+        create_system_notification(
+            conn,
+            target_username,
+            'Left workspace' if is_self_leave else 'Removed from workspace',
+            (
+                f'You left "{workspace_row.get("name") or "this workspace"}".'
+                if is_self_leave
+                else f'You no longer have access to "{workspace_row.get("name") or "this workspace"}".'
+            ),
+            notification_type='workspace',
+            actor_username=username,
+            metadata={
+                'workspace_id': workspace_id,
+                'workspace_name': workspace_row.get('name') or '',
+            },
+        )
+        if is_self_leave and owner_username and owner_username != target_username:
+            create_system_notification(
+                conn,
+                owner_username,
+                'Workspace member left',
+                f'{target_username} left "{workspace_row.get("name") or "this workspace"}".',
+                notification_type='workspace',
+                actor_username=target_username,
+                metadata={
+                    'workspace_id': workspace_id,
+                    'workspace_name': workspace_row.get('name') or '',
+                },
+            )
+        conn.commit()
+
+        updated_workspace = get_workspace_record(conn, workspace_id)
+        return jsonify({
+            'removed_username': target_username,
+            'workspace': get_workspace_details(conn, updated_workspace, username),
+        }), 200
+    finally:
+        conn.close()
+
+
 def list_workspace_invitations(workspace_id):
     username = get_authenticated_username()
     if not username:
@@ -345,6 +532,7 @@ def create_workspace_invitations(workspace_id):
         workspace_settings = normalize_workspace_settings(workspace_row.get('settings_json'))
         if not _user_can_manage_workspace_invites(conn, workspace_row, username, workspace_settings):
             return jsonify({'error': 'Only workspace owner can invite members'}), 403
+        is_owner_inviter = workspace_row.get('owner_username') == username
 
         trusted_domains = [
             item for item in re.split(r'[\s,;]+', workspace_settings.get('allowed_email_domains', '')) if item
@@ -373,16 +561,17 @@ def create_workspace_invitations(workspace_id):
         send_errors = []
 
         for email in normalized_emails:
-            conn.execute(
-                '''
-                UPDATE workspace_invitations
-                SET status = 'cancelled', reviewed_by = ?, reviewed_at = ?, review_note = ?
-                WHERE workspace_id = ?
-                  AND email = ?
-                  AND status IN ('pending', 'requested')
-                ''',
-                (username, now_iso, 'Replaced by newer invitation', workspace_id, email),
-            )
+            if is_owner_inviter:
+                conn.execute(
+                    '''
+                    UPDATE workspace_invitations
+                    SET status = 'cancelled', reviewed_by = ?, reviewed_at = ?, review_note = ?
+                    WHERE workspace_id = ?
+                      AND email = ?
+                      AND status IN ('pending', 'requested')
+                    ''',
+                    (username, now_iso, 'Replaced by newer invitation', workspace_id, email),
+                )
 
             token = create_invite_token()
             conn.execute(
@@ -423,7 +612,7 @@ def create_workspace_invitations(workspace_id):
             'invalid_emails': invalid_emails,
             'send_errors': send_errors,
             'manual_share_recommended': bool(send_errors),
-            'requires_owner_confirmation': True,
+            'requires_owner_confirmation': False,
         }), 201
     finally:
         conn.close()
@@ -492,10 +681,8 @@ def resend_workspace_invitation(workspace_id, invitation_id):
         workspace_row = get_workspace_record(conn, workspace_id)
         if not workspace_row:
             return jsonify({'error': 'Workspace not found'}), 404
-
-        workspace_settings = normalize_workspace_settings(workspace_row.get('settings_json'))
-        if not _user_can_manage_workspace_invites(conn, workspace_row, username, workspace_settings):
-            return jsonify({'error': 'Only workspace owner can invite members'}), 403
+        if workspace_row.get('owner_username') != username:
+            return jsonify({'error': 'Only workspace owner can resend invitations'}), 403
 
         cursor = conn.execute(
             '''
@@ -513,10 +700,13 @@ def resend_workspace_invitation(workspace_id, invitation_id):
         if current_status == 'approved':
             return jsonify({'error': 'Approved invitations do not need to be resent'}), 400
         if current_status == 'requested':
-            return jsonify({'error': 'This invitation is already awaiting owner approval'}), 400
+            return jsonify({'error': 'This invitation has already been opened by the recipient'}), 400
 
         next_expires_at = expires_at_for_days(
-            workspace_settings.get('default_invite_expiry_days', INVITE_EXPIRY_DAYS)
+            normalize_workspace_settings(workspace_row.get('settings_json')).get(
+                'default_invite_expiry_days',
+                INVITE_EXPIRY_DAYS,
+            )
         )
         conn.execute(
             '''
@@ -604,33 +794,7 @@ def review_workspace_invitation(workspace_id, invitation_id):
                 return jsonify({'error': 'Applicant account not found'}), 404
 
             ensure_owner_membership(conn, workspace_id, workspace_row.get('owner_username', ''))
-            member_cursor = conn.execute(
-                '''
-                SELECT id
-                FROM workspace_members
-                WHERE workspace_id = ? AND username = ?
-                ''',
-                (workspace_id, requested_username),
-            )
-            existing_member = member_cursor.fetchone()
-            if existing_member:
-                conn.execute(
-                    '''
-                    UPDATE workspace_members
-                    SET status = 'active', role = 'member'
-                    WHERE workspace_id = ? AND username = ?
-                    ''',
-                    (workspace_id, requested_username),
-                )
-            else:
-                conn.execute(
-                    '''
-                    INSERT INTO workspace_members (workspace_id, username, role, status, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                    ''',
-                    (workspace_id, requested_username, 'member', 'active', utcnow_iso()),
-                )
-
+            _activate_workspace_member(conn, workspace_id, requested_username)
             next_status = 'approved'
         else:
             next_status = 'rejected'
@@ -711,19 +875,29 @@ def get_invitation_by_token(token):
         can_request = False
         mismatch_reason = ''
         user_email = ''
+        viewer_is_active_member = False
+        invitation_status = str(invitation.get('status') or '').strip().lower()
+        workspace_id = str(invitation.get('workspace_id') or '').strip()
         if username:
             user_cursor = conn.execute('SELECT email FROM users WHERE username = ?', (username,))
             user_row = row_to_dict(user_cursor.fetchone()) or {}
             user_email = normalize_email(user_row.get('email', ''))
             invite_email = normalize_email(invitation.get('email', ''))
+            viewer_is_active_member = _is_active_workspace_member(conn, workspace_id, username)
             if not user_email:
                 mismatch_reason = 'The current account has no bound email, so invitation ownership cannot be verified'
             elif user_email != invite_email:
                 mismatch_reason = 'The current account email does not match the invited email'
-            elif invitation.get('status') == 'pending':
+            elif invitation_status == 'pending':
                 can_request = True
-            elif invitation.get('status') == 'requested':
+            elif invitation_status == 'requested':
                 can_request = invitation.get('requested_username') == username
+            elif invitation_status == 'approved':
+                requested_username = str(invitation.get('requested_username') or '').strip()
+                if requested_username and requested_username != username:
+                    mismatch_reason = 'This invitation has already been used by another account'
+                elif not viewer_is_active_member:
+                    mismatch_reason = 'This invitation was already used and this account no longer has workspace access'
 
         payload = serialize_invitation_row(invitation)
         payload.update({
@@ -732,11 +906,13 @@ def get_invitation_by_token(token):
                 invitation.get('owner_username', ''),
             ),
             'owner_username': invitation.get('owner_username', ''),
-            'requires_owner_confirmation': True,
+            'requires_owner_confirmation': False,
             'can_request': can_request,
             'mismatch_reason': mismatch_reason,
             'viewer_username': username,
             'viewer_email': user_email,
+            'viewer_is_active_member': viewer_is_active_member,
+            'can_open_workspace': bool(invitation_status == 'approved' and viewer_is_active_member and not mismatch_reason),
         })
         return jsonify(payload), 200
     finally:
@@ -768,9 +944,9 @@ def request_join_by_invitation(token):
         if not invitation:
             return jsonify({'error': 'Invitation not found'}), 404
 
-        if invitation.get('status') in ('approved', 'rejected', 'expired', 'cancelled'):
+        if invitation.get('status') in ('rejected', 'expired', 'cancelled'):
             return jsonify({'error': f'Invitation is {invitation.get("status")}'}), 400
-        if invitation_is_expired(invitation.get('expires_at')):
+        if invitation.get('status') in ('pending', 'requested') and invitation_is_expired(invitation.get('expires_at')):
             conn.execute(
                 'UPDATE workspace_invitations SET status = ? WHERE token = ?',
                 ('expired', safe_token),
@@ -787,33 +963,92 @@ def request_join_by_invitation(token):
         if user_email != invite_email:
             return jsonify({'error': 'Your account email does not match this invitation'}), 403
 
-        if invitation.get('status') == 'requested':
-            if invitation.get('requested_username') == username:
-                return jsonify({'message': 'Join request already submitted and pending owner approval'}), 200
-            return jsonify({'error': 'This invitation is already requested by another account'}), 409
-
-        conn.execute(
-            '''
-            UPDATE workspace_invitations
-            SET status = 'requested', requested_username = ?, requested_at = ?, reviewed_by = NULL, reviewed_at = NULL, review_note = ''
-            WHERE token = ?
-            ''',
-            (username, utcnow_iso(), safe_token),
-        )
         owner_username = str(invitation.get('owner_username') or '').strip()
         workspace_name = str(invitation.get('workspace_name') or 'workspace').strip()
         workspace_id = str(invitation.get('workspace_id') or '').strip()
-        if owner_username and owner_username != username:
-            create_system_notification(
-                conn,
-                owner_username,
-                'Workspace request received',
-                f'{username} requested access to {workspace_name}.',
-                notification_type='workspace',
-                actor_username=username,
-                link_url=f'/#/?workspace_id={workspace_id}' if workspace_id else '',
-                metadata={'workspace_id': workspace_id, 'invitation_token': safe_token},
+        previous_status = str(invitation.get('status') or '').strip().lower()
+
+        if previous_status == 'approved':
+            requested_username = str(invitation.get('requested_username') or '').strip()
+            if requested_username and requested_username != username:
+                return jsonify({'error': 'Invitation has already been used'}), 409
+
+            member_cursor = conn.execute(
+                '''
+                SELECT status
+                FROM workspace_members
+                WHERE workspace_id = ? AND username = ?
+                ''',
+                (workspace_id, username),
             )
+            member_row = row_to_dict(member_cursor.fetchone()) or {}
+            if str(member_row.get('status') or '').strip().lower() == 'active':
+                payload = serialize_invitation_row(invitation)
+                payload.update({
+                    'workspace_name': workspace_name,
+                    'owner_username': owner_username,
+                    'requires_owner_confirmation': False,
+                    'can_request': False,
+                    'viewer_is_active_member': True,
+                    'can_open_workspace': True,
+                    'message': 'Workspace already joined',
+                })
+                return jsonify(payload), 200
+
+            return jsonify({'error': 'Invitation has already been used'}), 409
+
+        if invitation.get('status') == 'requested':
+            if invitation.get('requested_username') != username:
+                return jsonify({'error': 'This invitation is already used by another account'}), 409
+        elif invitation.get('status') != 'pending':
+            return jsonify({'error': f'Invitation is {invitation.get("status")}'}), 400
+
+        ensure_owner_membership(conn, workspace_id, owner_username)
+        _activate_workspace_member(conn, workspace_id, username)
+
+        if previous_status != 'approved':
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                UPDATE workspace_invitations
+                SET status = 'approved',
+                    requested_username = ?,
+                    requested_at = COALESCE(requested_at, ?),
+                    reviewed_by = ?,
+                    reviewed_at = ?,
+                    review_note = ?
+                WHERE token = ?
+                ''',
+                (
+                    username,
+                    now_iso,
+                    owner_username or username,
+                    now_iso,
+                    'Accepted directly by invitee',
+                    safe_token,
+                ),
+            )
+            if owner_username and owner_username != username:
+                create_system_notification(
+                    conn,
+                    owner_username,
+                    'Workspace member joined',
+                    f'{username} joined {workspace_name} using your invitation.',
+                    notification_type='workspace',
+                    actor_username=username,
+                    link_url=f'/#/?workspace_id={workspace_id}' if workspace_id else '',
+                    metadata={'workspace_id': workspace_id, 'invitation_token': safe_token},
+                )
+                create_system_notification(
+                    conn,
+                    username,
+                    'Workspace joined',
+                    f'You joined {workspace_name}.',
+                    notification_type='workspace',
+                    actor_username=owner_username,
+                    link_url=f'/#/?workspace_id={workspace_id}' if workspace_id else '',
+                    metadata={'workspace_id': workspace_id, 'invitation_token': safe_token},
+                )
         conn.commit()
 
         refreshed_cursor = conn.execute(
@@ -830,7 +1065,11 @@ def request_join_by_invitation(token):
         payload.update({
             'workspace_name': refreshed.get('workspace_name', ''),
             'owner_username': refreshed.get('owner_username', ''),
-            'requires_owner_confirmation': True,
+            'requires_owner_confirmation': False,
+            'can_request': False,
+            'viewer_is_active_member': True,
+            'can_open_workspace': True,
+            'message': 'Workspace joined',
         })
         return jsonify(payload), 200
     finally:
