@@ -5676,6 +5676,7 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .document-processing-badge.is-needs_ocr,
+.document-processing-badge.is-text_pending,
 .document-processing-badge.is-no_text_available,
 .document-processing-badge.is-action_required{
   border-color:#d4b26a;
@@ -5712,6 +5713,7 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .document-processing-message.is-needs_ocr,
+.document-processing-message.is-text_pending,
 .document-processing-message.is-no_text_available,
 .document-processing-message.is-action_required{
   border-color:#e0c17c;

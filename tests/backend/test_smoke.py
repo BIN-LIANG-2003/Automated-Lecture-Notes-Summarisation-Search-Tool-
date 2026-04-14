@@ -608,18 +608,50 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 ),
                 'category': 'Computer Science',
                 'workspace_id': self.workspace_id,
-                'client_pdf_text_status': 'processed',
-                'client_extracted_text': (
-                    'pdfsmoke searchable coverage. '
-                    'This generated PDF fixture keeps PDF upload smoke coverage lightweight.'
-                ),
+                'client_pdf_text_status': 'text_pending',
+                'client_pdf_text_deferred': '1',
             },
             headers=self._auth_headers(),
             content_type='multipart/form-data',
         )
         self.assertEqual(upload_response.status_code, 201)
         upload_payload = upload_response.get_json()
-        self.assertEqual(upload_payload.get('processing_status'), 'processed')
+        self.assertEqual(upload_payload.get('processing_status'), 'text_pending')
+        document_id = parse_int(upload_payload.get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+
+        pending_summary_response = self.client.post(
+            '/api/analyze-text',
+            headers=self._auth_headers(),
+            json={'doc_id': document_id},
+        )
+        self.assertEqual(pending_summary_response.status_code, 409)
+        pending_summary_payload = pending_summary_response.get_json()
+        self.assertEqual(pending_summary_payload.get('processing_status'), 'text_pending')
+
+        finalize_response = self.client.post(
+            f'/api/documents/{document_id}/pdf-text',
+            headers=self._auth_headers(),
+            json={
+                'status': 'processed',
+                'text': (
+                    'pdfsmoke searchable coverage. '
+                    'This generated PDF fixture keeps PDF upload smoke coverage lightweight.'
+                ),
+            },
+        )
+        self.assertEqual(finalize_response.status_code, 200)
+        finalize_payload = finalize_response.get_json()
+        self.assertEqual(finalize_payload.get('processing_status'), 'processed')
+
+        doc_response = self.client.get(
+            f'/api/documents/{document_id}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(doc_response.status_code, 200)
+        doc_payload = doc_response.get_json()
+        self.assertIn('pdfsmoke searchable coverage', doc_payload.get('content') or '')
+        self.assertEqual(doc_payload.get('processing_status'), 'processed')
 
         search_response = self.client.get(
             '/api/documents?include_meta=1&q=pdfsmoke',
@@ -635,7 +667,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         summary_response = self.client.post(
             '/api/analyze-text',
             headers=self._auth_headers(),
-            json={'doc_id': parse_int(upload_payload.get('document_id'), 0, 0)},
+            json={'doc_id': document_id},
         )
         self.assertEqual(summary_response.status_code, 200)
         summary_payload = summary_response.get_json()

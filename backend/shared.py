@@ -47,6 +47,8 @@ from .db import get_db_connection
 from .document_domain import (
     PDF_NEEDS_OCR_ERROR,
     PDF_NEEDS_OCR_STATUS,
+    PDF_TEXT_PENDING_ERROR,
+    PDF_TEXT_PENDING_STATUS,
     extract_document_content,
     normalize_newlines,
     is_pdf_text_available,
@@ -1760,18 +1762,28 @@ def analyze_text():
             )
 
             if doc_file_type == 'pdf' and not doc_text_content:
-                if doc_processing_status in (PDF_NEEDS_OCR_STATUS, 'no_text_available', 'action_required'):
+                if doc_processing_status in (
+                    PDF_NEEDS_OCR_STATUS,
+                    PDF_TEXT_PENDING_STATUS,
+                    'no_text_available',
+                    'action_required',
+                ):
+                    status_error = (
+                        PDF_TEXT_PENDING_ERROR
+                        if doc_processing_status == PDF_TEXT_PENDING_STATUS
+                        else PDF_NEEDS_OCR_ERROR
+                    )
                     return jsonify({
-                        'error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                        'error': doc_processing_error or status_error,
                         'processing_status': doc_processing_status or PDF_NEEDS_OCR_STATUS,
-                        'processing_error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                        'processing_error': doc_processing_error or status_error,
                         'details': {
                             'doc_id': requested_doc_id,
                             'file_type': doc_file_type,
                             'text_source': 'empty',
                             'attempted_file_extraction': False,
                             'processing_status': doc_processing_status or PDF_NEEDS_OCR_STATUS,
-                            'processing_error': doc_processing_error or PDF_NEEDS_OCR_ERROR,
+                            'processing_error': doc_processing_error or status_error,
                         },
                     }), 409
                 if doc_processing_status == 'queued':
@@ -1945,8 +1957,17 @@ def analyze_text():
             if doc_file_type in ('png', 'jpg', 'jpeg', 'webp', 'gif'):
                 error_message = "No text is available for this image yet. Run OCR first, then summarize the extracted text."
             elif doc_file_type == 'pdf':
-                if doc_processing_status in (PDF_NEEDS_OCR_STATUS, 'no_text_available', 'action_required'):
-                    error_message = doc_processing_error or PDF_NEEDS_OCR_ERROR
+                if doc_processing_status in (
+                    PDF_NEEDS_OCR_STATUS,
+                    PDF_TEXT_PENDING_STATUS,
+                    'no_text_available',
+                    'action_required',
+                ):
+                    error_message = doc_processing_error or (
+                        PDF_TEXT_PENDING_ERROR
+                        if doc_processing_status == PDF_TEXT_PENDING_STATUS
+                        else PDF_NEEDS_OCR_ERROR
+                    )
                 else:
                     error_message = "No selectable text is available for this PDF. OCR or a text-selectable PDF is required before summarizing."
             elif doc_file_type in ('docx', 'txt'):

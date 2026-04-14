@@ -14,6 +14,11 @@ const PROCESSING_STATUS_META = {
     message: 'Text extraction is running in the document worker.',
     summarizeTitle: 'Text extraction is running in the document worker.',
   },
+  text_pending: {
+    label: 'Finalizing',
+    message: 'PDF text was extracted in the browser but has not been saved yet. Retry upload if this does not clear.',
+    summarizeTitle: 'PDF text is still being saved from the upload flow.',
+  },
   needs_ocr: {
     label: 'OCR Needed',
     message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
@@ -262,7 +267,7 @@ export default function DocumentsList({
             const processingStatus = getProcessingStatus(doc);
             const processingMeta = PROCESSING_STATUS_META[processingStatus] || null;
             const processingError = getProcessingError(doc);
-            const processingMessage = ['failed', 'needs_ocr', 'no_text_available', 'action_required'].includes(processingStatus)
+            const processingMessage = ['failed', 'text_pending', 'needs_ocr', 'no_text_available', 'action_required'].includes(processingStatus)
               ? (processingError || processingMeta?.message)
               : processingMeta?.message;
             const summarizeBlockedByProcessing = Boolean(processingMeta);

@@ -110,7 +110,9 @@ export const formatSummaryErrorMessage = (payload) => {
 
   const hints = [];
   if (fileType === 'pdf') {
-    if (processingStatus === 'needs_ocr' || processingStatus === 'no_text_available') {
+    if (processingStatus === 'text_pending') {
+      hints.push('Retry the upload so the browser-extracted text can be saved.');
+    } else if (processingStatus === 'needs_ocr' || processingStatus === 'no_text_available') {
       hints.push('Use OCR or upload a PDF with selectable text, then summarize again.');
     } else if (attemptedExtraction && extractionError) {
       hints.push(`PDF extract detail: ${extractionError}`);

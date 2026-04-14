@@ -7,9 +7,6 @@ async function loginAs(page, username = 'alice') {
     await loginField.fill(username);
     await page.locator('#login-password').fill('password123');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.waitForURL('**/#/');
-  } else {
-    await page.waitForURL('**/#/');
   }
   await expect(page.getByRole('button', { name: 'Feedback' })).toBeVisible();
 }

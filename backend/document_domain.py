@@ -899,6 +899,11 @@ PDF_NEEDS_OCR_STATUS = 'needs_ocr'
 PDF_NEEDS_OCR_ERROR = (
     'No selectable text was found in this PDF. OCR or a text-selectable PDF is required before summaries and search.'
 )
+PDF_TEXT_PENDING_STATUS = 'text_pending'
+PDF_TEXT_PENDING_ERROR = (
+    'PDF text extraction finished in the browser, but the extracted text has not been saved yet. '
+    'Retry the upload to finalize text.'
+)
 
 
 def is_pdf_text_available(text):
@@ -1317,6 +1322,8 @@ __all__ = [
     'PDF_NEEDS_OCR_ERROR',
     'PDF_NEEDS_OCR_STATUS',
     'PDF_TEXT_EXTRACTION_FAILED_TEXT',
+    'PDF_TEXT_PENDING_ERROR',
+    'PDF_TEXT_PENDING_STATUS',
     'build_editable_file_bytes',
     'extract_document_content',
     'extract_text_from_pdf_bytes',

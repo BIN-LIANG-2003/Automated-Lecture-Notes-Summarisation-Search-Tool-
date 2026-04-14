@@ -20,6 +20,8 @@ from .document_processing import claim_next_queued_pdf_document, process_claimed
 from .document_domain import (
     PDF_NEEDS_OCR_ERROR,
     PDF_NEEDS_OCR_STATUS,
+    PDF_TEXT_PENDING_ERROR,
+    PDF_TEXT_PENDING_STATUS,
     build_editable_file_bytes,
     extract_document_content,
     extract_text_from_pdf_bytes,
@@ -226,11 +228,22 @@ def _client_pdf_text_status():
     ).strip().lower()
     if safe_status in ('processed', 'ready', 'text', 'text_available'):
         return 'processed'
+    if safe_status in ('text_pending', 'pending', 'deferred', 'awaiting_text'):
+        return PDF_TEXT_PENDING_STATUS
     if safe_status in ('needs_ocr', 'no_text_available', 'no_text', 'action_required', 'scanned'):
         return PDF_NEEDS_OCR_STATUS
     if safe_status in ('client_failed', 'failed', 'error', 'unknown'):
         return 'client_failed'
     return ''
+
+
+def _client_pdf_text_deferred():
+    return parse_bool(
+        request.form.get('client_pdf_text_deferred')
+        or request.form.get('client_pdf_text_pending')
+        or request.form.get('defer_client_pdf_text'),
+        False,
+    )
 
 
 def _client_pdf_text():
@@ -247,6 +260,8 @@ def _extract_pdf_upload_content(local_filepath):
         return normalize_pdf_text(client_text), '', 'processed', '', utcnow_iso()
 
     client_status = _client_pdf_text_status()
+    if client_status == PDF_TEXT_PENDING_STATUS or (client_status == 'processed' and _client_pdf_text_deferred()):
+        return '', '', PDF_TEXT_PENDING_STATUS, PDF_TEXT_PENDING_ERROR, ''
     if client_status == PDF_NEEDS_OCR_STATUS:
         return '', '', PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso()
 
@@ -717,6 +732,95 @@ def upload_file():
                 os.remove(local_filepath)
             except Exception:
                 pass
+
+
+def finalize_pdf_upload_text(doc_id):
+    data = request.get_json(silent=True) if request.is_json else None
+    if data is None:
+        data = request.form or {}
+
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'Auth token is required'}), 401
+
+    status = str(
+        data.get('status')
+        or data.get('client_pdf_text_status')
+        or data.get('client_pdf_text_state')
+        or ''
+    ).strip().lower()
+    text = normalize_pdf_text(
+        data.get('text')
+        or data.get('client_extracted_text')
+        or data.get('client_pdf_text')
+        or data.get('extracted_text')
+        or ''
+    )
+
+    if status in ('needs_ocr', 'no_text_available', 'no_text', 'action_required', 'scanned'):
+        next_status = PDF_NEEDS_OCR_STATUS
+        next_error = PDF_NEEDS_OCR_ERROR
+        next_text = ''
+    elif is_pdf_text_available(text):
+        next_status = 'processed'
+        next_error = ''
+        next_text = text
+    else:
+        return jsonify({'error': 'No extracted PDF text provided'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+        if is_document_soft_deleted(doc):
+            return jsonify({'error': 'Document is in Trash'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can finalize this document'}), 403
+
+        file_type = str((doc.get('file_type') if hasattr(doc, 'get') else doc['file_type']) or '').lower().strip('.')
+        if file_type != 'pdf':
+            return jsonify({'error': 'Only PDF uploads can finalize extracted PDF text'}), 400
+
+        now_iso = utcnow_iso()
+        conn.execute(
+            '''
+            UPDATE documents
+            SET content = ?,
+                content_html = '',
+                processing_status = ?,
+                processing_error = ?,
+                processing_started_at = NULL,
+                processed_at = ?
+            WHERE id = ?
+            ''',
+            (next_text, next_status, next_error, now_iso, doc_id),
+        )
+        conn.commit()
+
+        return jsonify({
+            'message': 'PDF text finalized',
+            'document_id': doc_id,
+            'processing_status': next_status,
+            'processing_error': next_error,
+        }), 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f"PDF text finalization failed: {e}")
+        return jsonify({'error': 'PDF text finalization failed'}), 500
+    finally:
+        conn.close()
 
 
 def get_document(doc_id):

@@ -71,6 +71,11 @@ const PROCESSING_STATUS_META = {
     message: 'PDF text extraction is running in the document worker.',
     summarizeTitle: 'PDF text extraction is running in the document worker.',
   },
+  text_pending: {
+    label: 'Finalizing',
+    message: 'PDF text was extracted in the browser but has not been saved yet. Retry upload if this does not clear.',
+    summarizeTitle: 'PDF text is still being saved from the upload flow.',
+  },
   needs_ocr: {
     label: 'OCR Needed',
     message: 'No selectable PDF text was found. OCR or a text-selectable PDF is required before summaries.',
@@ -1069,7 +1074,7 @@ const getDocumentProcessingMessage = (doc) => {
   const meta = getDocumentProcessingMeta(doc);
   if (!meta) return '';
   const status = normalizeProcessingStatus(doc?.processingStatus ?? doc?.processing_status);
-  if (['failed', 'needs_ocr', 'no_text_available', 'action_required'].includes(status)) {
+  if (['failed', 'text_pending', 'needs_ocr', 'no_text_available', 'action_required'].includes(status)) {
     return String(doc?.processingError ?? doc?.processing_error ?? '').replace(/\s+/g, ' ').trim() || meta.message;
   }
   return meta.message;

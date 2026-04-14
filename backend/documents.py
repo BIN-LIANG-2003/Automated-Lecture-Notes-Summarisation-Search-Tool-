@@ -25,6 +25,11 @@ def upload_file():
     return document_service.upload_file()
 
 
+@documents_bp.route('/api/documents/<int:doc_id>/pdf-text', methods=['POST'])
+def finalize_pdf_upload_text(doc_id):
+    return document_service.finalize_pdf_upload_text(doc_id)
+
+
 @documents_bp.route('/api/documents/<int:doc_id>', methods=['GET'])
 def get_document(doc_id):
     return document_service.get_document(doc_id)

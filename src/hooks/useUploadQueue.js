@@ -99,6 +99,7 @@ export default function useUploadQueue({
   const uploadSingleFile = async (item, activeUser) => {
     const file = item?.file;
     const formData = new FormData();
+    let pdfExtraction = null;
     formData.append('file', file);
     formData.append('username', activeUser);
     if (activeWorkspaceId) {
@@ -121,16 +122,17 @@ export default function useUploadQueue({
               : row
           )
         );
-        const extraction = await extractSelectableTextFromPdfFile(file);
-        formData.append('client_pdf_text_status', extraction.status || 'client_failed');
-        if (extraction.text) {
-          formData.append('client_extracted_text', extraction.text);
+        pdfExtraction = await extractSelectableTextFromPdfFile(file);
+        const uploadTextStatus = pdfExtraction.text ? 'text_pending' : pdfExtraction.status || 'client_failed';
+        formData.append('client_pdf_text_status', uploadTextStatus);
+        if (pdfExtraction.text) {
+          formData.append('client_pdf_text_deferred', '1');
         }
-        if (extraction.pageCount) {
-          formData.append('client_pdf_page_count', String(extraction.pageCount));
+        if (pdfExtraction.pageCount) {
+          formData.append('client_pdf_page_count', String(pdfExtraction.pageCount));
         }
-        if (extraction.error) {
-          formData.append('client_pdf_text_error', extraction.error);
+        if (pdfExtraction.error) {
+          formData.append('client_pdf_text_error', pdfExtraction.error);
         }
         setUploadQueue((prev) =>
           prev.map((row) =>
@@ -139,11 +141,11 @@ export default function useUploadQueue({
                   ...row,
                   progress: 45,
                   message:
-                    extraction.status === 'needs_ocr'
+                    pdfExtraction.status === 'needs_ocr'
                       ? 'No selectable PDF text found; saving OCR-needed state...'
-                      : extraction.status === 'client_failed'
+                      : pdfExtraction.status === 'client_failed'
                         ? 'Uploading file; server will retry text extraction...'
-                        : 'Uploading file and prepared text...',
+                        : 'Uploading file before finalizing extracted text...',
                 }
               : row
           )
@@ -159,6 +161,35 @@ export default function useUploadQueue({
           ok: false,
           message: String(errorData?.error || 'Upload failed'),
         };
+      }
+      const uploadPayload = await response.json().catch(() => ({}));
+      if (pdfExtraction?.text && uploadPayload?.document_id) {
+        setUploadQueue((prev) =>
+          prev.map((row) =>
+            row.id === item.id
+              ? {
+                  ...row,
+                  progress: 80,
+                  message: 'Saving extracted PDF text...',
+                }
+              : row
+          )
+        );
+        const finalizeResponse = await authFetch(`/api/documents/${uploadPayload.document_id}/pdf-text`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            status: 'processed',
+            text: pdfExtraction.text,
+          }),
+        });
+        if (!finalizeResponse.ok) {
+          const errorData = await finalizeResponse.json().catch(() => ({}));
+          return {
+            ok: false,
+            message: String(errorData?.error || 'PDF text finalization failed'),
+          };
+        }
       }
       return { ok: true, message: '' };
     } catch {
