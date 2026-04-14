@@ -48,9 +48,25 @@ async function loginAsAlice(page) {
   if (await loginField.isVisible().catch(() => false)) {
     await loginField.fill('alice');
     await page.locator('#login-password').fill('password123');
+    const loginResponsePromise = page.waitForResponse(
+      (response) =>
+        response.url().includes('/api/auth/login') &&
+        response.request().method() === 'POST'
+    );
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+    const loginResponse = await loginResponsePromise;
+    const loginBody = await loginResponse.text().catch(() => '');
+    expect(
+      loginResponse.ok(),
+      `login failed: ${loginResponse.status()} ${loginBody}`
+    ).toBeTruthy();
+    await page.waitForFunction(() => !window.location.hash.startsWith('#/login'), undefined, {
+      timeout: 15_000,
+    });
   }
-  await expect(page.locator('.notion-top-summary-btn')).toBeVisible();
+  await expect(page.locator('.notion-shell')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('#main')).toBeVisible({ timeout: 15_000 });
+  await expect(page.locator('.notion-top-summary-btn')).toBeVisible({ timeout: 15_000 });
 }
 
 async function goToMyFiles(page) {
