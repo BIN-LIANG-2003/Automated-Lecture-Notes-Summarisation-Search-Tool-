@@ -41,15 +41,12 @@ export default function WorkspaceSidebar({
   showRecentSection,
   recentMenuRef,
   recentDocs,
-  sidebarMenuDocId,
-  onToggleSidebarMenu,
   onOpenRecentDocument,
-  onDownloadRecentDocument,
-  downloadingRecentDocId,
   onCollapseSidebar,
 }) {
   const activeWorkspaceLabel = activeWorkspace?.name || `${accountName}'s Workspace`;
   const activeWorkspaceIcon = getWorkspaceIconLabel(activeWorkspace, accountName);
+  const showWorkspaceSettingsButton = activeWorkspace?.is_owner !== false;
   return (
     <aside
       className={`notion-sidebar${mobileSidebarOpen ? ' is-open' : ''}`}
@@ -118,14 +115,16 @@ export default function WorkspaceSidebar({
           </div>
 
           <div className="notion-account-tools">
-            <button
-              type="button"
-              className="notion-chip-btn"
-              onClick={onOpenWorkspaceSettings}
-              disabled={!canOpenWorkspaceSettings}
-            >
-              Settings
-            </button>
+            {showWorkspaceSettingsButton && (
+              <button
+                type="button"
+                className="notion-chip-btn"
+                onClick={onOpenWorkspaceSettings}
+                disabled={!canOpenWorkspaceSettings}
+              >
+                Settings
+              </button>
+            )}
             <button
               type="button"
               className="notion-chip-btn"
@@ -179,7 +178,7 @@ export default function WorkspaceSidebar({
           <div className="notion-account-divider" />
 
           <button type="button" className="notion-account-link" onClick={onOpenAccountManager}>
-            Add Another Account
+            Manage Accounts
           </button>
           <button type="button" className="notion-account-link" onClick={onAuthAction}>
             {isLoggedIn ? 'Sign Out' : 'Sign In'}
@@ -257,9 +256,7 @@ export default function WorkspaceSidebar({
               recentDocs.map((doc) => (
                 <div
                   key={doc.id}
-                  className={`notion-sidebar-doc-row ${Number(activeDocId) === Number(doc.id) ? 'active' : ''} ${
-                    sidebarMenuDocId === doc.id ? 'menu-open' : ''
-                  }`}
+                  className={`notion-sidebar-doc-row ${Number(activeDocId) === Number(doc.id) ? 'active' : ''}`}
                 >
                   <button
                     type="button"
@@ -271,29 +268,6 @@ export default function WorkspaceSidebar({
                     </span>
                     <span className="notion-sidebar-doc-label">{doc.title}</span>
                   </button>
-
-                  <div className="notion-sidebar-doc-actions">
-                    <button
-                      type="button"
-                      className="notion-sidebar-doc-more"
-                      aria-label={`${doc.title} more actions`}
-                      aria-expanded={sidebarMenuDocId === doc.id ? 'true' : 'false'}
-                      onClick={() => onToggleSidebarMenu(doc.id)}
-                    >
-                      ⋯
-                    </button>
-
-                    {sidebarMenuDocId === doc.id && (
-                      <button
-                        type="button"
-                        className="notion-sidebar-doc-download"
-                        onClick={() => onDownloadRecentDocument?.(doc)}
-                        disabled={Number(downloadingRecentDocId) === Number(doc.id)}
-                      >
-                        {Number(downloadingRecentDocId) === Number(doc.id) ? 'Downloading...' : 'Download'}
-                      </button>
-                    )}
-                  </div>
                 </div>
               ))
             ) : (

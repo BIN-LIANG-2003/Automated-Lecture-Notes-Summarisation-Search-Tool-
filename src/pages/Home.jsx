@@ -278,6 +278,8 @@ const DEFAULT_WORKSPACE_SETTINGS = {
   link_sharing_mode: 'workspace',
   restrict_invites_to_domains: false,
   allowed_email_domains: '',
+  block_invites_from_domains: false,
+  blocked_email_domains: '',
   allow_member_share_management: false,
   max_active_share_links_per_document: 5,
   auto_revoke_previous_share_links: false,
@@ -901,6 +903,7 @@ const normalizeWorkspaceSettings = (raw) => {
   );
   const sidebarDensity = normalizeSidebarDensity(source.sidebar_density);
   const allowedEmailDomains = normalizeWorkspaceDomainList(source.allowed_email_domains);
+  const blockedEmailDomains = normalizeWorkspaceDomainList(source.blocked_email_domains);
 
   return {
     workspace_icon: normalizeWorkspaceIcon(workspaceIcon),
@@ -968,6 +971,10 @@ const normalizeWorkspaceSettings = (raw) => {
       source.restrict_invites_to_domains ?? DEFAULT_WORKSPACE_SETTINGS.restrict_invites_to_domains
     ),
     allowed_email_domains: allowedEmailDomains,
+    block_invites_from_domains: Boolean(
+      source.block_invites_from_domains ?? DEFAULT_WORKSPACE_SETTINGS.block_invites_from_domains
+    ),
+    blocked_email_domains: blockedEmailDomains,
     allow_member_share_management: Boolean(
       source.allow_member_share_management ?? DEFAULT_WORKSPACE_SETTINGS.allow_member_share_management
     ),
@@ -1417,11 +1424,8 @@ export default function HomePage() {
   );
   const [workspaceSettingsTab, setWorkspaceSettingsTab] = useState('general');
   const [workspaceInviteDraft, setWorkspaceInviteDraft] = useState('');
-  const [latestInviteLinks, setLatestInviteLinks] = useState([]);
   const [latestInviteDelivery, setLatestInviteDelivery] = useState(null);
-  const [inviteCopied, setInviteCopied] = useState(false);
   const [messagesOpenRequest, setMessagesOpenRequest] = useState({ key: 0, tab: 'friends' });
-  const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
   const [userNotificationPreferences, setUserNotificationPreferences] = useState(() =>
     normalizeUserNotificationPreferences(initialAuthSession.preferences)
   );
@@ -1525,9 +1529,9 @@ export default function HomePage() {
     () => buildWorkspaceThemeStyle(activeWorkspaceSettings),
     [activeWorkspaceSettings]
   );
-  const trustedInviteDomains = useMemo(
-    () => parseWorkspaceDomainList(activeWorkspaceSettings.allowed_email_domains),
-    [activeWorkspaceSettings.allowed_email_domains]
+  const blockedInviteDomains = useMemo(
+    () => parseWorkspaceDomainList(activeWorkspaceSettings.blocked_email_domains),
+    [activeWorkspaceSettings.blocked_email_domains]
   );
   const canCurrentUserManageShareLinks = useMemo(() => {
     if (!workspaceReady || !isLoggedIn || !username || !activeWorkspace) return false;
@@ -1656,12 +1660,6 @@ export default function HomePage() {
       }).length,
     [inviteItems]
   );
-  const workspaceInviteLink = useMemo(() => {
-    if (latestInviteLinks.length) return latestInviteLinks[0];
-    const latestInvite = inviteItems.find((item) => typeof item === 'object' && item?.invite_url);
-    return latestInvite?.invite_url || '';
-  }, [latestInviteLinks, inviteItems]);
-
   const showToast = (message, tone = 'info') => {
     const nextMessage = String(message || '').trim();
     if (!nextMessage) return;
@@ -1973,7 +1971,6 @@ export default function HomePage() {
     if (shouldOpenWorkspaceAccessPanel(notification)) {
       setWorkspaceInviteDraft('');
       setLatestInviteDelivery(null);
-      setInviteCopied(false);
       setWorkspaceInviteOpen(true);
     } else {
       setWorkspaceInviteOpen(false);
@@ -2487,9 +2484,7 @@ export default function HomePage() {
       preferredWorkspaceId: preferredWorkspaceIdFromNavigation,
     });
     setWorkspaceInviteDraft('');
-    setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
-    setInviteCopied(false);
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
@@ -2730,7 +2725,6 @@ export default function HomePage() {
         setAccountManagerOpen(false);
         setWorkspaceManagerOpen(false);
         setTrashModalOpen(false);
-        setInviteCopied(false);
         clearDragUploadState();
         if (inputDialogState.open) {
           closeInputDialog(false);
@@ -2959,15 +2953,21 @@ export default function HomePage() {
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
     setWorkspaceManagerOpen(false);
-    setInviteCopied(false);
-    setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
   };
 
   const openWorkspaceSettingsPanel = () => {
+    if (isLoggedIn && activeWorkspace?.is_owner === false) {
+      setWorkspaceManagerOpen(true);
+      setWorkspaceSettingsOpen(false);
+      setWorkspaceInviteOpen(false);
+      setAccountManagerOpen(false);
+      setWorkspaceMenuOpen(false);
+      return;
+    }
     setWorkspaceNameDraft(activeWorkspace?.name || `${accountName}'s Workspace`);
     setWorkspaceSettingsDraft(normalizeWorkspaceSettings(activeWorkspace?.settings));
-    setWorkspaceSettingsTab(activeWorkspace?.is_owner === false ? 'danger' : 'general');
+    setWorkspaceSettingsTab('general');
     setWorkspaceSettingsOpen(true);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
@@ -2982,7 +2982,6 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
     setAccountManagerOpen(false);
     setWorkspaceManagerOpen(false);
-    setInviteCopied(false);
     setWorkspaceMenuOpen(false);
   };
 
@@ -3157,9 +3156,7 @@ export default function HomePage() {
         setActiveDocDraftHtml('');
         setActiveDocSaveError('');
         clearActiveDocShareState();
-        setLatestInviteLinks([]);
         setLatestInviteDelivery(null);
-        setInviteCopied(false);
         applyWorkspaceLandingView(DEFAULT_WORKSPACE_SETTINGS);
       } catch (err) {
         showToast(err.message || 'Failed to create workspace', 'error');
@@ -3196,9 +3193,7 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     clearActiveDocShareState();
-    setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
-    setInviteCopied(false);
     applyWorkspaceLandingView(nextWorkspace.settings || DEFAULT_WORKSPACE_SETTINGS);
   };
 
@@ -3230,9 +3225,7 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     clearActiveDocShareState();
-    setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
-    setInviteCopied(false);
     applyWorkspaceLandingView(targetWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
   };
 
@@ -3301,32 +3294,6 @@ export default function HomePage() {
     });
   };
 
-  const buildWorkspaceInviteMessage = (inviteItem = null) => {
-    const inviteObject = inviteItem && typeof inviteItem === 'object' ? inviteItem : null;
-    const inviteUrl = String(inviteObject?.invite_url || workspaceInviteLink || '').trim();
-    if (!inviteUrl) return '';
-
-    const workspaceLabel =
-      String(activeWorkspace?.name || `${accountName}'s Workspace`).trim() || 'StudyHub Workspace';
-    const inviterLabel =
-      String(username || accountName || 'A StudyHub member').trim() || 'A StudyHub member';
-    const recipientLabel = String(inviteObject?.email || '').trim();
-    const expiryLabel = inviteObject?.expires_at ? formatDateTimeLabel(inviteObject.expires_at) : '';
-
-    return [
-      `Subject: Join ${workspaceLabel} on StudyHub`,
-      '',
-      recipientLabel ? `Hello ${recipientLabel},` : 'Hello,',
-      '',
-      `${inviterLabel} invited you to join "${workspaceLabel}" on StudyHub.`,
-      'Open the invitation link below and sign in with the same invited email address to join the workspace:',
-      inviteUrl,
-      expiryLabel ? `This invitation link expires at ${expiryLabel}.` : '',
-    ]
-      .filter(Boolean)
-      .join('\n');
-  };
-
   const handleInviteMembers = async () => {
     if (!activeWorkspace) return;
     const candidates = workspaceInviteDraft
@@ -3343,13 +3310,13 @@ export default function HomePage() {
       showToast(`The following emails are invalid: ${invalidEmails.join(', ')}`, 'warning');
       return;
     }
-    if (activeWorkspaceSettings.restrict_invites_to_domains && trustedInviteDomains.length) {
-      const outsideTrustedDomains = candidates.filter(
-        (email) => !trustedInviteDomains.includes(getEmailDomain(email))
+    if (activeWorkspaceSettings.block_invites_from_domains && blockedInviteDomains.length) {
+      const blockedDomainEmails = candidates.filter(
+        (email) => blockedInviteDomains.includes(getEmailDomain(email))
       );
-      if (outsideTrustedDomains.length) {
+      if (blockedDomainEmails.length) {
         showToast(
-          `Invite emails must match trusted domains: ${trustedInviteDomains.join(', ')}`,
+          `These email domains cannot join this workspace: ${blockedInviteDomains.join(', ')}`,
           'warning'
         );
         return;
@@ -3372,7 +3339,6 @@ export default function HomePage() {
         if (!res.ok) throw new Error(payload.error || 'Failed to create invitations');
 
         const createdItems = Array.isArray(payload.created) ? payload.created.filter(Boolean) : [];
-        const links = createdItems.map((item) => item?.invite_url).filter(Boolean);
         const failedItems = Array.isArray(payload.send_errors)
           ? payload.send_errors
               .map((item) => ({
@@ -3389,7 +3355,6 @@ export default function HomePage() {
           ? Math.max(0, sentCountRaw)
           : Math.max(0, createdItems.length - failedItems.length);
 
-        setLatestInviteLinks(links);
         setLatestInviteDelivery({
           type: 'create',
           createdCount: createdItems.length || candidates.length,
@@ -3400,23 +3365,22 @@ export default function HomePage() {
           manualShareRecommended: Boolean(payload.manual_share_recommended || failedItems.length),
         });
         setWorkspaceInviteDraft('');
-        setInviteCopied(false);
         await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
 
         if (failedItems.length) {
           const createdCount = createdItems.length || candidates.length;
           if (sentCount > 0) {
             showToast(
-              `Created ${createdCount} invite(s). ${sentCount} email(s) were sent, and ${failedItems.length} need manual sharing.`,
+              `Created ${createdCount} invite(s). ${sentCount} email(s) were sent, and ${failedItems.length} could not be delivered.`,
               'warning'
             );
           } else {
             showToast(
-              `Created ${createdCount} invite(s), but emails were not sent automatically. Use Copy Invite Message.`,
+              `Created ${createdCount} invite(s), but emails were not sent automatically. Try resending them later.`,
               'warning'
             );
           }
-        } else if (links.length || candidates.length) {
+        } else if (createdItems.length || candidates.length) {
           showWorkspaceToast(
             'sharing',
             `Sent ${sentCount || createdItems.length || candidates.length} invitation email(s).`,
@@ -3443,7 +3407,6 @@ export default function HomePage() {
       }),
     }));
     setWorkspaceInviteDraft('');
-    setLatestInviteLinks([]);
     setLatestInviteDelivery({
       type: 'local',
       createdCount: candidates.length,
@@ -3453,7 +3416,6 @@ export default function HomePage() {
       invalidEmails: [],
       manualShareRecommended: true,
     });
-    setInviteCopied(false);
     showToast(
       `Saved ${candidates.length} invite target(s) locally. Sign in and configure email delivery to send real invite emails.`,
       'warning'
@@ -3607,9 +3569,6 @@ export default function HomePage() {
             },
           ];
 
-      if (payload?.invite_url) {
-        setLatestInviteLinks([payload.invite_url]);
-      }
       setLatestInviteDelivery({
         type: 'resend',
         createdCount: 1,
@@ -3619,67 +3578,18 @@ export default function HomePage() {
         invalidEmails: [],
         manualShareRecommended: !emailSent,
       });
-      setInviteCopied(false);
       await refreshWorkspaces({ preferredWorkspaceId: activeWorkspace.id });
 
       if (emailSent) {
         showWorkspaceToast('sharing', `Resent invitation email to ${targetEmail || 'recipient'}.`, 'success');
       } else {
-        showToast('Invitation refreshed, but email was not sent automatically. Use Copy Invite Message.', 'warning');
+        showToast('Invitation refreshed, but email was not sent automatically. Try resending it later.', 'warning');
       }
     } catch (err) {
       showToast(err.message || 'Failed to resend invitation email', 'error');
     } finally {
       setWorkspaceActionLoading(false);
     }
-  };
-
-  const handleCopyInviteLink = async (inviteItem = null) => {
-    const inviteUrl =
-      typeof inviteItem === 'object' && inviteItem
-        ? String(inviteItem?.invite_url || '').trim()
-        : String(workspaceInviteLink || '').trim();
-    if (!inviteUrl) {
-      showToast('There is no invitation link to copy.', 'warning');
-      return;
-    }
-    try {
-      await copyTextToClipboard(inviteUrl);
-      if (!inviteItem) setInviteCopied(true);
-      showWorkspaceToast('sharing', 'Invite link copied.', 'success');
-    } catch {
-      showToast('Copy failed. Please copy the link manually.', 'error');
-    }
-  };
-
-  const handleCopyInviteMessage = async (inviteItem = null) => {
-    const message = buildWorkspaceInviteMessage(inviteItem);
-    if (!message) {
-      showToast('There is no invitation message to copy yet.', 'warning');
-      return;
-    }
-    try {
-      await copyTextToClipboard(message);
-      showWorkspaceToast('sharing', 'Invite message copied.', 'success');
-    } catch {
-      showToast('Copy failed. Please copy the message manually.', 'error');
-    }
-  };
-
-  const handleSaveManualAccount = () => {
-    const draft = normalizeAccountRecord(accountDraft);
-    const target = draft;
-    if (!target) {
-      showToast('Please enter an account name.', 'warning');
-      return;
-    }
-    if (target.email && !EMAIL_REGEX.test(target.email)) {
-      showToast('Invalid email format.', 'warning');
-      return;
-    }
-    setSavedAccounts((prev) => upsertAccount(prev, target));
-    setAccountDraft({ username: '', email: '' });
-    handleSwitchAccount(target);
   };
 
   const handleRemoveSavedAccount = (targetUsername) => {
@@ -6894,6 +6804,7 @@ export default function HomePage() {
         }}
         canOpenWorkspaceSettings={
           Boolean(activeWorkspace) &&
+          activeWorkspace?.is_owner !== false &&
           !workspaceLoading &&
           !workspaceActionLoading
         }
@@ -6904,12 +6815,7 @@ export default function HomePage() {
         canOpenWorkspaceInvite={
           Boolean(activeWorkspace) &&
           !workspaceLoading &&
-          !workspaceActionLoading &&
-          !(
-            isLoggedIn &&
-            activeWorkspace?.is_owner === false &&
-            !activeWorkspaceSettings.allow_member_invites
-          )
+          !workspaceActionLoading
         }
         accountEmail={accountEmail}
         onOpenWorkspaceManager={() => {
@@ -6971,16 +6877,10 @@ export default function HomePage() {
         showRecentSection={activeWorkspaceSettings.show_recent_section}
         recentMenuRef={recentMenuRef}
         recentDocs={sidebarDocs}
-        sidebarMenuDocId={sidebarMenuDocId}
-        onToggleSidebarMenu={(docId) =>
-          setSidebarMenuDocId((prev) => (prev === docId ? null : docId))
-        }
         onOpenRecentDocument={(doc) => {
           setMobileSidebarOpen(false);
           openDocumentInPane(doc.id, { fromSidebar: true, seedDoc: doc });
         }}
-        onDownloadRecentDocument={handleDownloadRecentDocument}
-        downloadingRecentDocId={sidebarDownloadDocId}
         onCollapseSidebar={() => {
           setWorkspaceMenuOpen(false);
           setSidebarMenuDocId(null);
@@ -8750,48 +8650,16 @@ export default function HomePage() {
               </ul>
             </section>
 
-            <section className="notion-settings-block" aria-label="Add account">
-              <h4>Add Another Account</h4>
-              <div className="notion-inline-panel-grid">
-                <input
-                  type="text"
-                  value={accountDraft.username}
-                  onChange={(event) =>
-                    setAccountDraft((prev) => ({
-                      ...prev,
-                      username: event.target.value,
-                    }))
-                  }
-                  placeholder="Account name"
-                  autoFocus
-                />
-                <input
-                  type="email"
-                  value={accountDraft.email}
-                  onChange={(event) =>
-                    setAccountDraft((prev) => ({
-                      ...prev,
-                      email: event.target.value,
-                    }))
-                  }
-                  placeholder="Email (optional)"
-                />
-              </div>
-            </section>
-
             <div className="notion-modal-actions">
-              <button type="button" className="btn btn-primary" onClick={handleSaveManualAccount}>
-                Save and Continue to Sign-in
-              </button>
               <button
                 type="button"
-                className="btn"
+                className="btn btn-primary"
                 onClick={() => {
                   setAccountManagerOpen(false);
                   navigate('/login');
                 }}
               >
-                Add from Sign-in Page
+                Add Account
               </button>
               <button
                 type="button"
@@ -8852,17 +8720,18 @@ export default function HomePage() {
             workspaceInviteDraft={workspaceInviteDraft}
             onChangeWorkspaceInviteDraft={setWorkspaceInviteDraft}
             onInviteMembers={handleInviteMembers}
-            inviteCopied={inviteCopied}
-            onCopyInviteLink={handleCopyInviteLink}
-            onCopyInviteMessage={handleCopyInviteMessage}
-            workspaceInviteLink={workspaceInviteLink}
             latestInviteDelivery={latestInviteDelivery}
-            trustedInviteDomains={trustedInviteDomains}
+            blockedInviteDomains={blockedInviteDomains}
             defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
             workspaceSettingsDraft={workspaceSettingsDraft}
             updateWorkspaceSettingsDraft={updateWorkspaceSettingsDraft}
             onSaveWorkspaceAccessSettings={handleSaveWorkspaceAccessSettings}
             canManageAccessSettings={isLoggedIn && activeWorkspace?.is_owner !== false}
+            canInviteMembers={
+              !isLoggedIn ||
+              activeWorkspace?.is_owner !== false ||
+              Boolean(activeWorkspaceSettings.allow_member_invites)
+            }
             inviteItems={inviteItems}
             onResendInvitation={handleResendInvitation}
             onRemoveInvite={handleRemoveInvite}

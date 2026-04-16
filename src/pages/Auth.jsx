@@ -404,7 +404,7 @@ export default function AuthPage() {
               <span>
                 <strong>Keep me signed in on this device</strong>
                 <small>
-                  Opens email share and invite links with this account. StudyHub does not store your password.
+                  Opens email shares and workspace invitations with this account. StudyHub does not store your password.
                 </small>
               </span>
             </label>

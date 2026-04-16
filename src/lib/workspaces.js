@@ -37,6 +37,8 @@ const DEFAULT_WORKSPACE_SETTINGS = {
   link_sharing_mode: 'workspace',
   restrict_invites_to_domains: false,
   allowed_email_domains: '',
+  block_invites_from_domains: false,
+  blocked_email_domains: '',
   allow_member_share_management: false,
   max_active_share_links_per_document: 5,
   auto_revoke_previous_share_links: false,

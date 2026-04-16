@@ -230,7 +230,7 @@ test('login defaults to the current user workspace before member workspaces', as
   await expect.poll(() => requestedWorkspaceIds).toContain('ws-bob-own');
 });
 
-test('workspace member can open settings and leave a shared workspace', async ({ page }) => {
+test('workspace member removes a shared workspace from workspace manager', async ({ page }) => {
   let includeSharedWorkspace = true;
   const workspacePayload = () => [
     {
@@ -310,13 +310,13 @@ test('workspace member can open settings and leave a shared workspace', async ({
   await expect(page.locator('.notion-top-title-group strong')).toHaveText("Alice's Workspace");
 
   await page.locator('.notion-workspace-trigger').click();
-  await expect(page.getByRole('button', { name: 'Settings' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Settings' }).click();
-
-  const settingsDialog = page.getByRole('dialog', { name: 'Workspace Settings' });
-  await expect(settingsDialog.getByRole('button', { name: 'Remove Workspace' })).toBeVisible();
-  await expect(settingsDialog.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
-  await settingsDialog.getByRole('button', { name: 'Close workspace settings' }).click();
+  await expect(page.getByRole('button', { name: 'Settings' })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Invite Members' }).click();
+  const blockedInviteDialog = page.getByRole('dialog', { name: 'Invite Members' });
+  await expect(blockedInviteDialog.getByRole('heading', { name: 'Invitations are disabled' })).toBeVisible();
+  await expect(blockedInviteDialog.getByText('Please contact the workspace owner.')).toBeVisible();
+  await expect(blockedInviteDialog.getByRole('button', { name: 'Send Invite Emails' })).toHaveCount(0);
+  await blockedInviteDialog.getByLabel('Close invite members').click();
 
   await page.locator('.notion-workspace-trigger').click();
   await page.getByRole('button', { name: 'Manage workspaces' }).click();
@@ -637,6 +637,8 @@ test('workspace access settings are managed from invite members modal', async ({
     allow_member_invites: false,
     restrict_invites_to_domains: false,
     allowed_email_domains: '',
+    block_invites_from_domains: false,
+    blocked_email_domains: '',
     default_invite_expiry_days: 7,
     link_sharing_mode: 'workspace',
     default_share_expiry_days: 7,
@@ -741,14 +743,16 @@ test('workspace access settings are managed from invite members modal', async ({
   const inviteDialog = page.getByRole('dialog', { name: 'Invite Members' });
   await expect(inviteDialog.getByRole('heading', { name: 'Invitation Settings' })).toBeVisible();
   await expect(inviteDialog.getByLabel('Link Sharing')).toHaveCount(0);
-  await inviteDialog.getByLabel('Trusted Domains').fill('school.edu');
-  await inviteDialog.getByLabel('Invitation Link Expiry (days)').fill('12');
+  await inviteDialog.getByLabel('Blocked Domains').fill('blocked.edu');
+  await inviteDialog.getByLabel('Invitation Expiry (days)').fill('12');
   await inviteDialog.getByLabel('Allow members to invite others').check();
+  await inviteDialog.getByLabel('Block specific email domains').check();
   await inviteDialog.getByRole('button', { name: 'Save Invitation Settings' }).click();
 
-  await expect.poll(() => savedSettings?.allowed_email_domains).toBe('school.edu');
+  await expect.poll(() => savedSettings?.blocked_email_domains).toBe('blocked.edu');
   expect(savedSettings).toMatchObject({
     allow_member_invites: true,
+    block_invites_from_domains: true,
     default_invite_expiry_days: 12,
     link_sharing_mode: 'workspace',
   });

@@ -179,6 +179,36 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertIn('disabled', payload['send_errors'][0]['error'])
         mock_send_invite.assert_not_called()
 
+    @patch('backend.workspace_service.send_workspace_invite_email', return_value=(True, ''))
+    def test_workspace_invite_rejects_blocked_email_domains(self, mock_send_invite):
+        settings = {
+            **DEFAULT_WORKSPACE_SETTINGS,
+            'block_invites_from_domains': True,
+            'blocked_email_domains': 'blocked.edu, spam.test',
+        }
+        conn = self._connection()
+        try:
+            conn.execute(
+                'UPDATE workspaces SET settings_json = ? WHERE id = ?',
+                (workspace_settings_to_json(settings), self.workspace_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace_id}/invitations',
+            headers=self._auth_headers(),
+            json={'emails': ['student@blocked.edu']},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        payload = response.get_json()
+        self.assertEqual(payload['error'], 'These email domains cannot join this workspace')
+        self.assertEqual(payload['invalid_emails'], ['student@blocked.edu'])
+        self.assertEqual(payload['blocked_domains'], ['blocked.edu', 'spam.test'])
+        mock_send_invite.assert_not_called()
+
     def _insert_document(
         self,
         title,

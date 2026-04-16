@@ -7080,6 +7080,20 @@ body.notion-home-body .skip-link:focus-visible{
   position:static;
 }
 
+.notion-top-actions > .studyhub-messages-trigger--topbar,
+.notion-top-actions > .studyhub-feedback-trigger--topbar,
+.notion-top-actions > .notion-top-summary-btn{
+  width:156px;
+  min-width:156px;
+  height:42px;
+  min-height:42px;
+  padding:0 14px;
+  box-sizing:border-box;
+  display:inline-flex;
+  align-items:center;
+  justify-content:center;
+}
+
 .studyhub-messages-badge{
   min-width:18px;
   height:18px;
@@ -9378,14 +9392,12 @@ body.notion-home-body .skip-link:focus-visible{
     flex:0 1 auto;
   }
 
+  .notion-top-actions > .studyhub-messages-trigger--topbar,
+  .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-top-summary-btn{
     flex:1 1 180px;
     width:auto;
-  }
-
-  .notion-top-actions > .studyhub-messages-trigger--topbar,
-  .notion-top-actions > .studyhub-feedback-trigger--topbar{
-    flex:0 0 auto;
+    min-width:min(156px, 100%);
   }
 
   .notion-overview-hero,
@@ -9577,12 +9589,11 @@ body.notion-home-body .skip-link:focus-visible{
   }
 
   .notion-top-actions > .studyhub-messages-trigger--topbar,
-  .notion-top-actions > .studyhub-feedback-trigger--topbar{
-    flex:0 0 auto;
-  }
-
+  .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-top-summary-btn{
     flex:1 1 100%;
+    width:100%;
+    min-width:0;
   }
 
   .notion-settings-nav{

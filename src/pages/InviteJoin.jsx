@@ -32,7 +32,7 @@ export default function InviteJoinPage() {
 
   const fetchInvitation = useCallback(async () => {
     if (!token) {
-      setError('Invalid invitation link.');
+      setError('Invalid invitation.');
       setLoading(false);
       return;
     }

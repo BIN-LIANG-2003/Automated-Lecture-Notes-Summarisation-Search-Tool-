@@ -215,6 +215,13 @@ def normalize_workspace_settings(raw_settings):
     base['allowed_email_domains'] = normalize_workspace_domain_list(
         source.get('allowed_email_domains', base['allowed_email_domains'])
     )
+    base['block_invites_from_domains'] = parse_bool(
+        source.get('block_invites_from_domains', base['block_invites_from_domains']),
+        False,
+    )
+    base['blocked_email_domains'] = normalize_workspace_domain_list(
+        source.get('blocked_email_domains', base['blocked_email_domains'])
+    )
     base['allow_member_share_management'] = parse_bool(
         source.get('allow_member_share_management', base['allow_member_share_management']),
         False,

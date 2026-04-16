@@ -565,18 +565,18 @@ def create_workspace_invitations(workspace_id):
             return jsonify({'error': 'Only workspace owner can invite members'}), 403
         is_owner_inviter = workspace_row.get('owner_username') == username
 
-        trusted_domains = [
-            item for item in re.split(r'[\s,;]+', workspace_settings.get('allowed_email_domains', '')) if item
+        blocked_domains = [
+            item for item in re.split(r'[\s,;]+', workspace_settings.get('blocked_email_domains', '')) if item
         ]
-        if workspace_settings.get('restrict_invites_to_domains') and trusted_domains:
+        if workspace_settings.get('block_invites_from_domains') and blocked_domains:
             invalid_domain_emails = [
-                email for email in normalized_emails if email.split('@', 1)[-1] not in trusted_domains
+                email for email in normalized_emails if email.split('@', 1)[-1] in blocked_domains
             ]
             if invalid_domain_emails:
                 return jsonify({
-                    'error': 'Invitation emails must match the trusted workspace domains',
+                    'error': 'These email domains cannot join this workspace',
                     'invalid_emails': invalid_domain_emails,
-                    'allowed_domains': trusted_domains,
+                    'blocked_domains': blocked_domains,
                 }), 400
 
         requested_expiry = data.get('expiry_days', None)
