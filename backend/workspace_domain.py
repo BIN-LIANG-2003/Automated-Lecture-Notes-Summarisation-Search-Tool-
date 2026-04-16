@@ -45,6 +45,16 @@ def normalize_workspace_accent_color(value):
     return DEFAULT_WORKSPACE_SETTINGS['accent_color']
 
 
+def normalize_workspace_icon(value):
+    raw = str(value or '').strip()
+    if re.fullmatch(r'data:image/(png|jpe?g|webp|gif);base64,[a-z0-9+/=]+', raw, re.IGNORECASE):
+        if len(raw) <= 360000:
+            return raw
+    if raw.lower().startswith('data:'):
+        return DEFAULT_WORKSPACE_SETTINGS['workspace_icon']
+    return raw[:2] or DEFAULT_WORKSPACE_SETTINGS['workspace_icon']
+
+
 def normalize_workspace_domain_token(value):
     raw = str(value or '').strip().lower().lstrip('@')
     if raw.startswith('http://') or raw.startswith('https://'):
@@ -85,8 +95,7 @@ def normalize_workspace_settings(raw_settings):
         source = {}
 
     base = dict(DEFAULT_WORKSPACE_SETTINGS)
-    workspace_icon = str(source.get('workspace_icon', base['workspace_icon']) or '').strip()
-    base['workspace_icon'] = workspace_icon[:2] or DEFAULT_WORKSPACE_SETTINGS['workspace_icon']
+    base['workspace_icon'] = normalize_workspace_icon(source.get('workspace_icon', base['workspace_icon']))
 
     description = str(source.get('description', base['description']) or '').strip()
     base['description'] = re.sub(r'\s+', ' ', description)[:220]

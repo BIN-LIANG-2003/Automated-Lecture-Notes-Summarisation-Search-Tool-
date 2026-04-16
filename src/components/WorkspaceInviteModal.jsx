@@ -85,17 +85,6 @@ const formatDomains = (value) =>
     .map((item) => item.trim())
     .filter(Boolean);
 
-const getLinkSharingModeHelp = (mode) => {
-  const safeMode = String(mode || '').trim().toLowerCase();
-  if (safeMode === 'restricted') {
-    return 'Restricted blocks document share links. People must already be inside the workspace to open files.';
-  }
-  if (safeMode === 'public') {
-    return 'Anyone With Link makes document access public. Shared links still work, and direct document access is no longer limited to workspace members.';
-  }
-  return 'Workspace Members keeps documents private by default, but valid share links still open the document while workspace members keep their normal access.';
-};
-
 export default function WorkspaceInviteModal({
   open = false,
   workspaceActionLoading = false,
@@ -190,110 +179,104 @@ export default function WorkspaceInviteModal({
           </button>
         </header>
 
-        <div className="notion-invite-modal-layout">
-          <section className="notion-settings-block">
-            <h4>Invite People</h4>
-            <p className="notion-settings-help">
-              Invitees must sign in with the same email address that was invited. Then the link adds them directly.
-            </p>
-            <label htmlFor="workspace-invite-email-input" className="sr-only">
-              Invite email
-            </label>
-            <textarea
-              id="workspace-invite-email-input"
-              rows={6}
-              value={workspaceInviteDraft}
-              onChange={(event) => onChangeWorkspaceInviteDraft?.(event.target.value)}
-              placeholder="alice@school.edu, bob@school.edu"
-              disabled={workspaceActionLoading}
-              autoFocus
-            />
-            <div className="notion-modal-actions">
-              <button
-                type="button"
-                className="btn btn-primary"
-                onClick={onInviteMembers}
-                disabled={workspaceActionLoading}
-              >
-                {workspaceActionLoading
-                  ? 'Processing...'
-                  : isLoggedIn
-                    ? 'Send Invite Emails'
-                    : 'Save Invite Targets'}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onCopyInviteLink?.()}
-                disabled={workspaceActionLoading}
-              >
-                {inviteCopied ? 'Link Copied' : 'Copy Latest Link'}
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => onCopyInviteMessage?.()}
-                disabled={workspaceActionLoading}
-              >
-                Copy Invite Message
-              </button>
-            </div>
-            {workspaceInviteLink && (
-              <a
-                className="notion-inline-panel-hint notion-inline-panel-link"
-                href={workspaceInviteLink}
-                target="_blank"
-                rel="noreferrer"
-              >
-                {workspaceInviteLink}
-              </a>
-            )}
-          </section>
-
-          <section className="notion-settings-block">
-            <h4>Delivery Status</h4>
-            {latestInviteDelivery ? (
-              <div
-                className={`notion-invite-feedback ${
-                  latestInviteDelivery.emailFailedCount ? 'warning' : 'success'
-                }`}
-                role="status"
-              >
-                <strong>{inviteDeliverySummary.title}</strong>
-                <p>{inviteDeliverySummary.body}</p>
-                {latestInviteDelivery.invalidEmails?.length > 0 && (
-                  <p>Ignored invalid emails: {latestInviteDelivery.invalidEmails.join(', ')}</p>
-                )}
-                {latestInviteDelivery.failedItems?.length > 0 && (
-                  <ul className="notion-invite-feedback-list">
-                    {latestInviteDelivery.failedItems.map((item, index) => (
-                      <li key={`${item.email || 'invite-failure'}-${index}`}>
-                        <strong>{item.email || 'Unknown recipient'}</strong>
-                        <span>{item.error || 'Failed to send email'}</span>
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            ) : (
-              <p className="notion-settings-help">
-                No invite batch has been sent yet. Start by pasting one or more email addresses.
-              </p>
-            )}
-          </section>
-        </div>
-
-        <section className="notion-settings-block" aria-label="Access settings">
+        <section className="notion-settings-block notion-invite-compose-block">
           <div className="notion-doc-share-manager-head">
-            <h4>Access Settings</h4>
+            <div>
+              <h4>Invite People</h4>
+              <span className="notion-settings-help">
+                Enter one or more email addresses. Each recipient gets a private invite link for this workspace.
+              </span>
+            </div>
+          </div>
+          <label htmlFor="workspace-invite-email-input" className="sr-only">
+            Invite email
+          </label>
+          <textarea
+            id="workspace-invite-email-input"
+            rows={4}
+            value={workspaceInviteDraft}
+            onChange={(event) => onChangeWorkspaceInviteDraft?.(event.target.value)}
+            placeholder="alice@school.edu, bob@school.edu"
+            disabled={workspaceActionLoading}
+            autoFocus
+          />
+          <div className="notion-modal-actions notion-invite-primary-actions">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onInviteMembers}
+              disabled={workspaceActionLoading}
+            >
+              {workspaceActionLoading
+                ? 'Processing...'
+                : isLoggedIn
+                  ? 'Send Invite Emails'
+                  : 'Save Invite Targets'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onCopyInviteLink?.()}
+              disabled={workspaceActionLoading}
+            >
+              {inviteCopied ? 'Link Copied' : 'Copy Latest Link'}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => onCopyInviteMessage?.()}
+              disabled={workspaceActionLoading}
+            >
+              Copy Invite Message
+            </button>
+          </div>
+          {workspaceInviteLink && (
+            <a
+              className="notion-inline-panel-hint notion-inline-panel-link"
+              href={workspaceInviteLink}
+              target="_blank"
+              rel="noreferrer"
+            >
+              {workspaceInviteLink}
+            </a>
+          )}
+          {latestInviteDelivery && (
+            <div
+              className={`notion-invite-feedback ${
+                latestInviteDelivery.emailFailedCount ? 'warning' : 'success'
+              }`}
+              role="status"
+            >
+              <strong>{inviteDeliverySummary.title}</strong>
+              <p>{inviteDeliverySummary.body}</p>
+              {latestInviteDelivery.invalidEmails?.length > 0 && (
+                <p>Ignored invalid emails: {latestInviteDelivery.invalidEmails.join(', ')}</p>
+              )}
+              {latestInviteDelivery.failedItems?.length > 0 && (
+                <ul className="notion-invite-feedback-list">
+                  {latestInviteDelivery.failedItems.map((item, index) => (
+                    <li key={`${item.email || 'invite-failure'}-${index}`}>
+                      <strong>{item.email || 'Unknown recipient'}</strong>
+                      <span>{item.error || 'Failed to send email'}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+        </section>
+
+        <section className="notion-settings-block" aria-label="Invitation settings">
+          <div className="notion-doc-share-manager-head">
+            <h4>Invitation Settings</h4>
             <span className="notion-settings-help">
-              Invitation rules and document link behavior for this workspace.
+              Control who can create invite links and which email domains can join this workspace.
             </span>
           </div>
 
           <div className="notion-invite-access-grid">
             <div className="notion-invite-access-column">
-              <h5>Invitations and trusted domains</h5>
+              <h5>Invite link rules</h5>
               <label className="notion-checkbox-row">
                 <input
                   type="checkbox"
@@ -351,86 +334,6 @@ export default function WorkspaceInviteModal({
                   : 'No trusted domains configured. Leave the restriction off if any valid email can be invited.'}
               </p>
             </div>
-
-            <div className="notion-invite-access-column">
-              <h5>Link sharing</h5>
-              <div className="notion-settings-row">
-                <label htmlFor="workspace-invite-link-mode-select">Link Sharing</label>
-                <select
-                  id="workspace-invite-link-mode-select"
-                  value={accessSettings.link_sharing_mode || 'workspace'}
-                  onChange={(event) =>
-                    updateWorkspaceSettingsDraft?.({ link_sharing_mode: event.target.value })
-                  }
-                  disabled={ownerOnlyDisabled}
-                >
-                  <option value="restricted">Restricted</option>
-                  <option value="workspace">Workspace Members</option>
-                  <option value="public">Anyone With Link</option>
-                </select>
-              </div>
-              <p className="notion-settings-help">
-                {getLinkSharingModeHelp(accessSettings.link_sharing_mode)}
-              </p>
-              <div className="notion-settings-row">
-                <label htmlFor="workspace-invite-share-expiry-input">Share Link Expiry (days)</label>
-                <input
-                  id="workspace-invite-share-expiry-input"
-                  type="number"
-                  min="1"
-                  max="30"
-                  value={accessSettings.default_share_expiry_days || 7}
-                  onChange={(event) =>
-                    updateWorkspaceSettingsDraft?.({
-                      default_share_expiry_days: Number(event.target.value) || 7,
-                    })
-                  }
-                  disabled={ownerOnlyDisabled}
-                />
-              </div>
-              <div className="notion-settings-row">
-                <label htmlFor="workspace-invite-share-link-limit-input">Max Active Links Per Note</label>
-                <input
-                  id="workspace-invite-share-link-limit-input"
-                  type="number"
-                  min="1"
-                  max="20"
-                  value={accessSettings.max_active_share_links_per_document || 5}
-                  onChange={(event) =>
-                    updateWorkspaceSettingsDraft?.({
-                      max_active_share_links_per_document: Number(event.target.value) || 5,
-                    })
-                  }
-                  disabled={ownerOnlyDisabled}
-                />
-              </div>
-              <label className="notion-checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={Boolean(accessSettings.allow_member_share_management)}
-                  onChange={(event) =>
-                    updateWorkspaceSettingsDraft?.({
-                      allow_member_share_management: event.target.checked,
-                    })
-                  }
-                  disabled={ownerOnlyDisabled}
-                />
-                <span>Allow members to manage share links</span>
-              </label>
-              <label className="notion-checkbox-row">
-                <input
-                  type="checkbox"
-                  checked={Boolean(accessSettings.auto_revoke_previous_share_links)}
-                  onChange={(event) =>
-                    updateWorkspaceSettingsDraft?.({
-                      auto_revoke_previous_share_links: event.target.checked,
-                    })
-                  }
-                  disabled={ownerOnlyDisabled}
-                />
-                <span>Auto revoke existing active links when creating a new one</span>
-              </label>
-            </div>
           </div>
 
           <div className="notion-modal-actions">
@@ -440,11 +343,11 @@ export default function WorkspaceInviteModal({
               onClick={onSaveWorkspaceAccessSettings}
               disabled={ownerOnlyDisabled}
             >
-              {workspaceActionLoading ? 'Saving...' : 'Save Access Settings'}
+              {workspaceActionLoading ? 'Saving...' : 'Save Invitation Settings'}
             </button>
             {!canManageAccessSettings && (
               <p className="notion-settings-help">
-                Only the workspace owner can change access settings.
+                Only the workspace owner can change invitation settings.
               </p>
             )}
           </div>

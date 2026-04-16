@@ -17,11 +17,12 @@ from backend import create_app
 from backend.config import AUTH_COOKIE_NAME, DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend import document_service
+from backend.document_domain import extract_text_from_pdf_bytes
 from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
 from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input
 from backend.utils import parse_int, row_to_dict, utcnow_iso
-from backend.workspace_domain import ensure_owner_membership, workspace_settings_to_json
+from backend.workspace_domain import ensure_owner_membership, normalize_workspace_settings, workspace_settings_to_json
 
 
 class StudyHubBackendSmokeTests(unittest.TestCase):
@@ -924,6 +925,14 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(username_request.status_code, 201)
 
+    def test_workspace_settings_preserve_uploaded_image_icon(self):
+        icon_data_url = 'data:image/png;base64,iVBORw0KGgo='
+        normalized = normalize_workspace_settings({'workspace_icon': icon_data_url})
+        self.assertEqual(normalized['workspace_icon'], icon_data_url)
+
+        rejected = normalize_workspace_settings({'workspace_icon': 'data:image/svg+xml;base64,PHN2Zz4='})
+        self.assertEqual(rejected['workspace_icon'], DEFAULT_WORKSPACE_SETTINGS['workspace_icon'])
+
     def test_friend_file_share_accept_copies_document_to_recipient_workspace(self):
         self._insert_user('bob', 'bob@example.com')
         conn = self._connection()
@@ -970,8 +979,25 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             json={'recipient_username': 'bob', 'document_id': document_id, 'note': 'Use this one.'},
         )
         self.assertEqual(share_response.status_code, 201)
+        share_payload = share_response.get_json()
+        sent_file_messages = [
+            item for item in share_payload['summary']['messages']
+            if item.get('message_type') == 'friend_file_share'
+        ]
+        self.assertEqual(len(sent_file_messages), 1)
+        self.assertEqual(sent_file_messages[0]['direction'], 'sent')
+        self.assertEqual(sent_file_messages[0]['metadata']['document_title'], 'Friend Source Note')
+        self.assertEqual(sent_file_messages[0]['metadata']['note'], 'Use this one.')
 
         bob_summary = self.client.get('/api/friends/summary', headers=self._auth_headers('bob')).get_json()
+        received_file_messages = [
+            item for item in bob_summary['messages']
+            if item.get('message_type') == 'friend_file_share'
+        ]
+        self.assertEqual(len(received_file_messages), 1)
+        self.assertEqual(received_file_messages[0]['direction'], 'received')
+        self.assertEqual(received_file_messages[0]['metadata']['document_title'], 'Friend Source Note')
+        self.assertIn('Shared file: Friend Source Note', received_file_messages[0]['body'])
         pending = next(
             item for item in bob_summary['notifications']
             if item.get('type') == 'friend_file_share'
@@ -997,6 +1023,71 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertNotEqual(copied_filename, source_filename)
         with open(os.path.join('uploads', copied_filename), 'rb') as f:
             self.assertEqual(f.read(), b'friend share source text')
+
+    def test_friend_file_share_accept_rebuilds_copy_when_source_file_is_missing(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                'INSERT INTO friendships (user_a, user_b, created_at) VALUES (?, ?, ?)',
+                ('alice', 'bob', utcnow_iso()),
+            )
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    'ws-bob-rebuilt',
+                    'Bob Rebuilt Files',
+                    'Free',
+                    'bob',
+                    workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            ensure_owner_membership(conn, 'ws-bob-rebuilt', 'bob')
+            conn.commit()
+        finally:
+            conn.close()
+
+        document_id = self._insert_document(
+            'Missing Source PDF',
+            'fallback copy text from database',
+            file_type='pdf',
+            filename='missing-source-file.pdf',
+        )
+
+        share_response = self.client.post(
+            '/api/friends/file-shares',
+            headers=self._auth_headers(),
+            json={'recipient_username': 'bob', 'document_id': document_id},
+        )
+        self.assertEqual(share_response.status_code, 201)
+
+        bob_summary = self.client.get('/api/friends/summary', headers=self._auth_headers('bob')).get_json()
+        pending = next(
+            item for item in bob_summary['notifications']
+            if item.get('type') == 'friend_file_share'
+        )
+
+        accept_response = self.client.post(
+            f"/api/friends/file-shares/{pending['id']}/respond",
+            headers=self._auth_headers('bob'),
+            json={'action': 'accept', 'target_workspace_id': 'ws-bob-rebuilt'},
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        payload = accept_response.get_json()
+        self.assertEqual(payload['status'], 'accepted')
+        self.assertIn('rebuilt the copy from saved text', payload.get('warning', ''))
+        self.assertEqual(payload['document']['workspace_id'], 'ws-bob-rebuilt')
+
+        copied_filename = payload['document']['filename']
+        with open(os.path.join('uploads', copied_filename), 'rb') as f:
+            copied_text = extract_text_from_pdf_bytes(f.read())
+        self.assertIn('fallback copy text from database', copied_text)
 
     @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
     @patch('backend.shared.HF_TOKEN', 'hf-test-token')
@@ -1382,6 +1473,29 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(copy_doc['file_type'], 'docx')
         self.assertEqual(copy_payload['source_document_id'], document_id)
 
+        pdf_copy_response = self.client.put(
+            f'/api/documents/{document_id}/converted-file',
+            headers=self._auth_headers(),
+            json={
+                'output_format': 'pdf',
+                'save_mode': 'copy',
+                'title': 'Converted Copy.pdf',
+                'content_html': '<h1>Converted PDF Copy</h1><p>Edited PDF copy body</p>',
+            },
+        )
+        self.assertEqual(pdf_copy_response.status_code, 201)
+        pdf_copy_payload = pdf_copy_response.get_json()
+        pdf_copy_doc = pdf_copy_payload['document']
+        self.assertNotEqual(pdf_copy_doc['id'], document_id)
+        self.assertEqual(pdf_copy_doc['title'], 'Converted Copy.pdf')
+        self.assertEqual(pdf_copy_doc['file_type'], 'pdf')
+        pdf_copy_path = os.path.join('uploads', pdf_copy_doc['filename'])
+        self.assertTrue(os.path.exists(pdf_copy_path))
+        with open(pdf_copy_path, 'rb') as f:
+            pdf_copy_bytes = f.read()
+        self.assertIn('Edited PDF copy body', extract_text_from_pdf_bytes(pdf_copy_bytes, allow_ocr=False))
+        self.assertNotIn(b'STSong', pdf_copy_bytes)
+
         replace_response = self.client.put(
             f'/api/documents/{document_id}/converted-file',
             headers=self._auth_headers(),
@@ -1399,6 +1513,12 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(replaced_doc['title'], 'Converted Replacement.pdf')
         self.assertEqual(replaced_doc['file_type'], 'pdf')
         self.assertIn('Edited replacement body', replaced_doc['content'])
+        replace_path = os.path.join('uploads', replaced_doc['filename'])
+        self.assertTrue(os.path.exists(replace_path))
+        with open(replace_path, 'rb') as f:
+            replacement_pdf_bytes = f.read()
+        self.assertIn('Edited replacement body', extract_text_from_pdf_bytes(replacement_pdf_bytes, allow_ocr=False))
+        self.assertNotIn(b'STSong', replacement_pdf_bytes)
         self.assertFalse(os.path.exists(os.path.join('uploads', filename)))
 
     def test_share_link_public_access_returns_document_payload(self):
@@ -2028,10 +2148,19 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         status_response = self.client.patch(
             f'/api/admin/feedback/{feedback_id}',
             headers=self._auth_headers('admin'),
-            json={'status': 'resolved', 'assigned_to': 'admin', 'labels': 'smoke'},
+            json={'status': 'resolved', 'assigned_to': 'admin'},
         )
         self.assertEqual(status_response.status_code, 200)
-        self.assertEqual(status_response.get_json()['item']['status'], 'resolved')
+        status_payload = status_response.get_json()['item']
+        self.assertEqual(status_payload['status'], 'resolved')
+        self.assertNotIn('labels', status_payload)
+
+        admin_close_response = self.client.patch(
+            f'/api/admin/feedback/{feedback_id}',
+            headers=self._auth_headers('admin'),
+            json={'status': 'closed'},
+        )
+        self.assertEqual(admin_close_response.status_code, 400)
 
         reply_response = self.client.post(
             f'/api/admin/feedback/{feedback_id}/public-reply',
@@ -2039,6 +2168,17 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             json={'message': 'This has been fixed for the next demo.'},
         )
         self.assertEqual(reply_response.status_code, 200)
+
+        follow_up_response = self.client.post(
+            f'/api/feedback/{feedback_id}/follow-up',
+            headers=self._auth_headers(),
+            json={'message': 'I checked again and this is working now.'},
+        )
+        self.assertEqual(follow_up_response.status_code, 200)
+        self.assertIn(
+            'user_follow_up',
+            [event['event_type'] for event in follow_up_response.get_json()['item']['events']],
+        )
 
         note_response = self.client.post(
             f'/api/admin/feedback/{feedback_id}/internal-note',
@@ -2055,7 +2195,29 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         event_types = [event['event_type'] for event in user_events]
         self.assertIn('status_changed', event_types)
         self.assertIn('public_reply', event_types)
+        self.assertIn('user_follow_up', event_types)
         self.assertNotIn('internal_note', event_types)
+
+        close_response = self.client.post(
+            f'/api/feedback/{feedback_id}/close',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(close_response.status_code, 200)
+        self.assertEqual(close_response.get_json()['item']['status'], 'closed')
+
+        follow_up_after_close = self.client.post(
+            f'/api/feedback/{feedback_id}/follow-up',
+            headers=self._auth_headers(),
+            json={'message': 'This should start a new feedback item instead.'},
+        )
+        self.assertEqual(follow_up_after_close.status_code, 409)
+
+        admin_detail = self.client.get(
+            f'/api/admin/feedback/{feedback_id}',
+            headers=self._auth_headers('admin'),
+        )
+        self.assertEqual(admin_detail.status_code, 200)
+        self.assertEqual(admin_detail.get_json()['item']['status'], 'closed')
         self.assertGreaterEqual(mock_send_email.call_count, 4)
 
     @patch('backend.feedback_service.send_resend_email', return_value=(False, 'simulated email failure'))

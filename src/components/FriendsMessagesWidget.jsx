@@ -43,6 +43,15 @@ const getNotificationMetadata = (notification) => (
 const getFileShareStatus = (notification) =>
   String(getNotificationMetadata(notification).status || 'pending').trim().toLowerCase();
 
+const getMessageMetadata = (message) => (
+  message?.metadata && typeof message.metadata === 'object'
+    ? message.metadata
+    : {}
+);
+
+const isFileShareMessage = (message) =>
+  String(message?.message_type || message?.messageType || '').trim() === 'friend_file_share';
+
 const isFileShareNotification = (notification) =>
   String(notification?.type || '').trim() === 'friend_file_share' &&
   Boolean(getNotificationMetadata(notification).source_document_id);
@@ -411,8 +420,10 @@ export default function FriendsMessagesWidget({
         result?.message ||
           (action === 'accept' ? 'File added to your files.' : 'File share declined.')
       );
-      if (action === 'accept' && typeof onFileShareAccepted === 'function') {
-        await onFileShareAccepted(result);
+      if (action === 'accept') {
+        if (typeof onFileShareAccepted === 'function') {
+          await onFileShareAccepted(result);
+        }
         setOpen(false);
       }
     } catch (err) {
@@ -659,15 +670,30 @@ export default function FriendsMessagesWidget({
                         <span>Start a private conversation with {selectedFriendRecord.username}.</span>
                       </div>
                     ) : (
-                      selectedMessages.map((message) => (
-                        <article
-                          key={message.id}
-                          className={`studyhub-chat-bubble${message.direction === 'sent' ? ' is-sent' : ''}`}
-                        >
-                          <p>{message.body}</p>
-                          <span>{formatDateTime(message.created_at)}</span>
-                        </article>
-                      ))
+                      selectedMessages.map((message) => {
+                        const metadata = getMessageMetadata(message);
+                        const fileTitle = String(metadata.document_title || '').trim();
+                        const fileType = String(metadata.document_file_type || '').trim().toUpperCase();
+                        const shareNote = String(metadata.note || '').trim();
+                        return (
+                          <article
+                            key={message.id}
+                            className={`studyhub-chat-bubble${message.direction === 'sent' ? ' is-sent' : ''}${isFileShareMessage(message) ? ' is-file-share' : ''}`}
+                          >
+                            {isFileShareMessage(message) ? (
+                              <div className="studyhub-chat-file-card">
+                                <small>{message.direction === 'sent' ? 'File sent' : 'File shared with you'}</small>
+                                <strong>{fileTitle || message.body}</strong>
+                                {fileType && <em>{fileType}</em>}
+                                {shareNote && <p>{shareNote}</p>}
+                              </div>
+                            ) : (
+                              <p>{message.body}</p>
+                            )}
+                            <span>{formatDateTime(message.created_at)}</span>
+                          </article>
+                        );
+                      })
                     )}
                   </div>
                   <form className="studyhub-chat-form" onSubmit={handleSendMessage}>

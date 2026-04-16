@@ -1,9 +1,20 @@
 import { authFetch } from './authFetch.js';
 
 const parseJson = async (response) => {
-  const payload = await response.json().catch(() => ({}));
+  const rawText = await response.text().catch(() => '');
+  let payload = {};
+  if (rawText) {
+    try {
+      payload = JSON.parse(rawText);
+    } catch {
+      payload = {};
+    }
+  }
   if (!response.ok) {
-    throw new Error(String(payload?.error || payload?.message || 'Request failed').trim());
+    const fallback = response.status
+      ? `Request failed (${response.status})`
+      : 'Request failed';
+    throw new Error(String(payload?.error || payload?.message || fallback).trim());
   }
   return payload;
 };

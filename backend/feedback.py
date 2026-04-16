@@ -30,6 +30,16 @@ def get_my_feedback(feedback_id):
     return feedback_service.get_my_feedback(feedback_id)
 
 
+@feedback_bp.route('/api/feedback/<int:feedback_id>/follow-up', methods=['POST'])
+def add_feedback_follow_up(feedback_id):
+    return feedback_service.add_feedback_follow_up(feedback_id)
+
+
+@feedback_bp.route('/api/feedback/<int:feedback_id>/close', methods=['POST'])
+def close_my_feedback(feedback_id):
+    return feedback_service.close_my_feedback(feedback_id)
+
+
 @feedback_bp.route('/api/admin/feedback', methods=['GET'])
 def list_admin_feedback():
     return feedback_service.list_admin_feedback()

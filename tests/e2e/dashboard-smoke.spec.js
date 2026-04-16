@@ -314,15 +314,112 @@ test('workspace member can open settings and leave a shared workspace', async ({
   await page.getByRole('button', { name: 'Settings' }).click();
 
   const settingsDialog = page.getByRole('dialog', { name: 'Workspace Settings' });
-  await expect(settingsDialog.getByRole('button', { name: 'Leave Workspace' })).toBeVisible();
-  await settingsDialog.getByRole('button', { name: 'Leave Workspace' }).click();
+  await expect(settingsDialog.getByRole('button', { name: 'Remove Workspace' })).toBeVisible();
+  await expect(settingsDialog.getByRole('button', { name: 'Save changes' })).toHaveCount(0);
+  await settingsDialog.getByRole('button', { name: 'Close workspace settings' }).click();
 
-  const confirmDialog = page.getByRole('dialog', { name: 'Leave Workspace' });
-  await confirmDialog.getByRole('button', { name: 'Leave Workspace' }).click();
+  await page.locator('.notion-workspace-trigger').click();
+  await page.getByRole('button', { name: 'Manage workspaces' }).click();
+  const managerDialog = page.getByRole('dialog', { name: 'Manage Workspaces' });
+  await expect(managerDialog.getByRole('button', { name: 'Remove' })).toBeVisible();
+  await managerDialog.getByRole('button', { name: 'Remove' }).click();
+
+  const confirmDialog = page.getByRole('dialog', { name: 'Remove Workspace' });
+  await confirmDialog.getByRole('button', { name: 'Remove Workspace' }).click();
 
   await expect(page.locator('.notion-top-title-group strong')).toHaveText("Bob's Workspace");
   await page.locator('.notion-workspace-trigger').click();
   await expect(page.getByRole('button', { name: /Alice's Workspace/ })).toHaveCount(0);
+});
+
+test('workspace manager can delete an owned workspace without switching away', async ({ page }) => {
+  let includeArchiveWorkspace = true;
+  let deleteRequestCount = 0;
+  const workspacePayload = () => [
+    {
+      id: 'ws-bob-own',
+      name: "Bob's Workspace",
+      plan: 'Free',
+      owner_username: 'bob',
+      is_owner: true,
+      members_count: 1,
+      settings: {},
+    },
+    {
+      id: 'ws-bob-archive',
+      name: 'Archive Workspace',
+      plan: 'Free',
+      owner_username: 'bob',
+      is_owner: true,
+      members_count: 1,
+      settings: {},
+    },
+  ].filter((workspace) => includeArchiveWorkspace || workspace.id !== 'ws-bob-archive');
+
+  await page.route(/\/api\/workspaces\?username=bob$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(workspacePayload()),
+    });
+  });
+  await page.route(/\/api\/workspaces\/ws-bob-archive$/, async (route) => {
+    expect(route.request().method()).toBe('DELETE');
+    deleteRequestCount += 1;
+    includeArchiveWorkspace = false;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        deleted_workspace_id: 'ws-bob-archive',
+        deleted_count: 0,
+        warnings: [],
+      }),
+    });
+  });
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [],
+        total: 0,
+        limit: 20,
+        offset: 0,
+        has_more: false,
+        facets: { tags: [], categories: [], file_types: {} },
+      }),
+    });
+  });
+
+  await page.goto('/#/login');
+  await page.locator('#login-username').fill('bob');
+  await page.locator('#login-password').fill('password123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+
+  await expect(page.locator('.notion-top-title-group strong')).toHaveText("Bob's Workspace");
+  await page.locator('.notion-workspace-trigger').click();
+  await page.getByRole('button', { name: 'Manage workspaces' }).click();
+
+  const managerDialog = page.getByRole('dialog', { name: 'Manage Workspaces' });
+  const archiveRow = managerDialog.locator('li').filter({ hasText: 'Archive Workspace' });
+  await expect(archiveRow.getByRole('button', { name: 'Delete' })).toBeVisible();
+  await archiveRow.getByRole('button', { name: 'Delete' }).click();
+
+  const inputDialog = page.getByRole('dialog', { name: 'Delete Workspace' });
+  await expect(inputDialog).toBeVisible();
+  await inputDialog.getByRole('textbox').fill('Archive Workspace');
+  await inputDialog.getByRole('button', { name: 'Delete Workspace' }).click();
+
+  await expect(page.locator('.notion-top-title-group strong')).toHaveText("Bob's Workspace");
+  await expect.poll(() => deleteRequestCount).toBe(1);
+  await page.locator('.notion-workspace-trigger').click();
+  await expect(page.getByRole('button', { name: /Archive Workspace/ })).toHaveCount(0);
+  await expect(page.locator('.notion-space-switch').filter({ hasText: "Bob's Workspace" })).toBeVisible();
 });
 
 test('approved invite link opens the shared workspace after login', async ({ page }) => {
@@ -642,18 +739,18 @@ test('workspace access settings are managed from invite members modal', async ({
   await page.getByRole('button', { name: 'Invite Members' }).click();
 
   const inviteDialog = page.getByRole('dialog', { name: 'Invite Members' });
-  await expect(inviteDialog.getByRole('heading', { name: 'Access Settings' })).toBeVisible();
+  await expect(inviteDialog.getByRole('heading', { name: 'Invitation Settings' })).toBeVisible();
+  await expect(inviteDialog.getByLabel('Link Sharing')).toHaveCount(0);
   await inviteDialog.getByLabel('Trusted Domains').fill('school.edu');
   await inviteDialog.getByLabel('Invitation Link Expiry (days)').fill('12');
-  await inviteDialog.getByLabel('Link Sharing').selectOption('public');
   await inviteDialog.getByLabel('Allow members to invite others').check();
-  await inviteDialog.getByRole('button', { name: 'Save Access Settings' }).click();
+  await inviteDialog.getByRole('button', { name: 'Save Invitation Settings' }).click();
 
   await expect.poll(() => savedSettings?.allowed_email_domains).toBe('school.edu');
   expect(savedSettings).toMatchObject({
     allow_member_invites: true,
     default_invite_expiry_days: 12,
-    link_sharing_mode: 'public',
+    link_sharing_mode: 'workspace',
   });
 });
 

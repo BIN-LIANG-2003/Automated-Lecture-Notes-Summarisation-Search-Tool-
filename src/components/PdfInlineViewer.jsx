@@ -7,7 +7,8 @@ import { useUiFeedback } from '../hooks/useUiFeedback.js';
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfWorker;
 
 const MIN_SCALE = 0.8;
-const MAX_SCALE = 2.4;
+const EMBEDDED_MAX_SCALE = 1.8;
+const FULLSCREEN_MAX_SCALE = 2.4;
 const SCALE_STEP = 0.2;
 const THUMB_SCALE = 0.2;
 const MIN_FONT_SIZE = 8;
@@ -74,6 +75,7 @@ export default function PdfInlineViewer({
   const [fitWidth, setFitWidth] = useState(
     () => typeof window !== 'undefined' && window.innerWidth <= SMALL_SCREEN_BREAKPOINT
   );
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
   const [overviewOpen, setOverviewOpen] = useState(false);
   const [thumbnails, setThumbnails] = useState({});
   const [thumbsLoading, setThumbsLoading] = useState(false);
@@ -90,6 +92,7 @@ export default function PdfInlineViewer({
   const [annotations, setAnnotations] = useState([]);
 
   const totalPages = pdfDoc?.numPages || 0;
+  const maxScale = fullscreenOpen ? FULLSCREEN_MAX_SCALE : EMBEDDED_MAX_SCALE;
   const pageAnnotations = useMemo(
     () => annotations.filter((item) => item.page === pageNum),
     [annotations, pageNum]
@@ -104,6 +107,7 @@ export default function PdfInlineViewer({
     setScale(DEFAULT_SCALE);
     setRenderScale(DEFAULT_SCALE);
     setFitWidth(typeof window !== 'undefined' && window.innerWidth <= SMALL_SCREEN_BREAKPOINT);
+    setFullscreenOpen(false);
     setOverviewOpen(false);
     setThumbnails({});
     setThumbsLoading(false);
@@ -242,8 +246,8 @@ export default function PdfInlineViewer({
           (canvasWrapWidth || canvasWrapRef.current?.clientWidth || baseViewport.width) - 28
         );
         const nextScale = fitWidth
-          ? clamp(availableWidth / Math.max(baseViewport.width, 1), MIN_SCALE, MAX_SCALE)
-          : scale;
+          ? clamp(availableWidth / Math.max(baseViewport.width, 1), MIN_SCALE, maxScale)
+          : clamp(scale, MIN_SCALE, maxScale);
         setRenderScale(nextScale);
 
         const viewport = page.getViewport({ scale: nextScale });
@@ -289,7 +293,7 @@ export default function PdfInlineViewer({
         renderTaskRef.current = null;
       }
     };
-  }, [pdfDoc, pageNum, scale, fitWidth, canvasWrapWidth]);
+  }, [pdfDoc, pageNum, scale, fitWidth, canvasWrapWidth, maxScale]);
 
   const canPrev = pageNum > 1;
   const canNext = pageNum < totalPages;
@@ -298,21 +302,39 @@ export default function PdfInlineViewer({
   const uploadedLabel = uploadedAt ? new Date(uploadedAt).toLocaleString() : '';
   const tagsLabel = Array.isArray(tags) && tags.length ? tags.join(', ') : 'None';
   const zoomLabel = fitWidth ? `Fit · ${Math.round(renderScale * 100)}%` : `${Math.round(renderScale * 100)}%`;
+  const currentZoomValue = fitWidth ? renderScale : scale;
+  const zoomOutDisabled = currentZoomValue <= MIN_SCALE + 0.001;
+  const zoomInDisabled = currentZoomValue >= maxScale - 0.001;
 
   const applyManualScale = (delta) => {
     const baseScale = fitWidth ? renderScale : scale;
     setFitWidth(false);
-    setScale(clamp(baseScale + delta, MIN_SCALE, MAX_SCALE));
+    setScale(clamp(baseScale + delta, MIN_SCALE, maxScale));
   };
 
   const toggleFitWidth = () => {
     if (fitWidth) {
       setFitWidth(false);
-      setScale(clamp(renderScale || scale, MIN_SCALE, MAX_SCALE));
+      setScale(clamp(renderScale || scale, MIN_SCALE, maxScale));
       return;
     }
     setFitWidth(true);
   };
+
+  useEffect(() => {
+    if (!fullscreenOpen) {
+      setScale((prev) => clamp(prev, MIN_SCALE, EMBEDDED_MAX_SCALE));
+    }
+  }, [fullscreenOpen]);
+
+  useEffect(() => {
+    if (!fullscreenOpen || typeof document === 'undefined') return undefined;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [fullscreenOpen]);
 
   useEffect(() => {
     if (!pdfDoc) return undefined;
@@ -352,6 +374,11 @@ export default function PdfInlineViewer({
         return;
       }
       if (event.key === 'Escape') {
+        if (fullscreenOpen) {
+          event.preventDefault();
+          setFullscreenOpen(false);
+          return;
+        }
         if (overviewOpen) {
           event.preventDefault();
           setOverviewOpen(false);
@@ -367,7 +394,7 @@ export default function PdfInlineViewer({
 
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
-  }, [pdfDoc, canPrev, canNext, totalPages, loadingDoc, fitWidth, overviewOpen, editMode, renderScale, scale]);
+  }, [pdfDoc, canPrev, canNext, totalPages, loadingDoc, fitWidth, fullscreenOpen, overviewOpen, editMode, renderScale, scale]);
 
   const handleLayerClick = async (event) => {
     if (!editable || !editMode || loadingDoc || loadingPage || saveLoading) return;
@@ -509,7 +536,7 @@ export default function PdfInlineViewer({
   };
 
   return (
-    <div className="notion-pdf-inline">
+    <div className={`notion-pdf-inline${fullscreenOpen ? ' fullscreen' : ''}`}>
       <div className="notion-pdf-toolbar">
         <div className="notion-pdf-doc-meta">
           <strong className="notion-pdf-title" title={title}>
@@ -563,7 +590,7 @@ export default function PdfInlineViewer({
             type="button"
             className="notion-pdf-btn"
             onClick={() => applyManualScale(-SCALE_STEP)}
-            disabled={(!fitWidth && scale <= MIN_SCALE) || loadingDoc}
+            disabled={zoomOutDisabled || loadingDoc}
           >
             Zoom Out
           </button>
@@ -572,7 +599,7 @@ export default function PdfInlineViewer({
             type="button"
             className="notion-pdf-btn"
             onClick={() => applyManualScale(SCALE_STEP)}
-            disabled={(!fitWidth && scale >= MAX_SCALE) || loadingDoc}
+            disabled={zoomInDisabled || loadingDoc}
           >
             Zoom In
           </button>
@@ -587,6 +614,16 @@ export default function PdfInlineViewer({
           </button>
           <button
             type="button"
+            className={`notion-pdf-btn${fullscreenOpen ? ' active' : ''}`}
+            onClick={() => setFullscreenOpen((prev) => !prev)}
+            disabled={loadingDoc}
+            aria-pressed={fullscreenOpen}
+            title="Open a larger PDF preview with more room for zooming."
+          >
+            {fullscreenOpen ? 'Exit Full Screen' : 'Full Screen'}
+          </button>
+          <button
+            type="button"
             className="notion-pdf-btn"
             onClick={() => setOverviewOpen((prev) => !prev)}
             disabled={loadingDoc || !totalPages}
@@ -597,7 +634,7 @@ export default function PdfInlineViewer({
       </div>
 
       <p className="notion-pdf-shortcuts muted tiny">
-        Shortcuts: left/right arrows switch pages, +/- adjust zoom, F toggles fit width, Esc closes overview or annotation mode.
+        Shortcuts: left/right arrows switch pages, +/- adjust zoom, F toggles fit width, Esc exits full screen, overview, or annotation mode.
       </p>
 
       {editable && (

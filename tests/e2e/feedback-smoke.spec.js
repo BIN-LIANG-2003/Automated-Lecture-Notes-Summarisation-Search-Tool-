@@ -74,6 +74,21 @@ test('private feedback flow supports user submission and admin public update', a
   await reopenedModal.getByText(feedbackTitle).click();
   await expect(reopenedModal).toContainText('Resolved');
   await expect(reopenedModal).toContainText('Resolved in the Playwright smoke test.');
+  await reopenedModal.getByLabel('Continue this feedback').fill('I can confirm the admin reply and close this now.');
+  await reopenedModal.getByRole('button', { name: 'Send follow-up' }).click();
+  await expect(reopenedModal).toContainText('Your follow-up');
+  await expect(reopenedModal).toContainText('I can confirm the admin reply and close this now.');
+  await reopenedModal.getByRole('button', { name: 'End feedback' }).click();
+  await expect(reopenedModal).toContainText('Feedback closed');
+  await expect(reopenedModal).toContainText('The project owner will see this feedback as completed.');
+
+  await page.goto('/#/admin/feedback');
+  await expect(page.getByRole('heading', { name: 'Feedback Inbox' })).toBeVisible();
+  const closedFeedbackRow = page.getByRole('row').filter({ hasText: feedbackTitle });
+  await expect(closedFeedbackRow).toHaveCount(1);
+  await closedFeedbackRow.click();
+  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toContainText('Closed');
+  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toContainText('User follow-up');
 });
 
 test('non-admin user sees a clean access denied state for admin feedback route', async ({ page }) => {

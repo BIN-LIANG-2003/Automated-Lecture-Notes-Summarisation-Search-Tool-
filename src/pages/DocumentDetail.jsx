@@ -103,7 +103,7 @@ const getShareLinkDisabledReason = ({
     return 'Share links cannot be created from a shared-document route.';
   }
   if (String(linkSharingMode || '').trim().toLowerCase() === 'restricted') {
-    return 'Link sharing is restricted in Invite Members.';
+    return 'Link sharing is restricted by workspace settings.';
   }
   if (!String(username || '').trim()) {
     return 'Sign in with a workspace account to create share links.';

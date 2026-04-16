@@ -1337,7 +1337,7 @@ def create_pdf_bytes_from_text(content):
     try:
         from reportlab.lib.pagesizes import A4
         from reportlab.pdfbase import pdfmetrics
-        from reportlab.pdfbase.cidfonts import UnicodeCIDFont
+        from reportlab.pdfbase.ttfonts import TTFont
         from reportlab.pdfgen import canvas
     except Exception as e:
         raise RuntimeError(
@@ -1354,11 +1354,28 @@ def create_pdf_bytes_from_text(content):
 
     font_name = 'Helvetica'
     font_size = 11
-    try:
-        pdfmetrics.registerFont(UnicodeCIDFont('STSong-Light'))
-        font_name = 'STSong-Light'
-    except Exception:
-        font_name = 'Helvetica'
+
+    configured_font_path = str(os.environ.get('PDF_EXPORT_FONT_PATH') or '').strip()
+    font_candidates = [
+        configured_font_path,
+        '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+        '/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+        '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+        '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.otf',
+        '/System/Library/Fonts/Supplemental/Arial Unicode.ttf',
+        '/Library/Fonts/Arial Unicode.ttf',
+        'C:\\Windows\\Fonts\\arial.ttf',
+    ]
+    for font_path in font_candidates:
+        if not font_path or not os.path.exists(font_path):
+            continue
+        try:
+            pdfmetrics.registerFont(TTFont('StudyHubPDFText', font_path))
+            font_name = 'StudyHubPDFText'
+            break
+        except Exception:
+            continue
 
     pdf_canvas.setFont(font_name, font_size)
     left_margin = 48

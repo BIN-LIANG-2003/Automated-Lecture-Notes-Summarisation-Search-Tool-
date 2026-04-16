@@ -33,7 +33,7 @@ FEEDBACK_STATUSES = {
     'closed',
 }
 OPEN_FEEDBACK_STATUSES = FEEDBACK_STATUSES - {'resolved', 'closed'}
-PUBLIC_EVENT_TYPES = {'submitted', 'status_changed', 'public_reply'}
+PUBLIC_EVENT_TYPES = {'submitted', 'status_changed', 'public_reply', 'user_follow_up'}
 INTERNAL_EVENT_TYPES = {'internal_note', 'email_sent', 'email_failed'}
 
 
@@ -136,7 +136,6 @@ def _insert_feedback_item(conn, params):
         params['document_id'],
         params['user_agent'],
         '',
-        '',
         now_iso,
         now_iso,
         None,
@@ -157,11 +156,10 @@ def _insert_feedback_item(conn, params):
                 document_id,
                 user_agent,
                 assigned_to,
-                labels,
                 created_at,
                 updated_at,
                 resolved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             ''',
             values,
@@ -184,11 +182,10 @@ def _insert_feedback_item(conn, params):
             document_id,
             user_agent,
             assigned_to,
-            labels,
             created_at,
             updated_at,
             resolved_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ''',
         values,
     )
@@ -330,7 +327,6 @@ def _serialize_feedback_item(conn, row, *, include_private=False, include_events
             'user_email_snapshot': normalize_email(item.get('user_email_snapshot')),
             'user_agent': str(item.get('user_agent') or '').strip(),
             'assigned_to': str(item.get('assigned_to') or '').strip(),
-            'labels': str(item.get('labels') or '').strip(),
         })
     if include_events:
         events = _load_feedback_events(conn, feedback_id, include_internal=include_private)
@@ -420,6 +416,41 @@ def _send_admin_feedback_notification(item):
         f"Admin inbox: {admin_url}\n"
     )
     return send_resend_email(recipient, subject, body_html, body_text, reply_to=user_email)
+
+
+def _send_admin_feedback_follow_up_notification(item, message):
+    recipient = normalize_email(SUPPORT_EMAIL)
+    if not recipient or not is_valid_email(recipient):
+        return False, 'SUPPORT_EMAIL is not a valid email address'
+
+    admin_url = _feedback_admin_link(item.get('id'))
+    user_email = normalize_email(item.get('user_email_snapshot'))
+    safe_title = item.get('title') or 'Untitled feedback'
+    body_html = f'''
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 640px; margin: 0 auto;">
+          <h2>New follow-up on StudyHub feedback</h2>
+          <p><strong>{html.escape(safe_title)}</strong></p>
+          <p><strong>User:</strong> {html.escape(item.get('username') or '')} {html.escape(user_email)}</p>
+          <div style="margin: 14px 0; padding: 12px 14px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 10px;">
+            {html.escape(message or '').replace(chr(10), '<br />')}
+          </div>
+          <p><a href="{html.escape(admin_url)}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; background: #2563eb; color: #fff; text-decoration: none;">Open feedback thread</a></p>
+        </div>
+    '''
+    body_text = (
+        f'New follow-up on StudyHub feedback\n\n'
+        f'Title: {safe_title}\n'
+        f"User: {item.get('username') or ''} {user_email}\n\n"
+        f'{message or ""}\n\n'
+        f'Feedback thread: {admin_url}\n'
+    )
+    return send_resend_email(
+        recipient,
+        f'StudyHub feedback follow-up: {safe_title}',
+        body_html,
+        body_text,
+        reply_to=user_email,
+    )
 
 
 def _send_user_feedback_email(item, subject_prefix, message):
@@ -594,6 +625,120 @@ def get_my_feedback(feedback_id):
         conn.close()
 
 
+def add_feedback_follow_up(feedback_id):
+    username, error = _require_authenticated_username()
+    if error:
+        return error
+    data = request.get_json(silent=True) or {}
+    message = _clean_multiline(data.get('message'), 3000)
+    if not message:
+        return jsonify({'error': 'Follow-up message is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    email_item = None
+    try:
+        item = _load_feedback_item(conn, feedback_id)
+        if not item or str(item.get('username') or '').strip() != username:
+            return jsonify({'error': 'Feedback item not found'}), 404
+        if str(item.get('status') or 'new').strip() == 'closed':
+            return jsonify({'error': 'This feedback is closed. Start a new feedback item if you need more help.'}), 409
+
+        now_iso = utcnow_iso()
+        conn.execute(
+            'UPDATE feedback_items SET updated_at = ? WHERE id = ?',
+            (now_iso, parse_int(feedback_id, 0, 1)),
+        )
+        _record_feedback_event(
+            conn,
+            feedback_id,
+            actor_username=username,
+            actor_role='user',
+            event_type='user_follow_up',
+            message=message,
+            visibility='public',
+        )
+        conn.commit()
+        email_item = _load_feedback_item(conn, feedback_id)
+        payload = _serialize_feedback_item(conn, email_item, include_private=False, include_events=True)
+        private_item = _serialize_feedback_item(conn, email_item, include_private=True, include_events=False)
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': f'Failed to add follow-up: {e}'}), 500
+    finally:
+        conn.close()
+
+    admin_ok, admin_error = _send_admin_feedback_follow_up_notification(private_item, message)
+    _record_email_event(
+        feedback_id,
+        ok=admin_ok,
+        target_email=normalize_email(SUPPORT_EMAIL),
+        context='User follow-up notification',
+        actor_username=username,
+    )
+    if not admin_ok:
+        print(f'Feedback follow-up admin notification failed for #{feedback_id}: {admin_error}')
+
+    return jsonify({'item': payload, 'admin_notified': bool(admin_ok)}), 200
+
+
+def close_my_feedback(feedback_id):
+    username, error = _require_authenticated_username()
+    if error:
+        return error
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        item = _load_feedback_item(conn, feedback_id)
+        if not item or str(item.get('username') or '').strip() != username:
+            return jsonify({'error': 'Feedback item not found'}), 404
+
+        old_status = str(item.get('status') or 'new').strip()
+        if old_status != 'closed':
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                UPDATE feedback_items
+                SET status = ?,
+                    updated_at = ?,
+                    resolved_at = ?
+                WHERE id = ?
+                ''',
+                ('closed', now_iso, now_iso, parse_int(feedback_id, 0, 1)),
+            )
+            _record_feedback_event(
+                conn,
+                feedback_id,
+                actor_username=username,
+                actor_role='user',
+                event_type='status_changed',
+                old_status=old_status,
+                new_status='closed',
+                message='Feedback closed by the submitter.',
+                visibility='public',
+            )
+            conn.commit()
+
+        item = _load_feedback_item(conn, feedback_id)
+        return jsonify({'item': _serialize_feedback_item(conn, item, include_private=False, include_events=True)}), 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': f'Failed to close feedback: {e}'}), 500
+    finally:
+        conn.close()
+
+
 def similar_feedback():
     username, error = _require_authenticated_username()
     if error:
@@ -729,8 +874,9 @@ def update_admin_feedback(feedback_id):
 
         old_status = str(item.get('status') or 'new').strip()
         next_status = _normalize_status(data.get('status'), old_status) if 'status' in data else old_status
+        if 'status' in data and next_status == 'closed':
+            return jsonify({'error': 'Only the feedback submitter can close feedback.'}), 400
         assigned_to = _clean_text(data.get('assigned_to'), 120) if 'assigned_to' in data else str(item.get('assigned_to') or '')
-        labels = _clean_text(data.get('labels'), 500) if 'labels' in data else str(item.get('labels') or '')
         priority = _normalize_priority(data.get('priority')) if 'priority' in data else str(item.get('priority') or 'medium')
         now_iso = utcnow_iso()
         status_changed = next_status != old_status
@@ -745,7 +891,6 @@ def update_admin_feedback(feedback_id):
             SET status = ?,
                 priority = ?,
                 assigned_to = ?,
-                labels = ?,
                 updated_at = ?,
                 resolved_at = ?
             WHERE id = ?
@@ -754,7 +899,6 @@ def update_admin_feedback(feedback_id):
                 next_status,
                 priority,
                 assigned_to,
-                labels,
                 now_iso,
                 resolved_at,
                 parse_int(feedback_id, 0, 1),

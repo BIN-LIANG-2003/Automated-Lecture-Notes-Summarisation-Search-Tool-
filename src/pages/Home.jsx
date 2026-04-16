@@ -8,6 +8,7 @@ import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
 import TrashModal from '../components/TrashModal.jsx';
 import UploadPanel from '../components/UploadPanel.jsx';
+import WorkspaceIcon, { isWorkspaceImageIcon } from '../components/WorkspaceIcon.jsx';
 import WorkspaceSidebar from '../components/WorkspaceSidebar.jsx';
 import useDocumentsList from '../hooks/useDocumentsList.js';
 import useUploadQueue from '../hooks/useUploadQueue.js';
@@ -236,24 +237,15 @@ const SUMMARY_CENTER_CHUNK_OPTIONS = [
 ];
 const WORKSPACE_SETTINGS_TABS = [
   { id: 'general', label: 'General', description: 'Name, icon, accent color, workspace identity.' },
-  { id: 'defaults', label: 'Defaults', description: 'File views, category rules, and landing behavior.' },
   { id: 'experience', label: 'Experience', description: 'Sidebar density and overview widgets.' },
   { id: 'notifications', label: 'Notifications', description: 'Control in-app toasts and your email reminders.' },
   { id: 'permissions', label: 'Permissions', description: 'What members can upload, edit, and export.' },
-  { id: 'ai', label: 'AI', description: 'Summaries, OCR, and keyword defaults.' },
+  { id: 'ai', label: 'AI', description: 'Summary length and keyword defaults.' },
   { id: 'danger', label: 'Danger', description: 'Irreversible workspace cleanup actions.' },
 ];
 const DEFAULT_USER_NOTIFICATION_PREFERENCES = {
   emailNotificationsEnabled: true,
 };
-const KEYBOARD_SHORTCUT_ITEMS = [
-  { keys: 'Ctrl/⌘ + K', action: 'Focus search and open Notes view' },
-  { keys: '/', action: 'Focus search (when not typing)' },
-  { keys: 'Ctrl/⌘ + Shift + U', action: 'Open file picker' },
-  { keys: 'Ctrl/⌘ + Shift + S', action: 'Save current view' },
-  { keys: '?', action: 'Open shortcut help' },
-  { keys: 'Esc', action: 'Close current modal/dialog' },
-];
 const DEFAULT_WORKSPACE_SETTINGS = {
   workspace_icon: '📚',
   description: '',
@@ -863,12 +855,6 @@ const persistSummaryHistory = (accountName, workspaceId, entries) => {
   }
 };
 
-const isTypingTarget = (target) => {
-  if (!(target instanceof HTMLElement)) return false;
-  if (target.isContentEditable) return true;
-  return ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName);
-};
-
 const viewMatchesSnapshot = (view, snapshot) =>
   Boolean(view) &&
   Boolean(snapshot) &&
@@ -883,6 +869,13 @@ const viewMatchesSnapshot = (view, snapshot) =>
   normalizeFileTypeFilter(view?.filters?.fileType) === normalizeFileTypeFilter(snapshot?.filters?.fileType);
 
 const clamp = (value, minValue, maxValue) => Math.min(maxValue, Math.max(minValue, value));
+
+const normalizeWorkspaceIcon = (value) => {
+  const safeValue = String(value || '').trim();
+  if (isWorkspaceImageIcon(safeValue)) return safeValue;
+  if (safeValue.toLowerCase().startsWith('data:')) return DEFAULT_WORKSPACE_SETTINGS.workspace_icon;
+  return safeValue.slice(0, 2) || DEFAULT_WORKSPACE_SETTINGS.workspace_icon;
+};
 
 const normalizeWorkspaceSettings = (raw) => {
   const source = raw && typeof raw === 'object' ? raw : {};
@@ -910,7 +903,7 @@ const normalizeWorkspaceSettings = (raw) => {
   const allowedEmailDomains = normalizeWorkspaceDomainList(source.allowed_email_domains);
 
   return {
-    workspace_icon: workspaceIcon.slice(0, 2) || DEFAULT_WORKSPACE_SETTINGS.workspace_icon,
+    workspace_icon: normalizeWorkspaceIcon(workspaceIcon),
     description: String(source.description || '').trim().slice(0, 220),
     accent_color: normalizeAccentColor(source.accent_color || DEFAULT_WORKSPACE_SETTINGS.accent_color),
     default_category: normalizeCategory(source.default_category || DEFAULT_WORKSPACE_SETTINGS.default_category),
@@ -1135,7 +1128,7 @@ const normalizeDocument = (doc) => ({
 
 const workspaceIconLabel = (workspace, fallback = 'W') => {
   const icon = String(workspace?.settings?.workspace_icon || '').trim();
-  if (icon) return icon.slice(0, 2);
+  if (icon) return normalizeWorkspaceIcon(icon);
   return String(fallback || 'W').slice(0, 1).toUpperCase();
 };
 
@@ -1354,7 +1347,6 @@ export default function HomePage() {
   const [savedViews, setSavedViews] = useState([]);
   const [activeSavedViewId, setActiveSavedViewId] = useState('');
   const [savedViewsMenuOpen, setSavedViewsMenuOpen] = useState(false);
-  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [trashModalOpen, setTrashModalOpen] = useState(false);
   const [trashItems, setTrashItems] = useState([]);
   const [trashTotal, setTrashTotal] = useState(0);
@@ -1415,6 +1407,7 @@ export default function HomePage() {
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
+  const [workspaceManagerOpen, setWorkspaceManagerOpen] = useState(false);
   const [workspaceLoading, setWorkspaceLoading] = useState(() => hasInitialAuthenticatedSession);
   const [workspaceReady, setWorkspaceReady] = useState(() => !hasInitialAuthenticatedSession);
   const [workspaceActionLoading, setWorkspaceActionLoading] = useState(false);
@@ -1465,6 +1458,7 @@ export default function HomePage() {
   const [activeDocSaveLoading, setActiveDocSaveLoading] = useState(false);
   const [activeDocSaveError, setActiveDocSaveError] = useState('');
   const [pdfConversionDraft, setPdfConversionDraft] = useState(null);
+  const [pdfConversionChoiceOpen, setPdfConversionChoiceOpen] = useState(false);
   const [pdfConversionLoading, setPdfConversionLoading] = useState(false);
   const [pdfConversionMode, setPdfConversionMode] = useState('simple');
   const [pdfConversionOutputFormat, setPdfConversionOutputFormat] = useState('docx');
@@ -1941,6 +1935,7 @@ export default function HomePage() {
       setWorkspaceSettingsOpen(false);
       setWorkspaceInviteOpen(false);
       setAccountManagerOpen(false);
+      setWorkspaceManagerOpen(false);
       setTrashModalOpen(false);
       navigate(`/shared/${encodeURIComponent(sharedToken)}`, {
         state: {
@@ -1971,6 +1966,7 @@ export default function HomePage() {
     setMobileSidebarOpen(false);
     setWorkspaceSettingsOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setTrashModalOpen(false);
     setShowFiles(true);
 
@@ -1996,19 +1992,25 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setTrashModalOpen(false);
-    if (targetWorkspaceId) {
-      await refreshWorkspaces({
-        preserveActive: false,
-        preferredWorkspaceId: targetWorkspaceId,
-      });
-    }
-    setShowFiles(true);
     setDocumentsPage(1);
-    if (!targetWorkspaceId || targetWorkspaceId === activeWorkspaceId) {
-      await fetchDocuments(1);
+    try {
+      if (targetWorkspaceId) {
+        await refreshWorkspaces({
+          preserveActive: false,
+          preferredWorkspaceId: targetWorkspaceId,
+        });
+      }
+      setShowFiles(true);
+      if (!targetWorkspaceId || targetWorkspaceId === activeWorkspaceId) {
+        await fetchDocuments(1);
+      }
+      showToast(result?.warning || 'File added to your files.', result?.warning ? 'warning' : 'success');
+    } catch (err) {
+      console.warn('File share accepted, but the file list could not refresh', err);
+      showToast('File added. Refresh Notes if it does not appear right away.', 'warning');
     }
-    showToast('File added to your files.', 'success');
   };
 
   useEffect(() => {
@@ -2274,6 +2276,7 @@ export default function HomePage() {
     setActiveDocSaveError('');
     setActiveDocDraftHtml(getDocumentRichHtml(activeDoc));
     setPdfConversionDraft(null);
+    setPdfConversionChoiceOpen(false);
     setPdfConversionLoading(false);
     setPdfConversionMode('simple');
     setPdfConversionOutputFormat('docx');
@@ -2425,7 +2428,6 @@ export default function HomePage() {
       setOcrSaveFormat('txt');
       setExtractedText('');
       setAnalysisResult(null);
-      setShortcutsOpen(false);
       setTrashModalOpen(false);
       setTrashItems([]);
       setTrashTotal(0);
@@ -2491,6 +2493,7 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setTrashModalOpen(false);
   }, [accountName, isLoggedIn, username, authToken, preferredWorkspaceIdFromNavigation]);
 
@@ -2725,8 +2728,8 @@ export default function HomePage() {
         setWorkspaceSettingsOpen(false);
         setWorkspaceInviteOpen(false);
         setAccountManagerOpen(false);
+        setWorkspaceManagerOpen(false);
         setTrashModalOpen(false);
-        setShortcutsOpen(false);
         setInviteCopied(false);
         clearDragUploadState();
         if (inputDialogState.open) {
@@ -2955,6 +2958,7 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(false);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setInviteCopied(false);
     setLatestInviteLinks([]);
     setLatestInviteDelivery(null);
@@ -2967,6 +2971,7 @@ export default function HomePage() {
     setWorkspaceSettingsOpen(true);
     setWorkspaceInviteOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setWorkspaceMenuOpen(false);
   };
 
@@ -2976,6 +2981,7 @@ export default function HomePage() {
     setWorkspaceInviteOpen(true);
     setWorkspaceSettingsOpen(false);
     setAccountManagerOpen(false);
+    setWorkspaceManagerOpen(false);
     setInviteCopied(false);
     setWorkspaceMenuOpen(false);
   };
@@ -3070,7 +3076,6 @@ export default function HomePage() {
     setOcrSaveFormat('txt');
     setExtractedText('');
     setAnalysisResult(null);
-    setShortcutsOpen(false);
     setTrashModalOpen(false);
     setTrashItems([]);
     setTrashTotal(0);
@@ -4648,7 +4653,7 @@ export default function HomePage() {
 
   const getShareDisabledReasonForDoc = (doc = activeDoc) => {
     if (activeWorkspaceSettings.link_sharing_mode === 'restricted') {
-      return 'Link sharing is restricted. Change this in Invite Members.';
+      return 'Link sharing is restricted by workspace settings.';
     }
     if (!username) {
       return 'Please sign in to share this note.';
@@ -4854,17 +4859,19 @@ export default function HomePage() {
     }
   };
 
-  const handleDeleteWorkspace = async () => {
-    if (!activeWorkspaceId || !username || !isLoggedIn) {
+  const handleDeleteWorkspace = async (workspaceToDelete = activeWorkspace) => {
+    const targetWorkspace = workspaceToDelete || activeWorkspace;
+    const targetWorkspaceId = String(targetWorkspace?.id || '').trim();
+    if (!targetWorkspaceId || !username || !isLoggedIn) {
       showToast('Please sign in first.', 'warning');
       return;
     }
-    if (activeWorkspace?.is_owner === false) {
+    if (targetWorkspace?.is_owner === false) {
       showToast('Only the workspace owner can delete this workspace.', 'warning');
       return;
     }
 
-    const workspaceLabel = String(activeWorkspace?.name || '').trim();
+    const workspaceLabel = String(targetWorkspace?.name || '').trim();
     const confirmation = await requestTextInput({
       title: 'Delete Workspace',
       description: `Type ${workspaceLabel || 'the workspace name'} to permanently delete this workspace and all notes inside it.`,
@@ -4884,7 +4891,8 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
-      const res = await authFetch(`/api/workspaces/${encodeURIComponent(activeWorkspaceId)}`, {
+      const removingActiveWorkspace = targetWorkspaceId === activeWorkspaceId;
+      const res = await authFetch(`/api/workspaces/${encodeURIComponent(targetWorkspaceId)}`, {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ username }),
@@ -4892,38 +4900,43 @@ export default function HomePage() {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to delete workspace');
 
-      resetDocumentsData();
-      setSidebarRecentIds([]);
-      setSidebarRecentMeta({});
-      setStarredNotes([]);
-      setSummaryHistory([]);
-      setSummaryCenterOpen(false);
-      setSummaryCenterQuery('');
-      setSidebarMenuDocId(null);
-      setTrashModalOpen(false);
-      setTrashItems([]);
-      setTrashTotal(0);
-      setTrashPurgedCount(0);
-      setTrashLoadError('');
-      setTrashLoading(false);
-      setTrashActionLoadingId('');
-      setSelectedTrashDocumentIds([]);
-      setTrashBulkActionLoading(false);
-      setTrashPage(1);
-      setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
-      setTrashSort('deleted_newest');
-      setTrashQuery('');
-      setActiveDoc(null);
-      setActiveDocError('');
-      setActiveDocLoading(false);
-      setActiveDocFileVersion(0);
-      setActiveDocEditMode(false);
-      setActiveDocDraftHtml('');
-      setActiveDocSaveError('');
-      clearActiveDocShareState();
+      if (removingActiveWorkspace) {
+        resetDocumentsData();
+        setSidebarRecentIds([]);
+        setSidebarRecentMeta({});
+        setStarredNotes([]);
+        setSummaryHistory([]);
+        setSummaryCenterOpen(false);
+        setSummaryCenterQuery('');
+        setSidebarMenuDocId(null);
+        setTrashModalOpen(false);
+        setTrashItems([]);
+        setTrashTotal(0);
+        setTrashPurgedCount(0);
+        setTrashLoadError('');
+        setTrashLoading(false);
+        setTrashActionLoadingId('');
+        setSelectedTrashDocumentIds([]);
+        setTrashBulkActionLoading(false);
+        setTrashPage(1);
+        setTrashPageSize(TRASH_PAGE_SIZE_OPTIONS[1]);
+        setTrashSort('deleted_newest');
+        setTrashQuery('');
+        setActiveDoc(null);
+        setActiveDocError('');
+        setActiveDocLoading(false);
+        setActiveDocFileVersion(0);
+        setActiveDocEditMode(false);
+        setActiveDocDraftHtml('');
+        setActiveDocSaveError('');
+        clearActiveDocShareState();
+      }
       closeWorkspaceDialogs();
 
-      const nextWorkspaceState = await refreshWorkspaces({ preserveActive: false });
+      const nextWorkspaceState = await refreshWorkspaces({
+        preserveActive: !removingActiveWorkspace,
+        preferredWorkspaceId: removingActiveWorkspace ? '' : activeWorkspaceId,
+      });
       const warnings = Array.isArray(payload.warnings) ? payload.warnings : [];
       if (warnings.length) {
         showToast(
@@ -4931,12 +4944,13 @@ export default function HomePage() {
           'warning'
         );
       } else {
-        const nextWorkspace =
-          (nextWorkspaceState?.workspaces || []).find(
-            (item) => item.id === nextWorkspaceState?.activeWorkspaceId
-          ) ||
-          nextWorkspaceState?.workspaces?.[0] ||
-          null;
+        const nextWorkspace = removingActiveWorkspace
+          ? (nextWorkspaceState?.workspaces || []).find(
+              (item) => item.id === nextWorkspaceState?.activeWorkspaceId
+            ) ||
+            nextWorkspaceState?.workspaces?.[0] ||
+            null
+          : null;
         const followup = nextWorkspace?.name ? ` Switched to "${nextWorkspace.name}".` : '';
         showToast(`Deleted workspace "${workspaceLabel}".${followup}`, 'success');
       }
@@ -4947,21 +4961,23 @@ export default function HomePage() {
     }
   };
 
-  const handleLeaveWorkspace = async () => {
-    if (!activeWorkspaceId || !username || !isLoggedIn) {
+  const handleLeaveWorkspace = async (workspaceToLeave = activeWorkspace) => {
+    const targetWorkspace = workspaceToLeave || activeWorkspace;
+    const targetWorkspaceId = String(targetWorkspace?.id || '').trim();
+    if (!targetWorkspaceId || !username || !isLoggedIn) {
       showToast('Please sign in first.', 'warning');
       return;
     }
-    if (activeWorkspace?.is_owner !== false) {
-      showToast('Workspace owner cannot leave their own workspace. Delete the workspace instead.', 'warning');
+    if (targetWorkspace?.is_owner !== false) {
+      showToast('Use Delete for workspaces you own.', 'warning');
       return;
     }
 
-    const workspaceLabel = String(activeWorkspace?.name || 'this workspace').trim();
+    const workspaceLabel = String(targetWorkspace?.name || 'this workspace').trim();
     const confirmed = await requestConfirmation({
-      title: 'Leave Workspace',
-      description: `Leave "${workspaceLabel}"? This removes it from your workspace list and you will lose access to its files.`,
-      confirmLabel: 'Leave Workspace',
+      title: 'Remove Workspace',
+      description: `Remove "${workspaceLabel}" from your account? You will lose access to its files unless the owner invites you again.`,
+      confirmLabel: 'Remove Workspace',
       cancelLabel: 'Cancel',
       danger: true,
     });
@@ -4969,8 +4985,9 @@ export default function HomePage() {
 
     setWorkspaceActionLoading(true);
     try {
+      const removingActiveWorkspace = targetWorkspaceId === activeWorkspaceId;
       const res = await authFetch(
-        `/api/workspaces/${encodeURIComponent(activeWorkspaceId)}/members/${encodeURIComponent(username)}`,
+        `/api/workspaces/${encodeURIComponent(targetWorkspaceId)}/members/${encodeURIComponent(username)}`,
         {
           method: 'DELETE',
           headers: { 'Content-Type': 'application/json' },
@@ -4981,35 +4998,41 @@ export default function HomePage() {
       const payload = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(payload.error || 'Failed to leave workspace');
 
-      resetDocumentsData();
-      setSidebarRecentIds([]);
-      setSidebarRecentMeta({});
-      setStarredNotes([]);
-      setSummaryHistory([]);
-      setSummaryCenterOpen(false);
-      setSummaryCenterQuery('');
-      setSidebarMenuDocId(null);
-      setActiveDoc(null);
-      setActiveDocError('');
-      setActiveDocLoading(false);
-      setActiveDocFileVersion(0);
-      setActiveDocEditMode(false);
-      setActiveDocDraftHtml('');
-      setActiveDocSaveError('');
-      clearActiveDocShareState();
+      if (removingActiveWorkspace) {
+        resetDocumentsData();
+        setSidebarRecentIds([]);
+        setSidebarRecentMeta({});
+        setStarredNotes([]);
+        setSummaryHistory([]);
+        setSummaryCenterOpen(false);
+        setSummaryCenterQuery('');
+        setSidebarMenuDocId(null);
+        setActiveDoc(null);
+        setActiveDocError('');
+        setActiveDocLoading(false);
+        setActiveDocFileVersion(0);
+        setActiveDocEditMode(false);
+        setActiveDocDraftHtml('');
+        setActiveDocSaveError('');
+        clearActiveDocShareState();
+      }
       closeWorkspaceDialogs();
 
-      const nextWorkspaceState = await refreshWorkspaces({ preserveActive: false });
-      const nextWorkspace =
-        (nextWorkspaceState?.workspaces || []).find(
-          (item) => item.id === nextWorkspaceState?.activeWorkspaceId
-        ) ||
-        nextWorkspaceState?.workspaces?.[0] ||
-        null;
+      const nextWorkspaceState = await refreshWorkspaces({
+        preserveActive: !removingActiveWorkspace,
+        preferredWorkspaceId: removingActiveWorkspace ? '' : activeWorkspaceId,
+      });
+      const nextWorkspace = removingActiveWorkspace
+        ? (nextWorkspaceState?.workspaces || []).find(
+            (item) => item.id === nextWorkspaceState?.activeWorkspaceId
+          ) ||
+          nextWorkspaceState?.workspaces?.[0] ||
+          null
+        : null;
       const followup = nextWorkspace?.name ? ` Switched to "${nextWorkspace.name}".` : '';
-      showToast(`Left workspace "${workspaceLabel}".${followup}`, 'success');
+      showToast(`Removed workspace "${workspaceLabel}".${followup}`, 'success');
     } catch (err) {
-      showToast(err.message || 'Failed to leave workspace', 'error');
+      showToast(err.message || 'Failed to remove workspace', 'error');
     } finally {
       setWorkspaceActionLoading(false);
     }
@@ -5025,6 +5048,7 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     setPdfConversionDraft(null);
+    setPdfConversionChoiceOpen(false);
     setPdfConversionLoading(false);
     setPdfConversionMode('simple');
     setPdfConversionOutputFormat('docx');
@@ -6050,6 +6074,24 @@ export default function HomePage() {
     }
   };
 
+  const handleOpenPdfConversionChoices = () => {
+    if (!activeDoc) return;
+    if (!activeDocIsPdf) {
+      showToast('Only PDF notes can be converted to an editable draft.', 'warning');
+      return;
+    }
+    if (!isLoggedIn) {
+      showToast('Please sign in before converting a PDF.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceSettings.allow_note_editing) {
+      showToast('Editing is disabled in this workspace settings.', 'warning');
+      return;
+    }
+    setActiveDocSaveError('');
+    setPdfConversionChoiceOpen((open) => !open);
+  };
+
   const handleStartPdfConversion = async (mode = 'simple') => {
     if (!activeDoc) return;
     if (!activeDocIsPdf) {
@@ -6066,6 +6108,7 @@ export default function HomePage() {
     }
 
     const safeMode = mode === 'layout' ? 'layout' : 'simple';
+    setPdfConversionChoiceOpen(false);
     setPdfConversionLoading(true);
     setPdfConversionMode(safeMode);
     setActiveDocSaveError('');
@@ -6093,6 +6136,7 @@ export default function HomePage() {
       );
     } catch (err) {
       setPdfConversionDraft(null);
+      setPdfConversionChoiceOpen(false);
       setActiveDocSaveError(err.message || 'Failed to convert PDF');
       showToast(err.message || 'Failed to convert PDF', 'error');
     } finally {
@@ -6113,6 +6157,7 @@ export default function HomePage() {
 
   const handleDiscardPdfConversionDraft = () => {
     setPdfConversionDraft(null);
+    setPdfConversionChoiceOpen(false);
     setPdfConversionLoading(false);
     setPdfConversionMode('simple');
     setPdfConversionOutputFormat('docx');
@@ -6182,6 +6227,7 @@ export default function HomePage() {
       }
 
       setPdfConversionDraft(null);
+      setPdfConversionChoiceOpen(false);
       setPdfConversionLoading(false);
       setPdfConversionMode('simple');
       setPdfConversionOutputFormat('docx');
@@ -6391,6 +6437,7 @@ export default function HomePage() {
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
     setPdfConversionDraft(null);
+    setPdfConversionChoiceOpen(false);
     setPdfConversionLoading(false);
     setPdfConversionMode('simple');
     setPdfConversionOutputFormat('docx');
@@ -6807,68 +6854,6 @@ export default function HomePage() {
     </section>
   ) : null;
 
-  useEffect(() => {
-    const handleShortcuts = (event) => {
-      const key = String(event.key || '').toLowerCase();
-      const withModifier = event.metaKey || event.ctrlKey;
-      const typing = isTypingTarget(event.target);
-      const blockingModalOpen =
-        inputDialogState.open ||
-        confirmDialogState.open ||
-        workspaceSettingsOpen ||
-        workspaceInviteOpen ||
-        accountManagerOpen ||
-        trashModalOpen ||
-        shortcutsOpen ||
-        activeDocShareEmailOpen;
-
-      if (blockingModalOpen && key !== 'escape') return;
-      if (typing && !(withModifier && key === 'k')) return;
-
-      if (withModifier && key === 'k') {
-        event.preventDefault();
-        openFilesAndFocusSearch();
-        return;
-      }
-      if (withModifier && event.shiftKey && key === 'u') {
-        if (!activeWorkspaceSettings.allow_uploads) return;
-        event.preventDefault();
-        setShowFiles(true);
-        openUploadPicker();
-        return;
-      }
-      if (withModifier && event.shiftKey && key === 's') {
-        event.preventDefault();
-        void handleSaveCurrentView();
-        return;
-      }
-      if (!withModifier && key === '/' && !typing) {
-        event.preventDefault();
-        openFilesAndFocusSearch();
-        return;
-      }
-      if (!withModifier && key === '?' && !typing) {
-        event.preventDefault();
-        setShortcutsOpen(true);
-      }
-    };
-
-    document.addEventListener('keydown', handleShortcuts);
-    return () => document.removeEventListener('keydown', handleShortcuts);
-  }, [
-    activeWorkspaceSettings.allow_uploads,
-    handleSaveCurrentView,
-    openFilesAndFocusSearch,
-    inputDialogState.open,
-    confirmDialogState.open,
-    workspaceSettingsOpen,
-    workspaceInviteOpen,
-    accountManagerOpen,
-    trashModalOpen,
-    shortcutsOpen,
-    activeDocShareEmailOpen,
-  ]);
-
   return (
     <div
       className={[
@@ -6927,9 +6912,18 @@ export default function HomePage() {
           )
         }
         accountEmail={accountEmail}
+        onOpenWorkspaceManager={() => {
+          setMobileSidebarOpen(false);
+          setWorkspaceManagerOpen(true);
+          setAccountManagerOpen(false);
+          setWorkspaceSettingsOpen(false);
+          setWorkspaceInviteOpen(false);
+          setWorkspaceMenuOpen(false);
+        }}
         onOpenAccountManager={() => {
           setMobileSidebarOpen(false);
           setAccountManagerOpen(true);
+          setWorkspaceManagerOpen(false);
           setWorkspaceSettingsOpen(false);
           setWorkspaceInviteOpen(false);
           setWorkspaceMenuOpen(false);
@@ -7066,14 +7060,6 @@ export default function HomePage() {
               }
             >
               Summaries ({summaryHistory.length})
-            </button>
-            <button
-              type="button"
-              className="notion-more-btn"
-              aria-label="Open shortcuts"
-              onClick={() => setShortcutsOpen(true)}
-            >
-              ⋯
             </button>
           </div>
         </header>
@@ -7281,37 +7267,64 @@ export default function HomePage() {
                           Send
                         </button>
                         {activeDocIsPdf && (
-                          <>
-                            <button
-                              type="button"
-                              className="btn"
-                              onClick={() => handleStartPdfConversion('simple')}
-                              disabled={
-                                pdfConversionLoading ||
-                                activeDocSaveLoading ||
-                                !isLoggedIn ||
-                                !activeWorkspaceSettings.allow_note_editing
-                              }
-                              title="Extract text into a clean editable draft"
-                            >
-                              {pdfConversionLoading && pdfConversionMode === 'simple' ? 'Converting...' : 'Edit as Word'}
-                            </button>
-                            <button
-                              type="button"
-                              className="btn"
-                              onClick={() => handleStartPdfConversion('layout')}
-                              disabled={
-                                pdfConversionLoading ||
-                                activeDocSaveLoading ||
-                                !isLoggedIn ||
-                                !activeWorkspaceSettings.allow_note_editing
-                              }
-                              title="Try to preserve page order, font sizes, and image placeholders"
-                            >
-                              {pdfConversionLoading && pdfConversionMode === 'layout' ? 'Converting...' : 'Keep Layout'}
-                            </button>
-                          </>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={handleOpenPdfConversionChoices}
+                            disabled={
+                              pdfConversionLoading ||
+                              activeDocSaveLoading ||
+                              !isLoggedIn ||
+                              !activeWorkspaceSettings.allow_note_editing
+                            }
+                            aria-expanded={pdfConversionChoiceOpen}
+                            title="Choose how to convert this PDF before editing"
+                          >
+                            {pdfConversionLoading ? 'Converting...' : 'Edit as Word'}
+                          </button>
                         )}
+                      </div>
+                    </section>
+                  )}
+                  {activeDocIsPdf && pdfConversionChoiceOpen && !pdfConversionDraft && (
+                    <section className="notion-pdf-conversion-choice" aria-label="Choose PDF conversion type">
+                      <div className="notion-pdf-conversion-choice-head">
+                        <strong>Choose how to make this PDF editable</strong>
+                        <p>
+                          Start with a clean text draft for most edits, or try layout mode when the page structure matters.
+                        </p>
+                      </div>
+                      <div className="notion-pdf-conversion-choice-grid">
+                        <button
+                          type="button"
+                          className="notion-pdf-conversion-choice-card recommended"
+                          onClick={() => handleStartPdfConversion('simple')}
+                          disabled={pdfConversionLoading || activeDocSaveLoading}
+                        >
+                          <span>Clean text draft</span>
+                          <strong>Best for editing and saving as Word</strong>
+                          <small>Extracts readable text into a simple editor. Use this for notes, summaries, and quick rewrites.</small>
+                        </button>
+                        <button
+                          type="button"
+                          className="notion-pdf-conversion-choice-card"
+                          onClick={() => handleStartPdfConversion('layout')}
+                          disabled={pdfConversionLoading || activeDocSaveLoading}
+                        >
+                          <span>Try to keep layout</span>
+                          <strong>Best when spacing and page order matter</strong>
+                          <small>Attempts to keep page order, font sizes, indentation, and image placeholders. Review before saving.</small>
+                        </button>
+                      </div>
+                      <div className="notion-pdf-conversion-choice-actions">
+                        <button
+                          type="button"
+                          className="btn"
+                          onClick={() => setPdfConversionChoiceOpen(false)}
+                          disabled={pdfConversionLoading || activeDocSaveLoading}
+                        >
+                          Cancel
+                        </button>
                       </div>
                     </section>
                   )}
@@ -7475,9 +7488,11 @@ export default function HomePage() {
             <section className="notion-overview-hero" aria-label="Workspace overview">
               <div className="notion-overview-hero-main">
                 <div className="notion-overview-eyebrow">
-                  <span className="notion-avatar notion-avatar-large" aria-hidden="true">
-                    {workspaceIconLabel(activeWorkspace, accountName)}
-                  </span>
+                  <WorkspaceIcon
+                    value={workspaceIconLabel(activeWorkspace, accountName)}
+                    fallback={accountName}
+                    large
+                  />
                   <span>{isLoggedIn ? 'Workspace overview' : 'Guest workspace'}</span>
                 </div>
                 <h2>{activeWorkspace?.name || `${accountName}'s Workspace`}</h2>
@@ -8341,40 +8356,6 @@ export default function HomePage() {
         </main>
       </div>
 
-      {shortcutsOpen && (
-        <div
-          className="notion-modal-backdrop"
-          role="presentation"
-          onClick={() => setShortcutsOpen(false)}
-        >
-          <section
-            className="notion-modal-card notion-shortcuts-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="keyboard-shortcuts-title"
-            onClick={(event) => event.stopPropagation()}
-          >
-            <h3 id="keyboard-shortcuts-title">Keyboard Shortcuts</h3>
-            <p className="notion-settings-help">
-              Faster navigation inspired by common note tools. Use Ctrl on Windows/Linux or ⌘ on macOS.
-            </p>
-            <ul className="notion-shortcuts-list">
-              {KEYBOARD_SHORTCUT_ITEMS.map((item) => (
-                <li key={item.keys}>
-                  <kbd>{item.keys}</kbd>
-                  <span>{item.action}</span>
-                </li>
-              ))}
-            </ul>
-            <div className="notion-confirm-actions">
-              <button type="button" className="btn btn-primary" onClick={() => setShortcutsOpen(false)}>
-                Close
-              </button>
-            </div>
-          </section>
-        </div>
-      )}
-
       <input
         ref={ocrImageInputRef}
         type="file"
@@ -8533,7 +8514,7 @@ export default function HomePage() {
 
       {inputDialogState.open && (
         <div
-          className="notion-modal-backdrop"
+          className="notion-modal-backdrop notion-confirm-backdrop"
           role="presentation"
           onClick={() => closeInputDialog(false)}
         >
@@ -8614,6 +8595,104 @@ export default function HomePage() {
                 onClick={() => closeConfirmDialog(false)}
               >
                 {confirmDialogState.cancelLabel}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {workspaceManagerOpen && (
+        <div
+          className="notion-modal-backdrop"
+          role="presentation"
+          onClick={() => {
+            if (workspaceActionLoading) return;
+            setWorkspaceManagerOpen(false);
+          }}
+        >
+          <section
+            className="notion-modal-card notion-workspace-manager-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="workspace-manager-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <header className="notion-settings-header">
+              <div>
+                <h3 id="workspace-manager-title">Manage Workspaces</h3>
+                <p className="notion-settings-help">
+                  Delete workspaces you own, or remove shared workspaces from your account.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="notion-modal-close"
+                onClick={() => setWorkspaceManagerOpen(false)}
+                disabled={workspaceActionLoading}
+                aria-label="Close workspace manager"
+              >
+                ×
+              </button>
+            </header>
+
+            <section className="notion-settings-block" aria-label="Workspace list">
+              <ul className="notion-inline-list notion-workspace-manager-list">
+                {(workspaceState.workspaces || []).length ? (
+                  (workspaceState.workspaces || []).map((workspace) => {
+                    const workspaceId = String(workspace?.id || '');
+                    const workspaceName = workspace?.name || 'Untitled workspace';
+                    const isOwnerWorkspace = workspace?.is_owner !== false;
+                    const isCurrentWorkspace = workspaceId === activeWorkspaceId;
+                    const memberCount = memberCountOfWorkspace(workspace, accountName);
+                    return (
+                      <li key={workspaceId || workspaceName}>
+                        <span className="notion-workspace-manager-item">
+                          <WorkspaceIcon
+                            value={workspaceIconLabel(workspace, workspaceName || accountName)}
+                            fallback={workspaceName || accountName}
+                          />
+                          <span>
+                            <strong>{workspaceName}</strong>
+                            <small>
+                              {isOwnerWorkspace ? 'Owner' : 'Shared'}
+                              {` · ${memberCount} member${memberCount === 1 ? '' : 's'}`}
+                              {isCurrentWorkspace ? ' · Current' : ''}
+                            </small>
+                          </span>
+                        </span>
+                        <div className="notion-inline-list-actions">
+                          <button
+                            type="button"
+                            className="notion-inline-list-remove"
+                            onClick={() =>
+                              isOwnerWorkspace
+                                ? handleDeleteWorkspace(workspace)
+                                : handleLeaveWorkspace(workspace)
+                            }
+                            disabled={workspaceActionLoading || workspaceLoading}
+                          >
+                            {isOwnerWorkspace ? 'Delete' : 'Remove'}
+                          </button>
+                        </div>
+                      </li>
+                    );
+                  })
+                ) : (
+                  <li>
+                    <span>No workspaces available</span>
+                  </li>
+                )}
+              </ul>
+            </section>
+
+            <div className="notion-modal-actions">
+              <button
+                type="button"
+                className="btn"
+                onClick={() => setWorkspaceManagerOpen(false)}
+                disabled={workspaceActionLoading}
+              >
+                Close
               </button>
             </div>
           </section>
@@ -8743,9 +8822,6 @@ export default function HomePage() {
             minSidebarRecentLimit={MIN_SIDEBAR_RECENT_LIMIT}
             maxSidebarRecentLimit={MAX_SIDEBAR_RECENT_LIMIT}
             defaultSidebarRecentLimit={DEFAULT_SIDEBAR_RECENT_LIMIT}
-            documentsLayoutOptions={DOCUMENTS_LAYOUT_OPTIONS}
-            documentsSortOptions={DOCUMENTS_SORT_OPTIONS}
-            documentsPageSizeOptions={DOCUMENTS_PAGE_SIZE_OPTIONS}
             sidebarDensityOptions={SIDEBAR_DENSITY_OPTIONS}
             accentColorPresets={WORKSPACE_ACCENT_PRESETS}
             onClearWorkspaceDocuments={handleClearWorkspaceDocuments}

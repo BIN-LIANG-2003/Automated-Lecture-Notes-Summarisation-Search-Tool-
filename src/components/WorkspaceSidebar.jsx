@@ -1,3 +1,5 @@
+import WorkspaceIcon from './WorkspaceIcon.jsx';
+
 export default function WorkspaceSidebar({
   mobileSidebarOpen,
   onCloseMobileSidebar,
@@ -16,6 +18,7 @@ export default function WorkspaceSidebar({
   canOpenWorkspaceInvite,
   accountEmail,
   onOpenAccountManager,
+  onOpenWorkspaceManager,
   workspaces,
   activeWorkspaceId,
   onSelectWorkspace,
@@ -76,9 +79,7 @@ export default function WorkspaceSidebar({
             onClick={onToggleWorkspaceMenu}
           >
             <span className="notion-workspace-trigger-main">
-              <span className="notion-avatar" aria-hidden="true">
-                {activeWorkspaceIcon}
-              </span>
+              <WorkspaceIcon value={activeWorkspaceIcon} fallback={accountName} />
               <span className="notion-workspace-trigger-label">{activeWorkspaceLabel}</span>
             </span>
             <span className="notion-workspace-trigger-chevron" aria-hidden="true">
@@ -103,9 +104,7 @@ export default function WorkspaceSidebar({
           hidden={!workspaceMenuOpen}
         >
           <div className="notion-space-head">
-            <div className="notion-avatar notion-avatar-large" aria-hidden="true">
-              {activeWorkspaceIcon}
-            </div>
+            <WorkspaceIcon value={activeWorkspaceIcon} fallback={accountName} large />
             <div>
               <strong>{activeWorkspaceLabel}</strong>
               <p>
@@ -142,10 +141,10 @@ export default function WorkspaceSidebar({
             <button
               type="button"
               className="notion-ellipsis-btn"
-              aria-label="More account actions"
-              onClick={onOpenAccountManager}
+              aria-label="Manage workspaces"
+              onClick={onOpenWorkspaceManager}
             >
-              ...
+              Manage
             </button>
           </div>
 
@@ -158,9 +157,10 @@ export default function WorkspaceSidebar({
               disabled={workspaceBusy}
             >
               <span className="notion-space-switch-main">
-                <span className="notion-avatar" aria-hidden="true">
-                  {getWorkspaceIconLabel(workspace, workspace.name || accountName)}
-                </span>
+                <WorkspaceIcon
+                  value={getWorkspaceIconLabel(workspace, workspace.name || accountName)}
+                  fallback={workspace.name || accountName}
+                />
                 <span>{workspace.name}</span>
               </span>
               <span aria-hidden="true">{workspace.id === activeWorkspaceId ? '✓' : ''}</span>

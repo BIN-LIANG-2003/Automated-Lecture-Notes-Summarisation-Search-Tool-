@@ -4,6 +4,8 @@ import MyFeedbackList from './MyFeedbackList.jsx';
 import {
   FEEDBACK_PRIORITIES,
   FEEDBACK_TYPES,
+  addFeedbackFollowUp,
+  closeFeedback,
   findSimilarFeedback,
   getMyFeedback,
   listMyFeedback,
@@ -39,6 +41,11 @@ export default function FeedbackModal({
   const [submitError, setSubmitError] = useState('');
   const [similarItems, setSimilarItems] = useState([]);
   const [similarLoading, setSimilarLoading] = useState(false);
+  const [followUpDraft, setFollowUpDraft] = useState('');
+  const [followUpLoading, setFollowUpLoading] = useState(false);
+  const [followUpError, setFollowUpError] = useState('');
+  const [closeLoading, setCloseLoading] = useState(false);
+  const [closeError, setCloseError] = useState('');
 
   const supportEmail = config.support_email || 'hello@studies-hub.com';
   const titleLongEnough = form.title.trim().length >= 8;
@@ -83,6 +90,9 @@ export default function FeedbackModal({
     try {
       const payload = await getMyFeedback(item.id);
       setSelectedItem(payload.item || item);
+      setFollowUpDraft('');
+      setFollowUpError('');
+      setCloseError('');
     } catch (error) {
       setItemsError(error?.message || 'Failed to load feedback detail');
     } finally {
@@ -159,6 +169,43 @@ export default function FeedbackModal({
       setSubmitError(error?.message || 'Failed to submit feedback');
     } finally {
       setSubmitLoading(false);
+    }
+  };
+
+  const handleSubmitFollowUp = async (event) => {
+    event.preventDefault();
+    if (!selectedItem?.id || !followUpDraft.trim()) return;
+    setFollowUpLoading(true);
+    setFollowUpError('');
+    setCloseError('');
+    try {
+      const payload = await addFeedbackFollowUp(selectedItem.id, followUpDraft);
+      const nextItem = payload.item || selectedItem;
+      setSelectedItem(nextItem);
+      setItems((prev) => prev.map((item) => (Number(item.id) === Number(nextItem.id) ? { ...item, ...nextItem } : item)));
+      setFollowUpDraft('');
+    } catch (error) {
+      setFollowUpError(error?.message || 'Failed to send follow-up');
+    } finally {
+      setFollowUpLoading(false);
+    }
+  };
+
+  const handleCloseFeedback = async () => {
+    if (!selectedItem?.id || closeLoading) return;
+    setCloseLoading(true);
+    setCloseError('');
+    setFollowUpError('');
+    try {
+      const payload = await closeFeedback(selectedItem.id);
+      const nextItem = payload.item || selectedItem;
+      setSelectedItem(nextItem);
+      setItems((prev) => prev.map((item) => (Number(item.id) === Number(nextItem.id) ? { ...item, ...nextItem } : item)));
+      setFollowUpDraft('');
+    } catch (error) {
+      setCloseError(error?.message || 'Failed to close feedback');
+    } finally {
+      setCloseLoading(false);
     }
   };
 
@@ -325,7 +372,23 @@ export default function FeedbackModal({
             {selectedItem ? (
               <>
                 {detailLoading && <p className="muted tiny">Refreshing detail...</p>}
-                <FeedbackDetailPanel item={selectedItem} onBack={() => setSelectedItem(null)} />
+                <FeedbackDetailPanel
+                  item={selectedItem}
+                  onBack={() => {
+                    setSelectedItem(null);
+                    setFollowUpDraft('');
+                    setFollowUpError('');
+                    setCloseError('');
+                  }}
+                  followUpDraft={followUpDraft}
+                  followUpLoading={followUpLoading}
+                  followUpError={followUpError}
+                  closeLoading={closeLoading}
+                  closeError={closeError}
+                  onFollowUpDraftChange={setFollowUpDraft}
+                  onSubmitFollowUp={handleSubmitFollowUp}
+                  onCloseFeedback={handleCloseFeedback}
+                />
               </>
             ) : (
               <MyFeedbackList

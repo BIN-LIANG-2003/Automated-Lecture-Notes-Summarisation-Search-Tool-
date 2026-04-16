@@ -4,6 +4,7 @@ import uuid
 from flask import jsonify, request
 
 from .db import ensure_user_friend_code, get_db_connection, row_value
+from .document_domain import build_editable_file_bytes
 from .share_domain import is_document_soft_deleted, user_can_manage_document_share_links
 from .security import get_authenticated_username
 from .storage import detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, write_file_bytes_to_storage
@@ -129,6 +130,45 @@ def create_system_notification(
         return False
 
 
+def create_friend_message(
+    conn,
+    sender_username,
+    recipient_username,
+    body,
+    *,
+    message_type='text',
+    metadata=None,
+):
+    safe_sender = str(sender_username or '').strip()
+    safe_recipient = str(recipient_username or '').strip()
+    safe_body = str(body or '').strip()
+    if not safe_sender or not safe_recipient or not safe_body:
+        return 0
+    cursor = conn.execute(
+        '''
+        INSERT INTO friend_messages (
+            sender_username,
+            recipient_username,
+            body,
+            message_type,
+            metadata_json,
+            created_at,
+            read_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ''',
+        (
+            safe_sender,
+            safe_recipient,
+            safe_body[:MAX_FRIEND_MESSAGE_LENGTH],
+            str(message_type or 'text').strip() or 'text',
+            _safe_metadata_json(metadata),
+            utcnow_iso(),
+            None,
+        ),
+    )
+    return _last_insert_id(conn, cursor)
+
+
 def _load_document(conn, document_id):
     safe_doc_id = parse_int(document_id, 0, 1)
     if safe_doc_id <= 0:
@@ -221,6 +261,31 @@ def _resolve_file_share_target_workspace(conn, recipient_username, requested_wor
     return workspace_id
 
 
+def _read_share_source_file_bytes(source_doc, source_filename, file_type):
+    try:
+        return read_file_bytes_from_storage(source_filename), detect_mimetype(source_filename, file_type), ''
+    except Exception as storage_error:
+        fallback_text = str((source_doc or {}).get('content') or '').strip()
+        fallback_html = str((source_doc or {}).get('content_html') or '')
+        if not fallback_text:
+            raise RuntimeError(
+                'The shared file is unavailable. Ask the sender to re-upload it or share it again.'
+            ) from storage_error
+
+        try:
+            file_bytes, mimetype = build_editable_file_bytes(file_type, fallback_text, fallback_html)
+        except Exception as fallback_error:
+            raise RuntimeError(
+                'The original file could not be copied, and StudyHub could not rebuild it from saved text.'
+            ) from fallback_error
+
+        return (
+            file_bytes,
+            mimetype,
+            'Original file storage was unavailable, so StudyHub rebuilt the copy from saved text.',
+        )
+
+
 def _copy_document_to_user_workspace(conn, source_doc, recipient_username, workspace_id):
     source_filename = str((source_doc or {}).get('filename') or '').strip()
     if not source_filename:
@@ -230,8 +295,11 @@ def _copy_document_to_user_workspace(conn, source_doc, recipient_username, works
     if not workspace_id:
         raise ValueError('Could not resolve recipient workspace')
 
-    file_bytes = read_file_bytes_from_storage(source_filename)
-    mimetype = detect_mimetype(source_filename, file_type)
+    file_bytes, mimetype, copy_warning = _read_share_source_file_bytes(
+        source_doc,
+        source_filename,
+        file_type,
+    )
     storage_written = False
     try:
         write_file_bytes_to_storage(copied_filename, file_bytes, mimetype)
@@ -247,7 +315,7 @@ def _copy_document_to_user_workspace(conn, source_doc, recipient_username, works
             raise RuntimeError('Document copy did not return an id')
         cursor = conn.execute('SELECT * FROM documents WHERE id = ? LIMIT 1', (new_document_id,))
         copied_doc = row_to_dict(cursor.fetchone()) or {}
-        return new_document_id, copied_doc, workspace_id
+        return new_document_id, copied_doc, workspace_id, copy_warning
     except Exception:
         if storage_written:
             remove_document_file_from_storage(copied_filename)
@@ -319,6 +387,13 @@ def _serialize_message(row, viewer_username=''):
     item['direction'] = direction
     item['peer_username'] = recipient if direction == 'sent' else sender
     item['is_unread'] = bool(recipient == viewer and not item.get('read_at'))
+    item['message_type'] = str(item.get('message_type') or 'text').strip() or 'text'
+    raw_metadata = item.get('metadata_json') or ''
+    try:
+        item['metadata'] = json.loads(raw_metadata) if raw_metadata else {}
+    except Exception:
+        item['metadata'] = {}
+    item.pop('metadata_json', None)
     return item
 
 
@@ -735,19 +810,7 @@ def send_friend_message():
             return jsonify({'error': 'Recipient not found'}), 404
         if not are_friends(conn, username, recipient):
             return jsonify({'error': 'You can only message friends'}), 403
-        cursor = conn.execute(
-            '''
-            INSERT INTO friend_messages (
-                sender_username,
-                recipient_username,
-                body,
-                created_at,
-                read_at
-            ) VALUES (?, ?, ?, ?, ?)
-            ''',
-            (username, recipient, body, utcnow_iso(), None),
-        )
-        message_id = _last_insert_id(conn, cursor)
+        message_id = create_friend_message(conn, username, recipient, body)
         payload = _build_friend_summary(conn, username)
         conn.commit()
         return jsonify({
@@ -809,6 +872,27 @@ def send_friend_file_share():
         body = f'{username} shared {doc_title} with you. Accept it to add a copy to your files.'
         if note:
             body = f'{body} Note: {note}'
+        chat_body = f'Shared file: {doc_title}'
+        if note:
+            chat_body = f'{chat_body}\n{note}'
+        message_metadata = {
+            'status': 'pending',
+            'sender_username': username,
+            'recipient_username': recipient,
+            'source_document_id': document_id,
+            'source_workspace_id': str(source_doc.get('workspace_id') or '').strip(),
+            'document_title': doc_title,
+            'document_file_type': _document_file_type(source_doc),
+            'note': note,
+        }
+        message_id = create_friend_message(
+            conn,
+            username,
+            recipient,
+            chat_body,
+            message_type=DIRECT_FILE_SHARE_TYPE,
+            metadata=message_metadata,
+        )
         create_system_notification(
             conn,
             recipient,
@@ -823,6 +907,7 @@ def send_friend_file_share():
         conn.commit()
         return jsonify({
             'message': f'File share sent to {recipient}.',
+            'message_id': message_id,
             'summary': payload,
         }), 201
     except Exception:
@@ -936,18 +1021,27 @@ def respond_friend_file_share(notification_id):
         except FileShareWorkspaceError as exc:
             return jsonify({'error': str(exc)}), exc.status_code
 
-        new_document_id, copied_doc, workspace_id = _copy_document_to_user_workspace(
-            conn,
-            source_doc,
-            username,
-            workspace_id,
-        )
+        try:
+            new_document_id, copied_doc, workspace_id, copy_warning = _copy_document_to_user_workspace(
+                conn,
+                source_doc,
+                username,
+                workspace_id,
+            )
+        except RuntimeError as exc:
+            return jsonify({'error': str(exc)}), 409
+        except Exception as exc:
+            print(f'Friend file share copy failed: {exc}')
+            return jsonify({'error': 'File share could not be copied. Ask the sender to share it again.'}), 500
+
         metadata.update({
             'status': 'accepted',
             'responded_at': now_iso,
             'accepted_document_id': new_document_id,
             'accepted_workspace_id': workspace_id,
         })
+        if copy_warning:
+            metadata['accepted_copy_warning'] = copy_warning
         conn.execute(
             '''
             UPDATE user_notifications
@@ -974,20 +1068,23 @@ def respond_friend_file_share(notification_id):
         )
         payload = _build_friend_summary(conn, username)
         conn.commit()
-        return jsonify({
+        response_payload = {
             'message': 'File added to your files.',
             'status': 'accepted',
             'document_id': new_document_id,
             'workspace_id': workspace_id,
             'document': copied_doc,
             'summary': payload,
-        }), 200
+        }
+        if copy_warning:
+            response_payload['warning'] = copy_warning
+        return jsonify(response_payload), 200
     except Exception:
         try:
             conn.rollback()
         except Exception:
             pass
-        raise
+        return jsonify({'error': 'File share response failed'}), 500
     finally:
         conn.close()
 

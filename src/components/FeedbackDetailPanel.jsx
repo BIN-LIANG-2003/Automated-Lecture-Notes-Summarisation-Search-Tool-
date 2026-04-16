@@ -7,13 +7,14 @@ const formatDateLabel = (value) => {
   return date.toLocaleString();
 };
 
-const eventLabel = (event) => {
+const eventLabel = (event, admin) => {
   const type = String(event?.event_type || '').trim();
   if (type === 'submitted') return 'Received';
   if (type === 'status_changed') {
     return `Status changed to ${getFeedbackStatusLabel(event?.new_status)}`;
   }
   if (type === 'public_reply') return 'Reply sent';
+  if (type === 'user_follow_up') return admin ? 'User follow-up' : 'Your follow-up';
   if (type === 'internal_note') return 'Private note';
   if (type === 'email_failed') return 'Email failed';
   return type || 'Update';
@@ -35,9 +36,24 @@ const eventMessage = (event) => {
   return message;
 };
 
-export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
+export default function FeedbackDetailPanel({
+  item,
+  onBack,
+  admin = false,
+  followUpDraft = '',
+  followUpLoading = false,
+  followUpError = '',
+  closeLoading = false,
+  closeError = '',
+  onFollowUpDraftChange,
+  onSubmitFollowUp,
+  onCloseFeedback,
+}) {
   if (!item) return null;
   const events = Array.isArray(item.events) ? item.events.filter((event) => shouldShowEvent(event, admin)) : [];
+  const isClosed = item.status === 'closed';
+  const canSendFollowUp = !admin && !isClosed && typeof onSubmitFollowUp === 'function';
+  const canCloseFeedback = !admin && !isClosed && typeof onCloseFeedback === 'function';
 
   return (
     <section className="studyhub-feedback-detail" aria-label="Feedback detail">
@@ -74,18 +90,6 @@ export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
             <dd>{item.user_email_snapshot || '-'}</dd>
           </div>
           <div>
-            <dt>Page</dt>
-            <dd>{item.page_path || '-'}</dd>
-          </div>
-          <div>
-            <dt>Workspace</dt>
-            <dd>{item.workspace_id || '-'}</dd>
-          </div>
-          <div>
-            <dt>Document</dt>
-            <dd>{item.document_id || '-'}</dd>
-          </div>
-          <div>
             <dt>Assigned</dt>
             <dd>{item.assigned_to || '-'}</dd>
           </div>
@@ -104,7 +108,7 @@ export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
                   className={event.visibility === 'internal' ? 'is-internal' : ''}
                 >
                   <div>
-                    <strong>{eventLabel(event)}</strong>
+                    <strong>{eventLabel(event, admin)}</strong>
                     <span>{formatDateLabel(event.created_at)}</span>
                   </div>
                   {message && <p>{message}</p>}
@@ -116,6 +120,48 @@ export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
           <p className="muted tiny">No timeline updates yet.</p>
         )}
       </div>
+
+      {canSendFollowUp && (
+        <form className="studyhub-feedback-followup" onSubmit={onSubmitFollowUp}>
+          <label className="notion-share-email-field">
+            <span>Continue this feedback</span>
+            <textarea
+              rows={4}
+              value={followUpDraft}
+              onChange={(event) => onFollowUpDraftChange?.(event.target.value)}
+              placeholder="Add more details, answer the admin, or explain what still needs attention."
+              maxLength={3000}
+              disabled={followUpLoading}
+            />
+          </label>
+          {followUpError && <p className="studyhub-feedback-alert is-error" role="alert">{followUpError}</p>}
+          <div className="studyhub-feedback-followup-actions">
+            <button type="submit" className="btn btn-primary" disabled={followUpLoading || !followUpDraft.trim()}>
+              {followUpLoading ? 'Sending...' : 'Send follow-up'}
+            </button>
+            <span className="muted tiny">Your update stays in this timeline, and the project owner can reply here.</span>
+          </div>
+        </form>
+      )}
+
+      {!admin && (
+        <div className={`studyhub-feedback-resolution${isClosed ? ' is-closed' : ''}`}>
+          <div>
+            <strong>{isClosed ? 'Feedback closed' : 'Issue solved?'}</strong>
+            <p>
+              {isClosed
+                ? 'The project owner will see this feedback as completed.'
+                : 'Close this feedback when you feel the issue has been handled.'}
+            </p>
+          </div>
+          {canCloseFeedback && (
+            <button type="button" className="btn" onClick={onCloseFeedback} disabled={closeLoading}>
+              {closeLoading ? 'Closing...' : 'End feedback'}
+            </button>
+          )}
+          {closeError && <p className="studyhub-feedback-alert is-error" role="alert">{closeError}</p>}
+        </div>
+      )}
     </section>
   );
 }

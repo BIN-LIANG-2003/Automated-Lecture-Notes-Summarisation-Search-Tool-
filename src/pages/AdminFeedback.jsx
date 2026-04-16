@@ -5,6 +5,7 @@ import FeedbackDetailPanel from '../components/FeedbackDetailPanel.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
 import {
+  ADMIN_FEEDBACK_STATUSES,
   FEEDBACK_PRIORITIES,
   FEEDBACK_STATUSES,
   FEEDBACK_TYPES,
@@ -34,7 +35,6 @@ export default function AdminFeedbackPage() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [statusDraft, setStatusDraft] = useState('new');
   const [assignedDraft, setAssignedDraft] = useState('');
-  const [labelsDraft, setLabelsDraft] = useState('');
   const [publicReplyDraft, setPublicReplyDraft] = useState('');
   const [internalNoteDraft, setInternalNoteDraft] = useState('');
   const [actionLoading, setActionLoading] = useState(false);
@@ -83,7 +83,6 @@ export default function AdminFeedbackPage() {
       setSelectedItem(item);
       setStatusDraft(item?.status || 'new');
       setAssignedDraft(item?.assigned_to || '');
-      setLabelsDraft(item?.labels || '');
     } catch (err) {
       if (detailRequestSeqRef.current !== requestSeq) return;
       showToast(err?.message || 'Failed to load feedback detail', 'error');
@@ -125,11 +124,13 @@ export default function AdminFeedbackPage() {
     if (!selectedItem?.id) return;
     setActionLoading(true);
     try {
-      const payload = await updateAdminFeedback(selectedItem.id, {
-        status: statusDraft,
+      const updatePayload = {
         assigned_to: assignedDraft,
-        labels: labelsDraft,
-      });
+      };
+      if (selectedItem.status !== 'closed') {
+        updatePayload.status = statusDraft;
+      }
+      const payload = await updateAdminFeedback(selectedItem.id, updatePayload);
       setSelectedItem(payload.item);
       showToast('Feedback updated.', 'success');
       void loadInbox();
@@ -266,11 +267,20 @@ export default function AdminFeedbackPage() {
                     </div>
                   </div>
 
-                  <div className="studyhub-admin-triage-grid" aria-label="Feedback triage">
+                  <div className="studyhub-admin-triage-grid studyhub-admin-triage-grid-compact" aria-label="Feedback triage">
                     <label className="notion-share-email-field">
                       <span>Status</span>
-                      <select value={statusDraft} onChange={(event) => setStatusDraft(event.target.value)}>
-                        {FEEDBACK_STATUSES.map((item) => (
+                      <select
+                        value={statusDraft}
+                        onChange={(event) => setStatusDraft(event.target.value)}
+                        disabled={selectedItem.status === 'closed'}
+                      >
+                        {statusDraft === 'closed' && (
+                          <option value="closed" disabled>
+                            Closed by submitter
+                          </option>
+                        )}
+                        {ADMIN_FEEDBACK_STATUSES.map((item) => (
                           <option key={item.value} value={item.value}>
                             {item.label}
                           </option>
@@ -284,15 +294,6 @@ export default function AdminFeedbackPage() {
                         value={assignedDraft}
                         onChange={(event) => setAssignedDraft(event.target.value)}
                         placeholder="Username"
-                      />
-                    </label>
-                    <label className="notion-share-email-field">
-                      <span>Labels</span>
-                      <input
-                        type="text"
-                        value={labelsDraft}
-                        onChange={(event) => setLabelsDraft(event.target.value)}
-                        placeholder="triage, sprint-1"
                       />
                     </label>
                     <button type="button" className="btn btn-primary" onClick={saveAdminFields} disabled={actionLoading}>

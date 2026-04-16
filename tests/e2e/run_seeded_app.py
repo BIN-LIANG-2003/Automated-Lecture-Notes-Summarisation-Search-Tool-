@@ -148,11 +148,10 @@ def seed_app_data():
                 document_id,
                 user_agent,
                 assigned_to,
-                labels,
                 created_at,
                 updated_at,
                 resolved_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 'bob',
@@ -166,7 +165,6 @@ def seed_app_data():
                 'ws-e2e',
                 None,
                 'seeded-playwright',
-                '',
                 '',
                 now_iso,
                 now_iso,

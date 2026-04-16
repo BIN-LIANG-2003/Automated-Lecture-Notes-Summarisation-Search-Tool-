@@ -220,6 +220,28 @@ def ensure_document_share_links_columns(conn):
     ensure_document_share_links_column(conn, 'recipient_email', 'TEXT')
 
 
+def ensure_friend_messages_column(conn, column_name, column_type='TEXT'):
+    safe_column = str(column_name or '').strip()
+    safe_type = str(column_type or 'TEXT').strip()
+    if not safe_column:
+        return
+    if table_column_exists(conn, 'friend_messages', safe_column):
+        return
+    conn.execute(f'ALTER TABLE friend_messages ADD COLUMN {safe_column} {safe_type}')
+
+
+def ensure_friend_messages_columns(conn):
+    ensure_friend_messages_column(conn, 'message_type', 'TEXT')
+    ensure_friend_messages_column(conn, 'metadata_json', 'TEXT')
+    conn.execute(
+        '''
+        UPDATE friend_messages
+        SET message_type = 'text'
+        WHERE message_type IS NULL OR TRIM(CAST(message_type AS TEXT)) = ''
+        '''
+    )
+
+
 def ensure_users_column(conn, column_name, column_type='TEXT'):
     safe_column = str(column_name or '').strip()
     safe_type = str(column_type or 'TEXT').strip()
@@ -409,7 +431,6 @@ def init_db():
             document_id INTEGER,
             user_agent TEXT,
             assigned_to TEXT,
-            labels TEXT,
             created_at {timestamp_type},
             updated_at {timestamp_type},
             resolved_at {optional_timestamp_type}
@@ -458,6 +479,8 @@ def init_db():
             sender_username TEXT NOT NULL,
             recipient_username TEXT NOT NULL,
             body TEXT NOT NULL,
+            message_type TEXT,
+            metadata_json TEXT,
             created_at {timestamp_type},
             read_at {optional_timestamp_type}
         );
@@ -613,6 +636,7 @@ def init_db():
         ensure_documents_columns(conn, optional_timestamp_type)
         ensure_workspaces_columns(conn)
         ensure_document_share_links_columns(conn)
+        ensure_friend_messages_columns(conn)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(users_email_verification_token_idx_sql)

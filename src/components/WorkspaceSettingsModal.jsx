@@ -1,3 +1,9 @@
+import { useRef, useState } from 'react';
+import WorkspaceIcon, { isWorkspaceImageIcon } from './WorkspaceIcon.jsx';
+
+const MAX_WORKSPACE_ICON_UPLOAD_BYTES = 256 * 1024;
+const WORKSPACE_ICON_UPLOAD_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+
 export default function WorkspaceSettingsModal({
   open = false,
   workspaceActionLoading = false,
@@ -13,9 +19,6 @@ export default function WorkspaceSettingsModal({
   minSidebarRecentLimit = 5,
   maxSidebarRecentLimit = 20,
   defaultSidebarRecentLimit = 10,
-  documentsLayoutOptions = [],
-  documentsSortOptions = [],
-  documentsPageSizeOptions = [],
   sidebarDensityOptions = [],
   accentColorPresets = [],
   onClearWorkspaceDocuments,
@@ -28,10 +31,41 @@ export default function WorkspaceSettingsModal({
   userNotificationPreferencesSaving = false,
   onChangeEmailNotifications,
 }) {
+  const workspaceIconFileRef = useRef(null);
+  const [workspaceIconUploadError, setWorkspaceIconUploadError] = useState('');
+
+  const workspaceIconValue = String(workspaceSettingsDraft?.workspace_icon || '').trim();
+  const workspaceIconIsImage = isWorkspaceImageIcon(workspaceIconValue);
+  const handleWorkspaceIconFileChange = (event) => {
+    const file = event.target?.files?.[0] || null;
+    if (event.target) event.target.value = '';
+    if (!file) return;
+    if (!WORKSPACE_ICON_UPLOAD_TYPES.has(file.type)) {
+      setWorkspaceIconUploadError('Upload a PNG, JPG, WebP, or GIF image.');
+      return;
+    }
+    if (file.size > MAX_WORKSPACE_ICON_UPLOAD_BYTES) {
+      setWorkspaceIconUploadError('Use an image smaller than 256 KB.');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = String(reader.result || '').trim();
+      if (!isWorkspaceImageIcon(result)) {
+        setWorkspaceIconUploadError('This image could not be used as a workspace icon.');
+        return;
+      }
+      setWorkspaceIconUploadError('');
+      updateWorkspaceSettingsDraft?.({ workspace_icon: result });
+    };
+    reader.onerror = () => {
+      setWorkspaceIconUploadError('This image could not be read.');
+    };
+    reader.readAsDataURL(file);
+  };
+
   if (!open) return null;
 
-  const activeTabMeta =
-    workspaceSettingsTabs.find((item) => item.id === workspaceSettingsTab) || workspaceSettingsTabs[0] || null;
   const enabledNotificationCount = [
     workspaceSettingsDraft.notify_upload_events,
     workspaceSettingsDraft.notify_summary_events,
@@ -39,6 +73,17 @@ export default function WorkspaceSettingsModal({
   ].filter(Boolean).length;
   const totalNotes = Number(workspaceInsights?.totalNotes) || 0;
   const isWorkspaceOwner = activeWorkspace?.is_owner !== false;
+  const sharedWorkspaceView = isLoggedIn && !isWorkspaceOwner;
+  const visibleWorkspaceSettingsTabs = sharedWorkspaceView
+    ? [{ id: 'danger', label: 'Shared Workspace', description: 'Remove this workspace from your account.' }]
+    : workspaceSettingsTabs;
+  const safeWorkspaceSettingsTab = visibleWorkspaceSettingsTabs.some((item) => item.id === workspaceSettingsTab)
+    ? workspaceSettingsTab
+    : visibleWorkspaceSettingsTabs[0]?.id || 'general';
+  const activeTabMeta =
+    visibleWorkspaceSettingsTabs.find((item) => item.id === safeWorkspaceSettingsTab) ||
+    visibleWorkspaceSettingsTabs[0] ||
+    null;
   const ownerOnlyDisabled = workspaceActionLoading || (isLoggedIn && !isWorkspaceOwner);
   const emailNotificationsEnabled =
     userNotificationPreferences?.emailNotificationsEnabled !== false;
@@ -63,8 +108,10 @@ export default function WorkspaceSettingsModal({
           <div>
             <h3 id="workspace-settings-title">Workspace Settings</h3>
             <p className="notion-settings-subtitle">
-              {isWorkspaceOwner
-                ? 'Manage how this workspace looks, who can collaborate, and what defaults new study flows start with.'
+              {sharedWorkspaceView
+                ? 'Remove this shared workspace from your account. The owner and other members keep access.'
+                : isWorkspaceOwner
+                ? 'Manage how this workspace looks, who can collaborate, and how alerts are delivered.'
                 : 'View this workspace configuration or leave the shared workspace from your account.'}
             </p>
           </div>
@@ -81,21 +128,23 @@ export default function WorkspaceSettingsModal({
           </button>
         </header>
 
-        <div className="notion-settings-layout">
-          <nav className="notion-settings-nav" aria-label="Settings sections">
-            {workspaceSettingsTabs.map((item) => (
-              <button
-                key={item.id}
-                type="button"
-                className={`notion-settings-nav-item ${workspaceSettingsTab === item.id ? 'active' : ''}`}
-                onClick={() => setWorkspaceSettingsTab?.(item.id)}
-                disabled={workspaceActionLoading}
-              >
-                <strong>{item.label}</strong>
-                <span>{item.description}</span>
-              </button>
-            ))}
-          </nav>
+        <div className={`notion-settings-layout${sharedWorkspaceView ? ' notion-settings-layout-single' : ''}`}>
+          {!sharedWorkspaceView && (
+            <nav className="notion-settings-nav" aria-label="Settings sections">
+              {visibleWorkspaceSettingsTabs.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`notion-settings-nav-item ${safeWorkspaceSettingsTab === item.id ? 'active' : ''}`}
+                  onClick={() => setWorkspaceSettingsTab?.(item.id)}
+                  disabled={workspaceActionLoading}
+                >
+                  <strong>{item.label}</strong>
+                  <span>{item.description}</span>
+                </button>
+              ))}
+            </nav>
+          )}
 
           <div className="notion-settings-pane">
             <div className="notion-settings-pane-head">
@@ -103,20 +152,67 @@ export default function WorkspaceSettingsModal({
               <p className="notion-settings-subtitle">{activeTabMeta?.description || ''}</p>
             </div>
 
-            {workspaceSettingsTab === 'general' && (
+            {safeWorkspaceSettingsTab === 'general' && (
               <>
                 <section className="notion-settings-block">
                   <h4>Identity</h4>
                   <div className="notion-settings-row">
                     <label htmlFor="workspace-icon-input">Icon</label>
-                    <input
-                      id="workspace-icon-input"
-                      type="text"
-                      value={workspaceSettingsDraft.workspace_icon}
-                      onChange={(event) => updateWorkspaceSettingsDraft?.({ workspace_icon: event.target.value })}
-                      placeholder="📚"
-                      disabled={ownerOnlyDisabled}
-                    />
+                    <div className="notion-workspace-icon-editor">
+                      <WorkspaceIcon
+                        value={workspaceIconValue}
+                        fallback={workspaceNameDraft || activeWorkspace?.name || 'W'}
+                        large
+                      />
+                      <div className="notion-workspace-icon-controls">
+                        <input
+                          id="workspace-icon-input"
+                          type="text"
+                          value={workspaceIconIsImage ? '' : workspaceIconValue}
+                          onChange={(event) => {
+                            setWorkspaceIconUploadError('');
+                            updateWorkspaceSettingsDraft?.({ workspace_icon: event.target.value });
+                          }}
+                          placeholder={workspaceIconIsImage ? 'Image icon selected' : '📚'}
+                          disabled={ownerOnlyDisabled}
+                        />
+                        <div className="notion-workspace-icon-actions">
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => workspaceIconFileRef.current?.click()}
+                            disabled={ownerOnlyDisabled}
+                          >
+                            Upload Image
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={() => {
+                              setWorkspaceIconUploadError('');
+                              updateWorkspaceSettingsDraft?.({ workspace_icon: '📚' });
+                            }}
+                            disabled={ownerOnlyDisabled}
+                          >
+                            Reset
+                          </button>
+                        </div>
+                        <input
+                          ref={workspaceIconFileRef}
+                          type="file"
+                          accept="image/png,image/jpeg,image/webp,image/gif"
+                          className="visually-hidden"
+                          onChange={handleWorkspaceIconFileChange}
+                          disabled={ownerOnlyDisabled}
+                        />
+                        <p className="notion-settings-help">
+                          Use an emoji or upload a PNG, JPG, WebP, or GIF under 256 KB.
+                        </p>
+                        {workspaceIconUploadError && (
+                          <p className="notion-settings-error">{workspaceIconUploadError}</p>
+                        )}
+                      </div>
+                    </div>
                   </div>
                   <div className="notion-settings-row">
                     <label htmlFor="workspace-name-input">Workspace Name</label>
@@ -186,110 +282,7 @@ export default function WorkspaceSettingsModal({
               </>
             )}
 
-            {workspaceSettingsTab === 'defaults' && (
-              <>
-                <section className="notion-settings-block">
-                  <h4>Organization defaults</h4>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-category-input">Default Category</label>
-                    <input
-                      id="workspace-default-category-input"
-                      type="text"
-                      value={workspaceSettingsDraft.default_category}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ default_category: event.target.value })
-                      }
-                      placeholder="Uncategorized"
-                      disabled={ownerOnlyDisabled}
-                    />
-                  </div>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.auto_categorize}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ auto_categorize: event.target.checked })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    />
-                    <span>Auto-categorize uploads when category is empty</span>
-                  </label>
-                </section>
-
-                <section className="notion-settings-block">
-                  <h4>Notes view defaults</h4>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-home-tab-select">Default Landing Page</label>
-                    <select
-                      id="workspace-default-home-tab-select"
-                      value={workspaceSettingsDraft.default_home_tab}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ default_home_tab: event.target.value })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    >
-                      <option value="home">Home overview</option>
-                      <option value="files">Notes</option>
-                    </select>
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-layout-select">Default Notes Layout</label>
-                    <select
-                      id="workspace-default-layout-select"
-                      value={workspaceSettingsDraft.default_documents_layout}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ default_documents_layout: event.target.value })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    >
-                      {documentsLayoutOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-sort-select">Default Notes Sort</label>
-                    <select
-                      id="workspace-default-sort-select"
-                      value={workspaceSettingsDraft.default_documents_sort}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ default_documents_sort: event.target.value })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    >
-                      {documentsSortOptions.map((option) => (
-                        <option key={option.value} value={option.value}>
-                          {option.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-default-page-size-select">Notes Per Page</label>
-                    <select
-                      id="workspace-default-page-size-select"
-                      value={workspaceSettingsDraft.default_documents_page_size}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({
-                          default_documents_page_size: Number(event.target.value) || 20,
-                        })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    >
-                      {documentsPageSizeOptions.map((size) => (
-                        <option key={`page-size-${size}`} value={size}>
-                          {size}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </section>
-              </>
-            )}
-
-            {workspaceSettingsTab === 'experience' && (
+            {safeWorkspaceSettingsTab === 'experience' && (
               <>
                 <section className="notion-settings-block">
                   <h4>Sidebar behavior</h4>
@@ -389,7 +382,7 @@ export default function WorkspaceSettingsModal({
               </>
             )}
 
-            {workspaceSettingsTab === 'notifications' && (
+            {safeWorkspaceSettingsTab === 'notifications' && (
               <>
                 <section className="notion-settings-block">
                   <h4>In-app notifications</h4>
@@ -468,7 +461,7 @@ export default function WorkspaceSettingsModal({
               </>
             )}
 
-            {workspaceSettingsTab === 'permissions' && (
+            {safeWorkspaceSettingsTab === 'permissions' && (
               <section className="notion-settings-block">
                 <h4>Member capabilities</h4>
                 <label className="notion-checkbox-row">
@@ -507,75 +500,47 @@ export default function WorkspaceSettingsModal({
               </section>
             )}
 
-            {workspaceSettingsTab === 'ai' && (
-              <>
-                <section className="notion-settings-block">
-                  <h4>AI access</h4>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.allow_ai_tools}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ allow_ai_tools: event.target.checked })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    />
-                    <span>Allow AI assistant</span>
-                  </label>
-                  <label className="notion-checkbox-row">
-                    <input
-                      type="checkbox"
-                      checked={workspaceSettingsDraft.allow_ocr}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ allow_ocr: event.target.checked })
-                      }
-                      disabled={ownerOnlyDisabled || !workspaceSettingsDraft.allow_ai_tools}
-                    />
-                    <span>Allow OCR image extraction</span>
-                  </label>
-                </section>
-
-                <section className="notion-settings-block">
-                  <h4>Summary defaults</h4>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-summary-length-select">Summary Length</label>
-                    <select
-                      id="workspace-summary-length-select"
-                      value={workspaceSettingsDraft.summary_length}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ summary_length: event.target.value })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    >
-                      <option value="short">Short</option>
-                      <option value="medium">Medium</option>
-                      <option value="long">Long</option>
-                    </select>
-                  </div>
-                  <div className="notion-settings-row">
-                    <label htmlFor="workspace-keyword-limit-input">Keyword Count</label>
-                    <input
-                      id="workspace-keyword-limit-input"
-                      type="number"
-                      min="3"
-                      max="12"
-                      value={workspaceSettingsDraft.keyword_limit}
-                      onChange={(event) =>
-                        updateWorkspaceSettingsDraft?.({ keyword_limit: Number(event.target.value) || 5 })
-                      }
-                      disabled={ownerOnlyDisabled}
-                    />
-                  </div>
-                  <p className="notion-settings-help">
-                    These values become the default behavior whenever a summary request is triggered inside the workspace.
-                  </p>
-                </section>
-              </>
+            {safeWorkspaceSettingsTab === 'ai' && (
+              <section className="notion-settings-block">
+                <h4>Summary defaults</h4>
+                <div className="notion-settings-row">
+                  <label htmlFor="workspace-summary-length-select">Summary Length</label>
+                  <select
+                    id="workspace-summary-length-select"
+                    value={workspaceSettingsDraft.summary_length}
+                    onChange={(event) =>
+                      updateWorkspaceSettingsDraft?.({ summary_length: event.target.value })
+                    }
+                    disabled={ownerOnlyDisabled}
+                  >
+                    <option value="short">Short</option>
+                    <option value="medium">Medium</option>
+                    <option value="long">Long</option>
+                  </select>
+                </div>
+                <div className="notion-settings-row">
+                  <label htmlFor="workspace-keyword-limit-input">Keyword Count</label>
+                  <input
+                    id="workspace-keyword-limit-input"
+                    type="number"
+                    min="3"
+                    max="12"
+                    value={workspaceSettingsDraft.keyword_limit}
+                    onChange={(event) =>
+                      updateWorkspaceSettingsDraft?.({ keyword_limit: Number(event.target.value) || 5 })
+                    }
+                    disabled={ownerOnlyDisabled}
+                  />
+                </div>
+                <p className="notion-settings-help">
+                  These values become the default behavior whenever a summary request is triggered inside the workspace.
+                </p>
+              </section>
             )}
 
-            {workspaceSettingsTab === 'danger' && (
+            {safeWorkspaceSettingsTab === 'danger' && (
               <section className="notion-settings-block notion-settings-danger">
-                <h4>Danger Zone</h4>
+                <h4>{isWorkspaceOwner ? 'Danger Zone' : 'Remove Workspace'}</h4>
                 {isWorkspaceOwner ? (
                   <>
                     <p className="muted tiny">
@@ -615,7 +580,7 @@ export default function WorkspaceSettingsModal({
                         onClick={onLeaveWorkspace}
                         disabled={workspaceActionLoading || !isLoggedIn}
                       >
-                        Leave Workspace
+                        Remove Workspace
                       </button>
                     </div>
                     <p className="muted tiny notion-settings-danger-note">
@@ -629,21 +594,23 @@ export default function WorkspaceSettingsModal({
         </div>
 
         <div className="notion-modal-actions">
-          <button
-            type="button"
-            className="btn btn-primary"
-            onClick={onSaveWorkspaceSettings}
-            disabled={ownerOnlyDisabled}
-          >
-            {workspaceActionLoading ? 'Saving...' : 'Save changes'}
-          </button>
+          {!sharedWorkspaceView && (
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={onSaveWorkspaceSettings}
+              disabled={ownerOnlyDisabled}
+            >
+              {workspaceActionLoading ? 'Saving...' : 'Save changes'}
+            </button>
+          )}
           <button
             type="button"
             className="btn"
             onClick={onClose}
             disabled={workspaceActionLoading}
           >
-            Cancel
+            {sharedWorkspaceView ? 'Close' : 'Cancel'}
           </button>
         </div>
       </section>

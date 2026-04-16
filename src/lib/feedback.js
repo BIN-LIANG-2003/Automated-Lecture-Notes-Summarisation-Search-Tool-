@@ -29,6 +29,8 @@ export const FEEDBACK_STATUSES = [
   { value: 'closed', label: 'Closed' },
 ];
 
+export const ADMIN_FEEDBACK_STATUSES = FEEDBACK_STATUSES.filter((item) => item.value !== 'closed');
+
 export function getFeedbackTypeLabel(value) {
   return FEEDBACK_TYPES.find((item) => item.value === value)?.label || 'Other';
 }
@@ -64,6 +66,20 @@ export async function listMyFeedback() {
 
 export async function getMyFeedback(feedbackId) {
   return requestJson(`/api/feedback/${encodeURIComponent(feedbackId)}`);
+}
+
+export async function addFeedbackFollowUp(feedbackId, message) {
+  return requestJson(`/api/feedback/${encodeURIComponent(feedbackId)}/follow-up`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message }),
+  });
+}
+
+export async function closeFeedback(feedbackId) {
+  return requestJson(`/api/feedback/${encodeURIComponent(feedbackId)}/close`, {
+    method: 'POST',
+  });
 }
 
 export async function findSimilarFeedback(query) {
