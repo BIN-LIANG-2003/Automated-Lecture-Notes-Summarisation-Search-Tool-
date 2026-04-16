@@ -1048,6 +1048,8 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['document']['workspace_id'], 'ws-bob-received')
         self.assertEqual(payload['document']['username'], 'bob')
         self.assertEqual(payload['document']['title'], 'Friend Source Note')
+        self.assertIsNone(payload['document']['last_access_at'])
+        self.assertIsNone(payload['document']['deleted_at'])
 
         copied_filename = payload['document']['filename']
         self.assertNotEqual(copied_filename, source_filename)

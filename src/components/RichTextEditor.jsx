@@ -204,6 +204,7 @@ export default function RichTextEditor({
   const [refreshKey, setRefreshKey] = useState(0);
   const [imageError, setImageError] = useState('');
   const imageInputRef = useRef(null);
+  const editorShellRef = useRef(null);
 
   const editor = useEditor({
     extensions: [
@@ -403,11 +404,22 @@ export default function RichTextEditor({
     editor.chain().focus().outdent().run();
   };
 
+  const scrollEditorPanel = (position) => {
+    const shell = editorShellRef.current;
+    if (!shell) return;
+    const panel = shell.closest('.notion-doc-editor') || shell;
+    panel.scrollIntoView({
+      behavior: 'smooth',
+      block: position === 'bottom' ? 'end' : 'start',
+      inline: 'nearest',
+    });
+  };
+
   const toolbarDisabled = !editor || disabled;
   const inTable = !!editor?.isActive('table');
 
   return (
-    <div className={`notion-rich-editor${disabled ? ' is-disabled' : ''}`}>
+    <div ref={editorShellRef} className={`notion-rich-editor${disabled ? ' is-disabled' : ''}`}>
       <div className="notion-rich-toolbar" role="toolbar" aria-label="Document style toolbar">
         <div className="notion-rich-toolbar-row">
           <div className="notion-rich-group">
@@ -528,6 +540,23 @@ export default function RichTextEditor({
               onClick={() => run((chain) => chain.toggleSuperscript())}
               disabled={toolbarDisabled}
               active={!!editor?.isActive('superscript')}
+            />
+          </div>
+
+          <ToolbarDivider />
+
+          <div className="notion-rich-group notion-rich-scroll-group">
+            <ToolButton
+              label="Top"
+              title="Jump to the top of this edit area"
+              onClick={() => scrollEditorPanel('top')}
+              disabled={!editor}
+            />
+            <ToolButton
+              label="Bottom"
+              title="Jump to the save controls at the bottom"
+              onClick={() => scrollEditorPanel('bottom')}
+              disabled={!editor}
             />
           </div>
         </div>

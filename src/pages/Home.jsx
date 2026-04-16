@@ -54,7 +54,6 @@ import {
 import {
   buildSummaryExportFilename,
   buildSummaryExportText,
-  downloadPlainTextPdf,
   downloadSummaryPdf,
   downloadTextFile,
   openSummaryEmailDraft,
@@ -4222,97 +4221,6 @@ export default function HomePage() {
     );
   };
 
-  const buildSummaryHistoryExportContent = () =>
-    summaryHistoryItems
-      .map((entry, index) => {
-        const keywords = Array.isArray(entry.keywords) ? entry.keywords.join(', ') : '';
-        const keySentences = Array.isArray(entry.keySentences) ? entry.keySentences.join('\n') : '';
-        return [
-          `#${index + 1} ${entry.title}`,
-          `Date: ${formatDateTimeLabel(entry.generatedAt)}`,
-          `Source: ${getSummarySourceLabel(entry.summarySource)}`,
-          `Type: ${(entry.fileType || 'text').toUpperCase()}`,
-          '',
-          'Summary:',
-          entry.summary || 'N/A',
-          '',
-          'Keywords:',
-          keywords || 'N/A',
-          '',
-          'Key Sentences:',
-          keySentences || 'N/A',
-        ].join('\n');
-      })
-      .join('\n\n----------------------------------------\n\n');
-
-  const handleExportSummaryHistoryTxt = () => {
-    if (!summaryHistoryItems.length) {
-      showToast('No summary items to export.', 'warning');
-      return;
-    }
-    const content = buildSummaryHistoryExportContent();
-    const stamp = new Date().toISOString().slice(0, 10);
-    downloadTextFile(`studyhub-summary-history-${stamp}.txt`, content);
-    showWorkspaceToast('summary', 'Summary history exported as TXT.', 'success');
-  };
-
-  const handleExportSummaryHistoryPdf = async () => {
-    if (!summaryHistoryItems.length) {
-      showToast('No summary items to export.', 'warning');
-      return;
-    }
-    const stamp = new Date().toISOString().slice(0, 10);
-    try {
-      await downloadPlainTextPdf(
-        `studyhub-summary-history-${stamp}.pdf`,
-        'StudyHub Summary History',
-        buildSummaryHistoryExportContent()
-      );
-      showWorkspaceToast('summary', 'Summary history exported as PDF.', 'success');
-    } catch (error) {
-      console.error('Failed to export summary history PDF', error);
-      showToast('PDF export failed. Please try TXT export instead.', 'error');
-    }
-  };
-
-  const handleExportSummaryHistoryJson = () => {
-    if (!summaryHistoryItems.length) {
-      showToast('No summary items to export.', 'warning');
-      return;
-    }
-    const payload = summaryHistoryItems.map((entry) => ({
-      id: entry.id,
-      document_id: toPositiveDocId(entry.docId) || null,
-      title: entry.title,
-      file_type: entry.fileType || '',
-      summary: entry.summary,
-      keywords: Array.isArray(entry.keywords) ? entry.keywords : [],
-      key_sentences: Array.isArray(entry.keySentences) ? entry.keySentences : [],
-      summary_source: normalizeSummarySource(entry.summarySource),
-      summary_note: entry.summaryNote || '',
-      summary_length: entry.summaryLength || '',
-      chunk_count: entry.chunkCount || 1,
-      merge_rounds: entry.mergeRounds || 0,
-      refreshed_from_file: Boolean(entry.refreshedFromFile),
-      pdf_extractor: entry.pdfExtractor || '',
-      pdf_ocr_used: Boolean(entry.pdfOcrUsed),
-      text_word_count: entry.textWordCount || 0,
-      text_char_count: entry.textCharCount || 0,
-      summarizer_model: entry.summarizerModel || '',
-      generated_at: entry.generatedAt || '',
-    }));
-    const blob = new Blob([JSON.stringify(payload, null, 2)], {
-      type: 'application/json;charset=utf-8',
-    });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `studyhub-summary-history-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    showWorkspaceToast('summary', 'Summary history exported as JSON.', 'success');
-  };
-
   const handleRebuildSummaryHistoryItem = async (entry) => {
     const targetDocId = toPositiveDocId(entry?.docId);
     if (!targetDocId) {
@@ -8345,9 +8253,6 @@ export default function HomePage() {
         modelOptions={summaryCenterModelOptions}
         items={summaryHistoryItems}
         expandedIds={summaryCenterExpandedIds}
-        onExportTxt={handleExportSummaryHistoryTxt}
-        onExportPdf={handleExportSummaryHistoryPdf}
-        onExportJson={handleExportSummaryHistoryJson}
         onClearAll={handleClearSummaryHistory}
         onApplyItem={handleApplySummaryHistoryItem}
         onOpenItemDocument={(entry) => {

@@ -251,17 +251,19 @@ export default function PdfInlineViewer({
         setRenderScale(nextScale);
 
         const viewport = page.getViewport({ scale: nextScale });
+        const displayWidth = Math.max(1, Math.round(viewport.width));
+        const displayHeight = Math.max(1, Math.round(viewport.height));
         const canvas = canvasRef.current;
         if (!canvas) return;
         const context = canvas.getContext('2d', { alpha: false });
         if (!context) return;
 
         const dpr = window.devicePixelRatio || 1;
-        canvas.width = Math.floor(viewport.width * dpr);
-        canvas.height = Math.floor(viewport.height * dpr);
-        canvas.style.width = `${viewport.width}px`;
-        canvas.style.height = `${viewport.height}px`;
-        setCanvasSize({ width: viewport.width, height: viewport.height });
+        canvas.width = Math.max(1, Math.round(displayWidth * dpr));
+        canvas.height = Math.max(1, Math.round(displayHeight * dpr));
+        canvas.style.width = `${displayWidth}px`;
+        canvas.style.height = `${displayHeight}px`;
+        setCanvasSize({ width: displayWidth, height: displayHeight });
 
         context.setTransform(1, 0, 0, 1, 0, 0);
         context.clearRect(0, 0, canvas.width, canvas.height);
@@ -325,6 +327,13 @@ export default function PdfInlineViewer({
     if (!fullscreenOpen) {
       setScale((prev) => clamp(prev, MIN_SCALE, EMBEDDED_MAX_SCALE));
     }
+  }, [fullscreenOpen]);
+
+  useEffect(() => {
+    if (!fullscreenOpen) return;
+    setOverviewOpen(false);
+    setEditMode(false);
+    setEditorError('');
   }, [fullscreenOpen]);
 
   useEffect(() => {
@@ -535,38 +544,117 @@ export default function PdfInlineViewer({
     await onDownload();
   };
 
+  const pageStageStyle = canvasSize.width && canvasSize.height
+    ? {
+        width: `${canvasSize.width}px`,
+        height: `${canvasSize.height}px`,
+        minWidth: `${canvasSize.width}px`,
+        minHeight: `${canvasSize.height}px`,
+        aspectRatio: `${canvasSize.width} / ${canvasSize.height}`,
+      }
+    : undefined;
+
   return (
     <div className={`notion-pdf-inline${fullscreenOpen ? ' fullscreen' : ''}`}>
-      <div className="notion-pdf-toolbar">
-        <div className="notion-pdf-doc-meta">
-          <strong className="notion-pdf-title" title={title}>
-            {title}
-          </strong>
-          <span className="notion-pdf-doc-sub">Uploaded: {uploadedLabel}</span>
-          <span className="notion-pdf-doc-sub">Tags: {tagsLabel}</span>
+      {!fullscreenOpen && (
+        <div className="notion-pdf-toolbar">
+          <div className="notion-pdf-doc-meta">
+            <strong className="notion-pdf-title" title={title}>
+              {title}
+            </strong>
+            <span className="notion-pdf-doc-sub">Uploaded: {uploadedLabel}</span>
+            <span className="notion-pdf-doc-sub">Tags: {tagsLabel}</span>
+          </div>
+          <div className="notion-pdf-toolbar-actions">
+            {typeof onDownload === 'function' && (
+              <button
+                type="button"
+                className="notion-pdf-btn notion-pdf-btn-link"
+                onClick={handleDownload}
+                disabled={downloadLoading}
+              >
+                {downloadLoading ? 'Downloading...' : 'Download File'}
+              </button>
+            )}
+            {typeof onSummarizeDocument === 'function' && (
+              <button
+                type="button"
+                className="notion-pdf-btn notion-pdf-btn-primary"
+                onClick={() => onSummarizeDocument()}
+                disabled={!canSummarize || isSummarizing}
+                title={!canSummarize ? summarizeDisabledHint || 'Summarize is not available right now.' : undefined}
+              >
+                {isSummarizing ? 'Summarizing...' : 'Summarize'}
+              </button>
+            )}
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => setPageNum((prev) => Math.max(1, prev - 1))}
+              disabled={!canPrev || loadingDoc}
+            >
+              Previous
+            </button>
+            <span className="notion-pdf-page-indicator">
+              {totalPages ? `${pageNum} / ${totalPages}` : '-- / --'}
+            </span>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => setPageNum((prev) => Math.min(totalPages, prev + 1))}
+              disabled={!canNext || loadingDoc}
+            >
+              Next
+            </button>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => applyManualScale(-SCALE_STEP)}
+              disabled={zoomOutDisabled || loadingDoc}
+            >
+              Zoom Out
+            </button>
+            <span className="notion-pdf-zoom-indicator">{zoomLabel}</span>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => applyManualScale(SCALE_STEP)}
+              disabled={zoomInDisabled || loadingDoc}
+            >
+              Zoom In
+            </button>
+            <button
+              type="button"
+              className={`notion-pdf-btn${fitWidth ? ' active' : ''}`}
+              onClick={toggleFitWidth}
+              disabled={loadingDoc}
+              aria-pressed={fitWidth}
+            >
+              Fit Width
+            </button>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => setFullscreenOpen(true)}
+              disabled={loadingDoc}
+              title="Open a clean PDF preview with more room for zooming."
+            >
+              Full Screen
+            </button>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => setOverviewOpen((prev) => !prev)}
+              disabled={loadingDoc || !totalPages}
+            >
+              {overviewOpen ? 'Hide Overview' : 'Overview'}
+            </button>
+          </div>
         </div>
-        <div className="notion-pdf-toolbar-actions">
-          {typeof onDownload === 'function' && (
-            <button
-              type="button"
-              className="notion-pdf-btn notion-pdf-btn-link"
-              onClick={handleDownload}
-              disabled={downloadLoading}
-            >
-              {downloadLoading ? 'Downloading...' : 'Download File'}
-            </button>
-          )}
-          {typeof onSummarizeDocument === 'function' && (
-            <button
-              type="button"
-              className="notion-pdf-btn notion-pdf-btn-primary"
-              onClick={() => onSummarizeDocument()}
-              disabled={!canSummarize || isSummarizing}
-              title={!canSummarize ? summarizeDisabledHint || 'Summarize is not available right now.' : undefined}
-            >
-              {isSummarizing ? 'Summarizing...' : 'Summarize'}
-            </button>
-          )}
+      )}
+
+      {fullscreenOpen && (
+        <div className="notion-pdf-fullscreen-controls" role="toolbar" aria-label="PDF full screen controls">
           <button
             type="button"
             className="notion-pdf-btn"
@@ -614,30 +702,21 @@ export default function PdfInlineViewer({
           </button>
           <button
             type="button"
-            className={`notion-pdf-btn${fullscreenOpen ? ' active' : ''}`}
-            onClick={() => setFullscreenOpen((prev) => !prev)}
-            disabled={loadingDoc}
-            aria-pressed={fullscreenOpen}
-            title="Open a larger PDF preview with more room for zooming."
+            className="notion-pdf-btn notion-pdf-btn-primary"
+            onClick={() => setFullscreenOpen(false)}
           >
-            {fullscreenOpen ? 'Exit Full Screen' : 'Full Screen'}
-          </button>
-          <button
-            type="button"
-            className="notion-pdf-btn"
-            onClick={() => setOverviewOpen((prev) => !prev)}
-            disabled={loadingDoc || !totalPages}
-          >
-            {overviewOpen ? 'Hide Overview' : 'Overview'}
+            Exit
           </button>
         </div>
-      </div>
+      )}
 
-      <p className="notion-pdf-shortcuts muted tiny">
-        Shortcuts: left/right arrows switch pages, +/- adjust zoom, F toggles fit width, Esc exits full screen, overview, or annotation mode.
-      </p>
+      {!fullscreenOpen && (
+        <p className="notion-pdf-shortcuts muted tiny">
+          Shortcuts: left/right arrows switch pages, +/- adjust zoom, F toggles fit width, Esc exits full screen, overview, or annotation mode.
+        </p>
+      )}
 
-      {editable && (
+      {editable && !fullscreenOpen && (
         <div className="notion-pdf-editbar">
           <div className="notion-pdf-editbar-row">
             <button
@@ -710,7 +789,7 @@ export default function PdfInlineViewer({
         </div>
       )}
 
-      {overviewOpen && (
+      {overviewOpen && !fullscreenOpen && (
         <div className="notion-pdf-overview">
           <div className="notion-pdf-overview-head">
             <strong>Page Overview</strong>
@@ -757,11 +836,7 @@ export default function PdfInlineViewer({
 
         <div
           className={`notion-pdf-stage ${editMode ? 'edit-mode' : ''}`}
-          style={
-            canvasSize.width && canvasSize.height
-              ? { width: `${canvasSize.width}px`, height: `${canvasSize.height}px` }
-              : undefined
-          }
+          style={pageStageStyle}
         >
           <canvas ref={canvasRef} className="notion-pdf-canvas" />
           <div

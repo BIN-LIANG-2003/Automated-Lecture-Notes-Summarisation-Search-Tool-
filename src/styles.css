@@ -3974,6 +3974,7 @@ body.notion-home-body .skip-link:focus-visible{
 .notion-doc-editor{
   display:grid;
   gap:10px;
+  scroll-margin-top:16px;
 }
 
 .notion-pdf-conversion-choice{
@@ -4231,6 +4232,9 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 .notion-rich-toolbar{
+  position:sticky;
+  top:12px;
+  z-index:120;
   display:flex;
   align-items:flex-start;
   align-content:flex-start;
@@ -4240,6 +4244,7 @@ body.notion-home-body .skip-link:focus-visible{
   border:1px solid #dcdcd8;
   border-radius:10px;
   background:#f8fafc;
+  box-shadow:0 8px 20px rgba(15,23,42,0.08);
 }
 
 .notion-rich-toolbar-row{
@@ -4255,6 +4260,10 @@ body.notion-home-body .skip-link:focus-visible{
   align-items:center;
   gap:6px;
   flex-wrap:wrap;
+}
+
+.notion-rich-scroll-group{
+  margin-left:auto;
 }
 
 .notion-rich-divider{
@@ -4467,9 +4476,9 @@ body.notion-home-body .skip-link:focus-visible{
   z-index:640;
   display:flex;
   flex-direction:column;
-  gap:10px;
-  padding:14px;
-  background:#f8fafc;
+  gap:0;
+  padding:0;
+  background:#eef2f8;
   overflow:hidden;
 }
 
@@ -4625,15 +4634,19 @@ body.notion-home-body .skip-link:focus-visible{
   position:relative;
   margin:0 auto;
   width:fit-content;
+  flex:0 0 auto;
   max-width:none;
+  overflow:visible;
 }
 
 .notion-pdf-canvas{
   display:block;
   margin:0;
   background:#fff;
+  width:100%;
+  height:100%;
   max-width:none;
-  height:auto;
+  max-height:none;
   border-radius:2px;
   box-shadow:0 10px 26px rgba(15,23,42,0.12);
 }
@@ -4643,7 +4656,39 @@ body.notion-home-body .skip-link:focus-visible{
   min-height:0;
   height:100%;
   max-height:none;
+  border:0;
+  border-radius:0;
+  padding:24px;
+  background:#eef2f8;
+}
+
+.notion-pdf-fullscreen-controls{
+  position:fixed;
+  left:50%;
+  bottom:18px;
+  z-index:660;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  flex-wrap:wrap;
+  max-width:calc(100vw - 28px);
+  padding:8px;
+  border:1px solid #d7dee9;
   border-radius:8px;
+  background:rgba(255,255,255,0.94);
+  box-shadow:0 12px 32px rgba(15,23,42,0.16);
+  transform:translateX(-50%);
+  backdrop-filter:blur(10px);
+}
+
+.notion-pdf-fullscreen-controls .notion-pdf-btn{
+  min-height:34px;
+}
+
+.notion-pdf-fullscreen-controls .notion-pdf-page-indicator,
+.notion-pdf-fullscreen-controls .notion-pdf-zoom-indicator{
+  min-width:58px;
 }
 
 .notion-pdf-annotation-layer{
