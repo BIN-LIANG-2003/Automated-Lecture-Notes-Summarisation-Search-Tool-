@@ -110,11 +110,8 @@ for (const viewport of MOBILE_VIEWPORTS) {
     await expect(page.getByRole('button', { name: 'Download Shared File' })).toBeVisible();
     await expectNoHorizontalOverflow(page, `${viewport.name} shared note`);
     await expectWithinViewport(page, page.locator('.document-detail-pre'), `${viewport.name} shared note text preview`);
-    const sharedSidebarBox = await page.locator('.document-detail-sidebar').boundingBox();
-    const sharedMainBox = await page.locator('.document-detail-main').boundingBox();
-    expect(sharedSidebarBox?.y || 0, `${viewport.name} shared metadata should appear before preview`).toBeLessThanOrEqual(
-      (sharedMainBox?.y || 0) + 1
-    );
+    await expect(page.locator('.document-share-shell .document-detail-sidebar')).toHaveCount(0);
+    await expect(page.locator('.document-share-shell .document-detail-layout-shared')).toBeVisible();
 
     await loginAsAlice(page);
     await page.goto('/#/admin/feedback');

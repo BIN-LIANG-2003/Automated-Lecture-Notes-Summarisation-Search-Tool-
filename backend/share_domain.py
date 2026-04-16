@@ -58,7 +58,11 @@ def serialize_document_share_link_row(row):
         'expires_at': data.get('expires_at', ''),
         'created_at': data.get('created_at', ''),
         'created_by': data.get('created_by', ''),
+        'recipient_email': data.get('recipient_email', ''),
         'last_access_at': data.get('last_access_at', ''),
+        'document_title': data.get('document_title', ''),
+        'document_filename': data.get('document_filename', ''),
+        'document_file_type': data.get('document_file_type', ''),
         'share_url': build_document_share_url(data.get('token', '')),
     }
 
@@ -89,6 +93,33 @@ def list_document_share_link_payloads(conn, document_id, limit=20):
         LIMIT ?
         ''',
         (safe_doc_id, safe_limit),
+    )
+    return [to_document_share_link_payload(item) for item in cursor.fetchall()]
+
+
+def list_workspace_share_link_payloads(conn, workspace_id, limit=100):
+    safe_workspace_id = str(workspace_id or '').strip()
+    safe_limit = parse_int(limit, 100, 1, 200)
+    if not safe_workspace_id:
+        return []
+
+    expire_document_share_links(conn, 0)
+    conn.commit()
+    cursor = conn.execute(
+        '''
+        SELECT
+            links.*,
+            docs.title AS document_title,
+            docs.filename AS document_filename,
+            docs.file_type AS document_file_type
+        FROM document_share_links links
+        INNER JOIN documents docs ON docs.id = links.document_id
+        WHERE links.workspace_id = ?
+          AND (docs.deleted_at IS NULL OR TRIM(CAST(docs.deleted_at AS TEXT)) = '')
+        ORDER BY links.created_at DESC, links.id DESC
+        LIMIT ?
+        ''',
+        (safe_workspace_id, safe_limit),
     )
     return [to_document_share_link_payload(item) for item in cursor.fetchall()]
 

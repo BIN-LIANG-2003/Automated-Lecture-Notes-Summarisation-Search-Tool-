@@ -149,16 +149,21 @@ async function mockShareLinksList(page, count = 18) {
       status: revoked ? 'revoked' : 'active',
       expires_at: `2026-04-${String(10 + (number % 15)).padStart(2, '0')}T12:00:00Z`,
       created_at: '2026-04-01T12:00:00Z',
+      document_id: number % 2 === 0 ? 2 : 1,
+      document_title: number % 2 === 0 ? 'Lecture Notes' : 'Graph Notes',
+      recipient_email: 'classmate@example.com',
       is_expired: expired,
     };
   });
-  await page.route(/\/api\/documents\/1\/share-links(?:\?.*)?$/, async (route) => {
+  const fulfillShareLinks = async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
       body: JSON.stringify({ items }),
     });
-  });
+  };
+  await page.route(/\/api\/documents\/1\/share-links(?:\?.*)?$/, fulfillShareLinks);
+  await page.route(/\/api\/workspaces\/ws-e2e\/share-links(?:\?.*)?$/, fulfillShareLinks);
 }
 
 async function openGraphNotesInHomePane(page, options = {}) {
@@ -190,7 +195,8 @@ async function openGraphNotesInHomePane(page, options = {}) {
   const shareLinksResponse = waitForShareLinks
     ? page.waitForResponse(
         (response) =>
-          /\/api\/documents\/1\/share-links(?:\?|$)/.test(response.url()) &&
+          (/\/api\/documents\/1\/share-links(?:\?|$)/.test(response.url()) ||
+            /\/api\/workspaces\/ws-e2e\/share-links(?:\?|$)/.test(response.url())) &&
           response.request().method() === 'GET' &&
           response.ok(),
         { timeout: 15_000 }
@@ -222,15 +228,11 @@ test('files workspace summary center opens summary result modal with export and 
   const summaryCenter = page.getByRole('dialog', { name: 'Summaries' });
   await expect(summaryCenter).toBeVisible();
   await expect(summaryCenter.getByRole('button', { name: 'Open Summary' })).toBeVisible();
-  await expect(summaryCenter.getByRole('button', { name: 'Copy Summary' })).toBeVisible();
-  await expect(summaryCenter.getByRole('button', { name: 'Share by Email' })).toBeVisible();
+  await expect(summaryCenter.getByRole('button', { name: 'Copy Summary' })).toHaveCount(0);
+  await expect(summaryCenter.getByRole('button', { name: 'Share by Email' })).toHaveCount(0);
+  await expect(summaryCenter.getByRole('button', { name: 'Rebuild + Refresh' })).toHaveCount(0);
 
   await installWindowOpenSpy(page);
-  await summaryCenter.getByRole('button', { name: 'Share by Email' }).click();
-  const summaryCenterMail = await expectMailtoOpen(page);
-  expect(summaryCenterMail.url).toContain('mailto:');
-  expect(summaryCenterMail.url).toContain('StudyHub%20Note%20Summary');
-
   await summaryCenter.getByRole('button', { name: 'Open Summary' }).click();
   const summaryModal = page.getByRole('dialog', { name: 'Summary Result' });
   await expect(summaryModal).toBeVisible();
@@ -238,6 +240,7 @@ test('files workspace summary center opens summary result modal with export and 
   await expect(summaryModal.getByRole('button', { name: 'Export TXT' })).toBeVisible();
   await expect(summaryModal.getByRole('button', { name: 'Export PDF' })).toBeVisible();
   await expect(summaryModal.getByRole('button', { name: 'Share by Email' })).toBeVisible();
+  await expect(summaryModal.getByRole('button', { name: 'Rebuild + Refresh' })).toBeVisible();
 
   const [txtDownload] = await Promise.all([
     page.waitForEvent('download'),
@@ -255,6 +258,10 @@ test('files workspace summary center opens summary result modal with export and 
   const summaryModalMail = await expectMailtoOpen(page);
   expect(summaryModalMail.url).toContain('mailto:');
   expect(summaryModalMail.url).toContain('StudyHub%20Note%20Summary');
+
+  await summaryModal.getByRole('button', { name: 'Back to Summaries', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Summary Result' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Summaries' })).toBeVisible();
 });
 
 test('files detail pane summarize flow opens the current summary result modal', async ({ page }) => {
@@ -306,6 +313,10 @@ test('files detail pane summarize flow opens the current summary result modal', 
     summaryModal.getByRole('button', { name: 'Export PDF' }).click(),
   ]);
   expect(download.suggestedFilename()).toMatch(/^studyhub-summary-\d{4}-\d{2}-\d{2}\.pdf$/);
+
+  await summaryModal.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('dialog', { name: 'Summary Result' })).toHaveCount(0);
+  await expect(page.getByRole('dialog', { name: 'Summaries' })).toHaveCount(0);
 });
 
 test('files list shows OCR-needed PDFs as action required', async ({ page }) => {
@@ -376,7 +387,7 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
   await expect(topbarManageLinks).toBeVisible({ timeout: 15_000 });
   const manageLinksRefresh = page.waitForResponse(
     (response) =>
-      /\/api\/documents\/1\/share-links(?:\?|$)/.test(response.url()) &&
+      /\/api\/workspaces\/ws-e2e\/share-links(?:\?|$)/.test(response.url()) &&
       response.request().method() === 'GET' &&
       response.ok(),
     { timeout: 15_000 }
@@ -388,6 +399,9 @@ test('home embedded reader exposes link management in the top bar', async ({ pag
   await expect(initialManageModal).toBeVisible();
   await expect(initialManageModal.locator('.document-detail-share-links-panel')).toBeVisible();
   await expect(initialManageModal.locator('.notion-doc-share-list li')).toHaveCount(3);
+  await expect(initialManageModal).toContainText('Graph Notes');
+  await expect(initialManageModal).toContainText('Lecture Notes');
+  await expect(initialManageModal).toContainText('classmate@example.com');
   await expect(initialManageModal).toContainText('long-share-token-1');
   await expect(initialManageModal).toContainText('long-share-token-2');
   await expect(initialManageModal).toContainText('long-share-token-3');
@@ -555,14 +569,12 @@ test('public share link opens document view without sign in', async ({ page }) =
 
   await expect(page.getByText('Shared Document')).toBeVisible();
   await expect(page.getByRole('button', { name: 'Download Shared File' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Sign In For Full Access' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Sign In For Full Access' })).toHaveCount(0);
+  await expect(page.getByText('Document Info')).toHaveCount(0);
   await expect(page.locator('.document-detail-card h1')).toHaveText('Graph Notes');
   await expect(page.locator('.document-detail-card')).toContainText('graph traversal bfs dfs shortest path');
-
-  const shareHeroBox = await page.locator('.document-share-hero').boundingBox();
   const detailCardBox = await page.locator('.document-detail-card').boundingBox();
-  expect(shareHeroBox, 'share hero should have a bounding box').toBeTruthy();
+  await expect(page.locator('.document-share-hero')).toHaveCount(0);
   expect(detailCardBox, 'shared detail card should have a bounding box').toBeTruthy();
-  expect(Math.abs(detailCardBox.x - shareHeroBox.x), 'shared detail card should align with share hero').toBeLessThanOrEqual(2);
-  expect(Math.abs(detailCardBox.width - shareHeroBox.width), 'shared detail card should match share hero width').toBeLessThanOrEqual(2);
+  expect(detailCardBox.width, 'shared detail card should keep a readable width').toBeGreaterThan(600);
 });

@@ -1,3 +1,5 @@
+import { isCookieAuthToken } from './authSession.js';
+
 const CONTENT_DISPOSITION_FILENAME_STAR = /filename\*=UTF-8''([^;]+)/i;
 const CONTENT_DISPOSITION_FILENAME = /filename="?([^"]+)"?/i;
 
@@ -47,7 +49,7 @@ export async function downloadFileWithAuth(url, { authToken = '', filename = '',
 
   const requestHeaders = new Headers(headers || {});
   const safeToken = String(authToken || '').trim();
-  if (safeToken && !requestHeaders.has('Authorization')) {
+  if (safeToken && !isCookieAuthToken(safeToken) && !requestHeaders.has('Authorization')) {
     requestHeaders.set('Authorization', `Bearer ${safeToken}`);
   }
 

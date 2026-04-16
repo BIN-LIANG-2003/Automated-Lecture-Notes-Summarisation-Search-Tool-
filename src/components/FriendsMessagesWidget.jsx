@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { createPortal } from 'react-dom';
 import {
+  fetchFriendShareDocuments,
   fetchFriendSummary,
   markFriendItemsRead,
+  respondFriendFileShare,
   respondFriendRequest,
+  sendFriendFileShare,
   sendFriendMessage,
   sendFriendRequest,
 } from '../lib/friends.js';
@@ -31,11 +34,65 @@ const formatDateTime = (value) => {
   return date.toLocaleString();
 };
 
+const getNotificationMetadata = (notification) => (
+  notification?.metadata && typeof notification.metadata === 'object'
+    ? notification.metadata
+    : {}
+);
+
+const getFileShareStatus = (notification) =>
+  String(getNotificationMetadata(notification).status || 'pending').trim().toLowerCase();
+
+const isFileShareNotification = (notification) =>
+  String(notification?.type || '').trim() === 'friend_file_share' &&
+  Boolean(getNotificationMetadata(notification).source_document_id);
+
+const isPendingFileShareNotification = (notification) =>
+  isFileShareNotification(notification) && getFileShareStatus(notification) === 'pending';
+
+const normalizeShareDocument = (doc) => {
+  const id = Number(doc?.id);
+  const title = String(doc?.title || doc?.filename || '').trim();
+  if (!Number.isFinite(id) || id <= 0 || !title) return null;
+  return {
+    id,
+    title,
+    fileType: String(doc?.file_type || doc?.fileType || '').trim().toUpperCase() || 'FILE',
+    uploadedAt: doc?.uploaded_at || doc?.uploadedAt || '',
+  };
+};
+
+const openNotificationLink = (linkUrl) => {
+  const target = String(linkUrl || '').trim();
+  if (!target || typeof window === 'undefined') return;
+  if (/^https?:\/\//i.test(target)) {
+    try {
+      const url = new URL(target);
+      if (url.origin === window.location.origin) {
+        window.location.assign(`${url.pathname}${url.search}${url.hash}`);
+        return;
+      }
+    } catch {
+      // Fall through to opening external or malformed URLs in a separate tab.
+    }
+    window.open(target, '_blank', 'noopener,noreferrer');
+    return;
+  }
+  window.location.assign(target);
+};
+
 export default function FriendsMessagesWidget({
   enabled = true,
   authToken = '',
   username = '',
+  activeWorkspaceId = '',
+  activeWorkspaceName = '',
+  workspaces = [],
   variant = 'topbar',
+  onOpenNotification,
+  onFileShareAccepted,
+  openRequestKey = 0,
+  openRequestTab = 'friends',
 }) {
   const [open, setOpen] = useState(false);
   const [summary, setSummary] = useState(EMPTY_SUMMARY);
@@ -50,10 +107,18 @@ export default function FriendsMessagesWidget({
   const [requestNote, setRequestNote] = useState('');
   const [selectedFriend, setSelectedFriend] = useState('');
   const [messageDraft, setMessageDraft] = useState('');
+  const [fileShareOpen, setFileShareOpen] = useState(false);
+  const [fileShareDocuments, setFileShareDocuments] = useState([]);
+  const [fileShareDocumentId, setFileShareDocumentId] = useState('');
+  const [fileShareNote, setFileShareNote] = useState('');
+  const [fileShareLoading, setFileShareLoading] = useState(false);
+  const [fileShareError, setFileShareError] = useState('');
+  const [receiveWorkspaceByNotification, setReceiveWorkspaceByNotification] = useState({});
   const [submitting, setSubmitting] = useState(false);
   const [copied, setCopied] = useState(false);
 
   const safeAuthToken = String(authToken || '').trim();
+  const safeActiveWorkspaceId = String(activeWorkspaceId || '').trim();
   const isEnabled = Boolean(enabled && safeAuthToken && username);
 
   const loadSummary = useCallback(async ({ quiet = false } = {}) => {
@@ -78,6 +143,37 @@ export default function FriendsMessagesWidget({
     }
   }, [isEnabled, safeAuthToken]);
 
+  const loadShareDocuments = useCallback(async () => {
+    if (!isEnabled || !safeActiveWorkspaceId) {
+      setFileShareDocuments([]);
+      return;
+    }
+    setFileShareLoading(true);
+    setFileShareError('');
+    try {
+      const payload = await fetchFriendShareDocuments({
+        username,
+        workspaceId: safeActiveWorkspaceId,
+        authToken: safeAuthToken,
+      });
+      const docs = (Array.isArray(payload?.items) ? payload.items : [])
+        .map(normalizeShareDocument)
+        .filter(Boolean);
+      setFileShareDocuments(docs);
+      setFileShareDocumentId((current) => (
+        current && docs.some((doc) => String(doc.id) === String(current))
+          ? current
+          : String(docs[0]?.id || '')
+      ));
+    } catch (err) {
+      setFileShareDocuments([]);
+      setFileShareDocumentId('');
+      setFileShareError(err?.message || 'Files could not load');
+    } finally {
+      setFileShareLoading(false);
+    }
+  }, [isEnabled, safeActiveWorkspaceId, safeAuthToken, username]);
+
   useEffect(() => {
     if (!isEnabled) return undefined;
     loadSummary({ quiet: true });
@@ -94,6 +190,22 @@ export default function FriendsMessagesWidget({
   }, [loadSummary, open]);
 
   useEffect(() => {
+    if (!open || !fileShareOpen) return;
+    loadShareDocuments();
+  }, [fileShareOpen, loadShareDocuments, open]);
+
+  useEffect(() => {
+    if (!openRequestKey) return;
+    const requestedTab = ['friends', 'requests', 'site'].includes(openRequestTab)
+      ? openRequestTab
+      : 'friends';
+    setActiveTab(requestedTab);
+    setStatusMessage('');
+    setError('');
+    setOpen(true);
+  }, [openRequestKey, openRequestTab]);
+
+  useEffect(() => {
     if (!summary.friends.length) {
       setSelectedFriend('');
       return;
@@ -105,6 +217,12 @@ export default function FriendsMessagesWidget({
     ));
   }, [summary.friends]);
 
+  useEffect(() => {
+    setFileShareOpen(false);
+    setFileShareNote('');
+    setFileShareError('');
+  }, [selectedFriend]);
+
   const selectedFriendRecord = useMemo(
     () => summary.friends.find((friend) => friend.username === selectedFriend) || null,
     [summary.friends, selectedFriend],
@@ -114,6 +232,48 @@ export default function FriendsMessagesWidget({
     () => summary.messages.filter((message) => message.peer_username === selectedFriend),
     [summary.messages, selectedFriend],
   );
+
+  const receiveWorkspaceOptions = useMemo(() => (
+    (Array.isArray(workspaces) ? workspaces : [])
+      .map((workspace) => {
+        const id = String(workspace?.id || '').trim();
+        if (!id) return null;
+        const settings = workspace?.settings && typeof workspace.settings === 'object'
+          ? workspace.settings
+          : {};
+        const allowUploadsValue = settings.allow_uploads ?? settings.allowUploads;
+        if (
+          allowUploadsValue === false ||
+          String(allowUploadsValue || '').trim().toLowerCase() === 'false'
+        ) {
+          return null;
+        }
+        const name = String(workspace?.name || '').trim() || 'Workspace';
+        const owner = String(workspace?.owner_username || workspace?.ownerUsername || '').trim();
+        const isShared = Boolean(owner && owner !== username);
+        return {
+          id,
+          name: isShared ? `${name} - shared by ${owner}` : name,
+        };
+      })
+      .filter(Boolean)
+  ), [username, workspaces]);
+
+  const defaultReceiveWorkspaceId = useMemo(() => {
+    if (safeActiveWorkspaceId && receiveWorkspaceOptions.some((workspace) => workspace.id === safeActiveWorkspaceId)) {
+      return safeActiveWorkspaceId;
+    }
+    return receiveWorkspaceOptions[0]?.id || '';
+  }, [receiveWorkspaceOptions, safeActiveWorkspaceId]);
+
+  const getReceiveWorkspaceId = useCallback((notification) => {
+    const notificationKey = String(notification?.id || '');
+    const selectedWorkspaceId = String(receiveWorkspaceByNotification[notificationKey] || '').trim();
+    if (selectedWorkspaceId && receiveWorkspaceOptions.some((workspace) => workspace.id === selectedWorkspaceId)) {
+      return selectedWorkspaceId;
+    }
+    return defaultReceiveWorkspaceId;
+  }, [defaultReceiveWorkspaceId, receiveWorkspaceByNotification, receiveWorkspaceOptions]);
 
   useEffect(() => {
     if (!open || !selectedFriendRecord?.unread_count || !safeAuthToken) return;
@@ -209,6 +369,59 @@ export default function FriendsMessagesWidget({
     }
   };
 
+  const handleSendFileShare = async (event) => {
+    event.preventDefault();
+    if (!selectedFriend || !fileShareDocumentId) return;
+    setSubmitting(true);
+    setError('');
+    setStatusMessage('');
+    setFileShareError('');
+    try {
+      const result = await sendFriendFileShare({
+        recipientUsername: selectedFriend,
+        documentId: fileShareDocumentId,
+        note: fileShareNote,
+      }, safeAuthToken);
+      if (result?.summary) setSummary({ ...EMPTY_SUMMARY, ...result.summary });
+      setFileShareNote('');
+      setFileShareOpen(false);
+      setStatusMessage(result?.message || 'File share sent.');
+    } catch (err) {
+      setFileShareError(err?.message || 'File share failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleRespondFileShare = async (notification, action, targetWorkspaceId = '') => {
+    const notificationId = Number(notification?.id);
+    if (!Number.isFinite(notificationId) || notificationId <= 0) return;
+    setSubmitting(true);
+    setError('');
+    setStatusMessage('');
+    try {
+      const result = await respondFriendFileShare(
+        notificationId,
+        action,
+        safeAuthToken,
+        { targetWorkspaceId },
+      );
+      if (result?.summary) setSummary({ ...EMPTY_SUMMARY, ...result.summary });
+      setStatusMessage(
+        result?.message ||
+          (action === 'accept' ? 'File added to your files.' : 'File share declined.')
+      );
+      if (action === 'accept' && typeof onFileShareAccepted === 'function') {
+        await onFileShareAccepted(result);
+        setOpen(false);
+      }
+    } catch (err) {
+      setError(err?.message || 'File share update failed');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const unreadNotificationIds = summary.notifications
     .filter((notification) => notification.is_unread)
     .map((notification) => notification.id)
@@ -224,6 +437,38 @@ export default function FriendsMessagesWidget({
       setStatusMessage('Website messages marked read.');
     } catch (err) {
       setError(err?.message || 'Could not mark messages read');
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleOpenNotification = async (notification) => {
+    const linkUrl = String(notification?.link_url || '').trim();
+    if (!linkUrl) return;
+
+    setSubmitting(true);
+    setError('');
+    setStatusMessage('');
+    try {
+      if (notification?.id && notification?.is_unread) {
+        try {
+          const result = await markFriendItemsRead(
+            { notification_ids: [notification.id] },
+            safeAuthToken
+          );
+          if (result?.summary) setSummary({ ...EMPTY_SUMMARY, ...result.summary });
+        } catch (err) {
+          setError(err?.message || 'Could not mark message read');
+        }
+      }
+
+      const handled = typeof onOpenNotification === 'function'
+        ? await onOpenNotification(notification)
+        : false;
+      setOpen(false);
+      if (!handled) openNotificationLink(linkUrl);
+    } catch (err) {
+      setError(err?.message || 'Could not open message');
     } finally {
       setSubmitting(false);
     }
@@ -325,9 +570,88 @@ export default function FriendsMessagesWidget({
               {selectedFriendRecord ? (
                 <>
                   <div className="studyhub-chat-title">
-                    <strong>{selectedFriendRecord.username}</strong>
-                    <span>{selectedFriendRecord.email || 'StudyHub friend'}</span>
+                    <div>
+                      <strong>{selectedFriendRecord.username}</strong>
+                      <span>{selectedFriendRecord.email || 'StudyHub friend'}</span>
+                    </div>
+                    <button
+                      type="button"
+                      className="btn studyhub-share-file-toggle"
+                      onClick={() => setFileShareOpen((current) => !current)}
+                      disabled={!safeActiveWorkspaceId}
+                      title={
+                        safeActiveWorkspaceId
+                          ? 'Share one of your uploaded files'
+                          : 'Open a workspace before sharing files'
+                      }
+                    >
+                      Share File
+                    </button>
                   </div>
+                  {fileShareOpen && (
+                    <form className="studyhub-file-share-panel" onSubmit={handleSendFileShare}>
+                      <div className="studyhub-file-share-head">
+                        <strong>Send an uploaded file</strong>
+                        <span>{activeWorkspaceName || 'Current workspace'}</span>
+                      </div>
+                      {fileShareLoading ? (
+                        <p>Loading files...</p>
+                      ) : fileShareDocuments.length === 0 ? (
+                        <p>No files are available in this workspace yet.</p>
+                      ) : (
+                        <>
+                          <label>
+                            File
+                            <select
+                              value={fileShareDocumentId}
+                              onChange={(event) => setFileShareDocumentId(event.target.value)}
+                              required
+                            >
+                              {fileShareDocuments.map((doc) => (
+                                <option key={doc.id} value={doc.id}>
+                                  {doc.title} ({doc.fileType})
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                          <label>
+                            Note
+                            <input
+                              type="text"
+                              value={fileShareNote}
+                              onChange={(event) => setFileShareNote(event.target.value)}
+                              placeholder="Optional message"
+                              maxLength={500}
+                            />
+                          </label>
+                          {fileShareError && <span className="studyhub-file-share-error">{fileShareError}</span>}
+                          <div className="studyhub-file-share-actions">
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => {
+                                setFileShareOpen(false);
+                                setFileShareNote('');
+                                setFileShareError('');
+                              }}
+                            >
+                              Cancel
+                            </button>
+                            <button
+                              type="submit"
+                              className="btn btn-primary"
+                              disabled={submitting || !fileShareDocumentId}
+                            >
+                              Send File
+                            </button>
+                          </div>
+                        </>
+                      )}
+                      {fileShareError && fileShareDocuments.length === 0 && (
+                        <span className="studyhub-file-share-error">{fileShareError}</span>
+                      )}
+                    </form>
+                  )}
                   <div className="studyhub-chat-messages">
                     {selectedMessages.length === 0 ? (
                       <div className="studyhub-empty-state">
@@ -496,23 +820,105 @@ export default function FriendsMessagesWidget({
                 <strong>No website messages</strong>
                 <span>Friend updates, shared links, and workspace messages will appear here.</span>
               </div>
-            ) : summary.notifications.map((notification) => (
-              <article
-                key={notification.id}
-                className={`studyhub-site-message${notification.is_unread ? ' is-unread' : ''}`}
-              >
-                <div>
-                  <strong>{notification.title}</strong>
-                  {notification.body && <p>{notification.body}</p>}
-                  <small>{formatDateTime(notification.created_at)}</small>
-                </div>
-                {notification.link_url && (
-                  <a href={notification.link_url} target={notification.link_url.startsWith('/') ? '_self' : '_blank'} rel="noreferrer">
-                    Open
-                  </a>
-                )}
-              </article>
-            ))}
+            ) : summary.notifications.map((notification) => {
+              const metadata = getNotificationMetadata(notification);
+              const fileShareStatus = getFileShareStatus(notification);
+              const pendingFileShare = isPendingFileShareNotification(notification);
+              const acceptedDocumentId = Number(metadata.accepted_document_id || 0);
+              const receiveWorkspaceId = pendingFileShare ? getReceiveWorkspaceId(notification) : '';
+              return (
+                <article
+                  key={notification.id}
+                  className={`studyhub-site-message${notification.is_unread ? ' is-unread' : ''}`}
+                >
+                  <div>
+                    <strong>{notification.title}</strong>
+                    {notification.body && <p>{notification.body}</p>}
+                    {isFileShareNotification(notification) && fileShareStatus !== 'pending' && (
+                      <small>
+                        {fileShareStatus === 'accepted'
+                          ? 'Accepted and added to your files.'
+                          : 'Declined.'}
+                      </small>
+                    )}
+                    <small>{formatDateTime(notification.created_at)}</small>
+                  </div>
+                  <div className="studyhub-site-message-actions">
+                    {pendingFileShare && (
+                      <>
+                        <label className="studyhub-file-share-receive">
+                          <span>Save to workspace</span>
+                          <select
+                            value={receiveWorkspaceId}
+                            onChange={(event) => {
+                              const notificationKey = String(notification.id || '');
+                              setReceiveWorkspaceByNotification((current) => ({
+                                ...current,
+                                [notificationKey]: event.target.value,
+                              }));
+                            }}
+                            disabled={submitting || receiveWorkspaceOptions.length === 0}
+                          >
+                            {receiveWorkspaceOptions.map((workspace) => (
+                              <option key={workspace.id} value={workspace.id}>
+                                {workspace.name}
+                              </option>
+                            ))}
+                          </select>
+                          {receiveWorkspaceOptions.length === 0 && (
+                            <small>No workspace can receive files right now.</small>
+                          )}
+                        </label>
+                        <button
+                          type="button"
+                          className="studyhub-site-message-open"
+                          onClick={() => handleRespondFileShare(notification, 'accept', receiveWorkspaceId)}
+                          disabled={submitting || !receiveWorkspaceId}
+                        >
+                          Accept
+                        </button>
+                        <button
+                          type="button"
+                          className="studyhub-site-message-open is-muted"
+                          onClick={() => handleRespondFileShare(notification, 'reject')}
+                          disabled={submitting}
+                        >
+                          Decline
+                        </button>
+                      </>
+                    )}
+                    {!pendingFileShare && acceptedDocumentId > 0 && (
+                      <button
+                        type="button"
+                        className="studyhub-site-message-open"
+                        onClick={async () => {
+                          if (typeof onFileShareAccepted === 'function') {
+                            await onFileShareAccepted({
+                              document_id: acceptedDocumentId,
+                              workspace_id: metadata.accepted_workspace_id || '',
+                            });
+                            setOpen(false);
+                          }
+                        }}
+                        disabled={submitting || typeof onFileShareAccepted !== 'function'}
+                      >
+                        Open File
+                      </button>
+                    )}
+                    {notification.link_url && (
+                      <button
+                        type="button"
+                        className="studyhub-site-message-open"
+                        onClick={() => handleOpenNotification(notification)}
+                        disabled={submitting}
+                      >
+                        Open
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </section>

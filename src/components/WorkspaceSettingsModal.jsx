@@ -24,6 +24,9 @@ export default function WorkspaceSettingsModal({
   isLoggedIn = false,
   activeWorkspace = null,
   workspaceInsights = null,
+  userNotificationPreferences = null,
+  userNotificationPreferencesSaving = false,
+  onChangeEmailNotifications,
 }) {
   if (!open) return null;
 
@@ -37,6 +40,8 @@ export default function WorkspaceSettingsModal({
   const totalNotes = Number(workspaceInsights?.totalNotes) || 0;
   const isWorkspaceOwner = activeWorkspace?.is_owner !== false;
   const ownerOnlyDisabled = workspaceActionLoading || (isLoggedIn && !isWorkspaceOwner);
+  const emailNotificationsEnabled =
+    userNotificationPreferences?.emailNotificationsEnabled !== false;
 
   return (
     <div
@@ -424,6 +429,22 @@ export default function WorkspaceSettingsModal({
                 </section>
 
                 <section className="notion-settings-block">
+                  <h4>Your email reminders</h4>
+                  <label className="notion-checkbox-row">
+                    <input
+                      type="checkbox"
+                      checked={emailNotificationsEnabled}
+                      onChange={(event) => onChangeEmailNotifications?.(event.target.checked)}
+                      disabled={!isLoggedIn || userNotificationPreferencesSaving}
+                    />
+                    <span>Send email reminders for messages and workspace updates</span>
+                  </label>
+                  <p className="notion-settings-help">
+                    Turn this off to keep these updates inside Messages. Account verification and emails you send manually still work.
+                  </p>
+                </section>
+
+                <section className="notion-settings-block">
                   <h4>Preview</h4>
                   <p className="notion-settings-help">
                     Warning and error messages always stay on so important failures are still visible.
@@ -438,6 +459,9 @@ export default function WorkspaceSettingsModal({
                     </span>
                     <span className="notion-summary-chip">
                       Sharing {workspaceSettingsDraft.notify_sharing_events ? 'on' : 'off'}
+                    </span>
+                    <span className="notion-summary-chip">
+                      Email reminders {emailNotificationsEnabled ? 'on' : 'off'}
                     </span>
                   </div>
                 </section>

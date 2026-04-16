@@ -25,6 +25,25 @@ export async function listDocumentShareLinks(docId, { username = '' } = {}) {
   return Array.isArray(payload.items) ? payload.items : [];
 }
 
+export async function listWorkspaceShareLinks(workspaceId, { username = '', limit = 100 } = {}) {
+  const safeWorkspaceId = String(workspaceId || '').trim();
+  const safeUsername = String(username || '').trim();
+  if (!safeWorkspaceId || !safeUsername) return [];
+
+  const params = new URLSearchParams({
+    username: safeUsername,
+    limit: String(Number(limit) || 100),
+  });
+  const response = await authFetch(
+    `/api/workspaces/${encodeURIComponent(safeWorkspaceId)}/share-links?${params.toString()}`
+  );
+  const payload = await readJsonSafely(response);
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to load share links');
+  }
+  return Array.isArray(payload.items) ? payload.items : [];
+}
+
 export async function createDocumentShareLink(docId, { username = '', expiryDays = 7 } = {}) {
   const safeDocId = toPositiveDocId(docId);
   const safeUsername = String(username || '').trim();
@@ -141,9 +160,37 @@ export async function deleteInactiveDocumentShareLinks(docId, { username = '' } 
   return payload;
 }
 
+export async function deleteInactiveWorkspaceShareLinks(workspaceId, { username = '' } = {}) {
+  const safeWorkspaceId = String(workspaceId || '').trim();
+  const response = await authFetch(`/api/workspaces/${encodeURIComponent(safeWorkspaceId)}/share-links/inactive`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: String(username || '').trim() }),
+  });
+  const payload = await readJsonSafely(response);
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to delete inactive share links');
+  }
+  return payload;
+}
+
 export async function revokeAllDocumentShareLinks(docId, { username = '' } = {}) {
   const safeDocId = toPositiveDocId(docId);
   const response = await authFetch(`/api/documents/${safeDocId}/share-links`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: String(username || '').trim() }),
+  });
+  const payload = await readJsonSafely(response);
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to revoke all share links');
+  }
+  return payload;
+}
+
+export async function revokeAllWorkspaceShareLinks(workspaceId, { username = '' } = {}) {
+  const safeWorkspaceId = String(workspaceId || '').trim();
+  const response = await authFetch(`/api/workspaces/${encodeURIComponent(safeWorkspaceId)}/share-links`, {
     method: 'DELETE',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ username: String(username || '').trim() }),

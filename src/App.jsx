@@ -3,7 +3,10 @@ import { HashRouter, Routes, Route, Navigate, useLocation } from 'react-router-d
 import {
   clearStoredAuthSession,
   fetchCurrentSession,
+  getRememberAuthPreference,
+  isCookieAuthToken,
   readStoredAuthSession,
+  storeAuthSession,
 } from './lib/authSession.js';
 import { loadFeedbackConfig } from './lib/feedback.js';
 
@@ -129,8 +132,13 @@ function RouteSessionGate({ requireAuth = false, children }) {
     fetchCurrentSession(session.authToken).then((result) => {
       if (cancelled) return;
       if (result.ok) {
-        sessionStorage.setItem('username', result.user.username);
-        sessionStorage.setItem('email', result.user.email || '');
+        storeAuthSession({
+          username: result.user.username,
+          email: result.user.email || '',
+          authToken: result.user.authToken,
+          remember: getRememberAuthPreference(),
+          preferences: result.user.preferences || {},
+        });
         setSessionState({ checking: false, authenticated: true });
         return;
       }
@@ -258,7 +266,7 @@ export default function App() {
     };
 
     window.fetch = async (input, init = {}) => {
-      const token = sessionStorage.getItem('auth_token') || '';
+      const token = readStoredAuthSession().authToken || '';
       const resolvedUrl = resolveRequestUrl(input);
       const requestUrl = resolvedUrl?.href || (typeof input === 'string' ? input : String(input?.url || ''));
       const isSameOriginApiRequest = Boolean(
@@ -271,7 +279,7 @@ export default function App() {
       const requestPath = resolvedUrl?.pathname || requestUrl;
       const isAuthEndpoint = isApiRequest && String(requestPath).startsWith('/api/auth/');
       const headers = new Headers(init?.headers || {});
-      if (token && isApiRequest && !headers.has('Authorization')) {
+      if (token && !isCookieAuthToken(token) && isApiRequest && !headers.has('Authorization')) {
         headers.set('Authorization', `Bearer ${token}`);
       }
 

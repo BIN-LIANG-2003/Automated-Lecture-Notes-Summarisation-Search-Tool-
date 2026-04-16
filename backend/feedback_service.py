@@ -115,11 +115,6 @@ def _load_user_profile(conn, username):
     }
 
 
-def _feedback_user_link(feedback_id):
-    safe_id = quote(str(feedback_id or '').strip())
-    return f'{APP_BASE_URL}/#/?feedback={safe_id}'
-
-
 def _feedback_admin_link(feedback_id=''):
     safe_id = quote(str(feedback_id or '').strip())
     suffix = f'?feedback={safe_id}' if safe_id else ''
@@ -432,7 +427,6 @@ def _send_user_feedback_email(item, subject_prefix, message):
     if not recipient or not is_valid_email(recipient):
         return False, 'Feedback submitter has no valid email address'
 
-    user_url = _feedback_user_link(item.get('id'))
     safe_title = item.get('title') or 'your feedback'
     body_html = f'''
         <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 600px; margin: 0 auto;">
@@ -440,7 +434,6 @@ def _send_user_feedback_email(item, subject_prefix, message):
           <p>{html.escape(message)}</p>
           <p><strong>Feedback:</strong> {html.escape(safe_title)}</p>
           <p><strong>Status:</strong> {html.escape(str(item.get('status') or 'new').replace('_', ' '))}</p>
-          <p><a href="{html.escape(user_url)}" style="display: inline-block; padding: 10px 14px; border-radius: 8px; background: #2563eb; color: #fff; text-decoration: none;">Open feedback</a></p>
           <p style="font-size: 12px; color: #6b7280;">This is a private StudyHub feedback update. Internal admin notes are never included.</p>
         </div>
     '''
@@ -449,7 +442,6 @@ def _send_user_feedback_email(item, subject_prefix, message):
         f'{message}\n\n'
         f'Feedback: {safe_title}\n'
         f"Status: {str(item.get('status') or 'new').replace('_', ' ')}\n"
-        f'Open feedback: {user_url}\n'
     )
     return send_resend_email(recipient, f'StudyHub feedback update: {safe_title}', body_html, body_text)
 
@@ -536,7 +528,7 @@ def submit_feedback():
     ack_ok, ack_error = _send_user_feedback_email(
         private_item,
         'Feedback received',
-        'Thanks for sending feedback. The StudyHub team can now review it privately.',
+        'Thanks for sending feedback. We have received your report and will review the details. You will get an update when there is a reply or status change.',
     )
     _record_email_event(
         feedback_id,

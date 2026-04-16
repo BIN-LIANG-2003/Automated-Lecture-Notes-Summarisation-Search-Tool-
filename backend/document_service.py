@@ -1,5 +1,6 @@
 import io
 import os
+import re
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
@@ -23,6 +24,7 @@ from .document_domain import (
     PDF_TEXT_PENDING_ERROR,
     PDF_TEXT_PENDING_STATUS,
     build_editable_file_bytes,
+    convert_pdf_bytes_to_editable_draft,
     extract_document_content,
     extract_text_from_pdf_bytes,
     hard_delete_document_record,
@@ -49,6 +51,29 @@ from .workspace_domain import get_or_create_default_workspace_id, get_workspace_
 
 
 _UPLOAD_PROCESSING_EXECUTOR = ThreadPoolExecutor(max_workers=1)
+
+
+def _normalize_document_title(value):
+    title = ' '.join(str(value or '').replace('\x00', '').split()).strip()
+    return title[:200]
+
+
+def _document_value(doc, key, default=''):
+    if hasattr(doc, 'get'):
+        return doc.get(key, default)
+    try:
+        return doc[key]
+    except Exception:
+        return default
+
+
+def _title_with_extension(title, file_ext, fallback='Edited document'):
+    safe_ext = str(file_ext or '').strip().lower().lstrip('.')
+    safe_title = _normalize_document_title(title) or fallback
+    if safe_ext:
+        safe_title = re.sub(r'\.[A-Za-z0-9]{1,8}$', '', safe_title).strip() or fallback
+        safe_title = f'{safe_title}.{safe_ext}'
+    return _normalize_document_title(safe_title) or f'{fallback}.{safe_ext}'
 
 
 def _normalize_ocr_import_format(value):
@@ -1055,6 +1080,44 @@ def update_document_category(doc_id):
         conn.close()
 
 
+def update_document_title(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = get_authenticated_username()
+    next_title = _normalize_document_title(data.get('title', ''))
+    if not next_title:
+        return jsonify({'error': 'title is required'}), 400
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str((doc.get('workspace_id') if hasattr(doc, 'get') else doc['workspace_id']) or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        conn.execute('UPDATE documents SET title = ? WHERE id = ?', (next_title, doc_id))
+        conn.commit()
+
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        return jsonify(dict(doc)), 200
+    finally:
+        conn.close()
+
+
 def update_document_content(doc_id):
     data = request.get_json(silent=True) or {}
     username = get_authenticated_username()
@@ -1238,6 +1301,222 @@ def import_workspace_text():
     except Exception as e:
         print(f"Workspace OCR text import failed: {e}")
         return jsonify({'error': 'Failed to save OCR note'}), 500
+    finally:
+        conn.close()
+
+
+def convert_pdf_to_editable_draft(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = get_authenticated_username()
+    mode = str(data.get('mode') or 'simple').strip().lower()
+
+    conn = get_db_connection()
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str(_document_value(doc, 'workspace_id') or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        file_type = str(_document_value(doc, 'file_type') or '').lower().strip('.')
+        if file_type != 'pdf':
+            return jsonify({'error': 'Only PDF documents can be converted to an editable draft'}), 400
+
+        filename = str(_document_value(doc, 'filename') or '').strip()
+        try:
+            file_bytes = read_file_bytes_from_storage(filename)
+            draft = convert_pdf_bytes_to_editable_draft(
+                file_bytes,
+                mode=mode,
+                fallback_text=_document_value(doc, 'content') or '',
+            )
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 422
+        except Exception as e:
+            print(f'PDF conversion draft failed: {e}')
+            return jsonify({'error': 'Failed to convert PDF to editable draft'}), 500
+
+        source_title = str(_document_value(doc, 'title') or _document_value(doc, 'filename') or 'Document').strip()
+        return jsonify({
+            **draft,
+            'document_id': doc_id,
+            'source_file_type': 'pdf',
+            'title': source_title,
+            'suggested_docx_title': _title_with_extension(source_title, 'docx', 'Edited document'),
+            'suggested_pdf_title': _title_with_extension(source_title, 'pdf', 'Edited document'),
+            'available_output_formats': ['docx', 'pdf'],
+            'available_save_modes': ['replace', 'copy'],
+        }), 200
+    finally:
+        conn.close()
+
+
+def save_converted_pdf_document(doc_id):
+    data = request.get_json(silent=True) or {}
+    username = get_authenticated_username()
+    output_format = str(data.get('output_format') or data.get('format') or 'docx').strip().lower().lstrip('.')
+    save_mode = str(data.get('save_mode') or data.get('mode') or 'replace').strip().lower()
+    content_html = data.get('content_html')
+    content = data.get('content', '')
+
+    if output_format not in ('docx', 'pdf'):
+        return jsonify({'error': 'output_format must be docx or pdf'}), 400
+    if save_mode not in ('replace', 'copy'):
+        return jsonify({'error': 'save_mode must be replace or copy'}), 400
+    if content_html is not None and not isinstance(content_html, str):
+        return jsonify({'error': 'content_html must be a string'}), 400
+    if content is None:
+        content = ''
+    if not isinstance(content, str):
+        return jsonify({'error': 'content must be a string'}), 400
+
+    conn = get_db_connection()
+    new_filename = ''
+    old_filename = ''
+    try:
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        doc = cursor.fetchone()
+        if not doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, doc, username)
+        if not allowed:
+            return jsonify({'error': reason}), 403
+        if not user_can_edit_document(conn, doc, username):
+            return jsonify({'error': 'Only workspace members can edit this document'}), 403
+
+        workspace_id = str(_document_value(doc, 'workspace_id') or '').strip()
+        workspace_settings = get_workspace_settings(conn, workspace_id)
+        if not workspace_settings.get('allow_note_editing', True):
+            return jsonify({'error': 'Editing is disabled in this workspace settings'}), 403
+
+        source_file_type = str(_document_value(doc, 'file_type') or '').lower().strip('.')
+        if source_file_type != 'pdf':
+            return jsonify({'error': 'Only PDF conversion drafts can be saved with this endpoint'}), 400
+
+        if content_html is None:
+            content_html = plaintext_to_html(content)
+        content_html = sanitize_editor_html(content_html)
+        content = html_to_plaintext(content_html)
+        if not content.strip():
+            return jsonify({'error': 'Converted content is empty'}), 400
+
+        output_content_html = content_html if output_format == 'docx' else ''
+        file_bytes, mimetype = build_editable_file_bytes(output_format, content, content_html)
+        new_filename = f'{uuid.uuid4().hex}.{output_format}'
+        next_title = _title_with_extension(
+            data.get('title') or _document_value(doc, 'title') or _document_value(doc, 'filename') or 'Edited document',
+            output_format,
+            'Edited document',
+        )
+
+        write_file_bytes_to_storage(new_filename, file_bytes, mimetype)
+
+        if save_mode == 'copy':
+            new_doc_id = _insert_document_record(
+                conn,
+                filename=new_filename,
+                title=next_title,
+                uploaded_at=datetime.utcnow().isoformat(),
+                file_type=output_format,
+                content=content,
+                content_html=output_content_html,
+                username=username,
+                tags=_document_value(doc, 'tags') or '',
+                category=normalize_document_category(_document_value(doc, 'category') or '') or DEFAULT_DOCUMENT_CATEGORY,
+                workspace_id=workspace_id,
+                processing_status='processed',
+                processing_error='',
+                processed_at=utcnow_iso(),
+            )
+            if new_doc_id <= 0:
+                raise RuntimeError('Document insert did not return an id')
+            cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (new_doc_id,))
+            new_doc = row_to_dict(cursor.fetchone()) or {}
+            conn.commit()
+            return jsonify({
+                'message': 'Converted document saved as a new file',
+                'save_mode': 'copy',
+                'document': new_doc,
+                'source_document_id': doc_id,
+            }), 201
+
+        old_filename = str(_document_value(doc, 'filename') or '').strip()
+        conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (doc_id,))
+        conn.execute(
+            '''
+            UPDATE documents
+            SET filename = ?,
+                title = ?,
+                file_type = ?,
+                content = ?,
+                content_html = ?,
+                processing_status = ?,
+                processing_error = ?,
+                processed_at = ?
+            WHERE id = ?
+            ''',
+            (
+                new_filename,
+                next_title,
+                output_format,
+                content,
+                output_content_html,
+                'processed',
+                '',
+                utcnow_iso(),
+                doc_id,
+            ),
+        )
+        cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
+        updated_doc = row_to_dict(cursor.fetchone()) or {}
+        conn.commit()
+
+        storage_warning = ''
+        if old_filename and old_filename != new_filename:
+            storage_warning = remove_document_file_from_storage(old_filename) or ''
+
+        return jsonify({
+            'message': 'Original PDF replaced with converted document',
+            'save_mode': 'replace',
+            'document': updated_doc,
+            'warning': storage_warning,
+        }), 200
+    except ValueError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if new_filename:
+            remove_document_file_from_storage(new_filename)
+        return jsonify({'error': str(e)}), 400
+    except RuntimeError as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if new_filename:
+            remove_document_file_from_storage(new_filename)
+        return jsonify({'error': str(e)}), 500
+    except Exception as e:
+        print(f'Converted PDF save failed: {e}')
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if new_filename:
+            remove_document_file_from_storage(new_filename)
+        return jsonify({'error': 'Failed to save converted document'}), 500
     finally:
         conn.close()
 

@@ -11,12 +11,14 @@ from .security import get_authenticated_username
 from .utils import normalize_email, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .share_domain import (
     build_document_share_url,
+    can_user_manage_workspace_share_links,
     check_document_access,
     count_active_document_share_links,
     create_document_share_token,
     expire_document_share_links,
     get_document_link_sharing_mode,
     list_document_share_link_payloads,
+    list_workspace_share_link_payloads,
     serialize_document_share_link_row,
     to_document_share_link_payload,
     user_can_manage_document_share_links,
@@ -79,6 +81,7 @@ def _prepare_document_share_link_payload(
     doc_id,
     username,
     requested_expiry=None,
+    recipient_email='',
     *,
     allow_reuse_when_limit=False,
 ):
@@ -132,6 +135,8 @@ def _prepare_document_share_link_payload(
                 reused_payload['auto_revoke_previous_share_links'] = auto_revoke_previous
                 reused_payload['revoked_before_create'] = 0
                 reused_payload['reused_existing'] = True
+                if recipient_email:
+                    reused_payload['recipient_email'] = recipient_email
                 return {'payload': reused_payload, 'context': context}, None, 200
         return None, {
             'error': (
@@ -147,14 +152,15 @@ def _prepare_document_share_link_payload(
         conn.execute(
             '''
             INSERT INTO document_share_links (
-                document_id, workspace_id, token, created_by, status, expires_at, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                document_id, workspace_id, token, created_by, recipient_email, status, expires_at, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
             ''',
             (
                 doc_id,
                 workspace_id,
                 token,
                 username,
+                normalize_email(recipient_email),
                 'active',
                 expires_at,
                 utcnow_iso(),
@@ -262,6 +268,7 @@ def create_document_share_link(doc_id):
             doc_id,
             username,
             data.get('expiry_days', None),
+            '',
             allow_reuse_when_limit=False,
         )
         if error_payload:
@@ -302,6 +309,7 @@ def send_document_share_link_email(doc_id):
             doc_id,
             username,
             data.get('expiry_days', None),
+            recipient_email,
             allow_reuse_when_limit=True,
         )
         if error_payload:
@@ -331,6 +339,12 @@ def send_document_share_link_email(doc_id):
                 'expires_at': payload.get('expires_at'),
                 'error': send_error or 'Failed to send share email',
             }), 503
+        if payload.get('reused_existing') and payload.get('id'):
+            conn.execute(
+                'UPDATE document_share_links SET recipient_email = ? WHERE id = ?',
+                (recipient_email, payload.get('id')),
+            )
+            payload['recipient_email'] = recipient_email
 
         recipient_cursor = conn.execute(
             'SELECT username FROM users WHERE LOWER(email) = ? LIMIT 1',
@@ -397,6 +411,132 @@ def list_document_share_links(doc_id):
             'link_sharing_mode': link_mode,
             'items': items,
         }), 200
+    finally:
+        conn.close()
+
+
+def list_workspace_share_links(workspace_id):
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    safe_workspace_id = str(workspace_id or '').strip()
+    if not safe_workspace_id:
+        return jsonify({'error': 'workspace_id is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        if not can_user_manage_workspace_share_links(conn, safe_workspace_id, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+        limit = parse_int(request.args.get('limit'), 100, 1, 200)
+        items = list_workspace_share_link_payloads(conn, safe_workspace_id, limit=limit)
+        return jsonify({
+            'workspace_id': safe_workspace_id,
+            'items': items,
+        }), 200
+    finally:
+        conn.close()
+
+
+def revoke_all_workspace_share_links(workspace_id):
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    safe_workspace_id = str(workspace_id or '').strip()
+    if not safe_workspace_id:
+        return jsonify({'error': 'workspace_id is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        if not can_user_manage_workspace_share_links(conn, safe_workspace_id, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+        expire_document_share_links(conn, 0)
+        cursor = conn.execute(
+            '''
+            SELECT id
+            FROM document_share_links
+            WHERE workspace_id = ? AND status = 'active'
+            ''',
+            (safe_workspace_id,),
+        )
+        active_ids = [row_to_dict(row).get('id') for row in cursor.fetchall()]
+        if active_ids:
+            placeholders = ','.join(['?'] * len(active_ids))
+            conn.execute(
+                f"UPDATE document_share_links SET status = 'revoked' WHERE id IN ({placeholders})",
+                tuple(active_ids),
+            )
+        conn.commit()
+        return jsonify({
+            'message': 'All workspace share links revoked',
+            'revoked_count': len(active_ids),
+            'items': list_workspace_share_link_payloads(conn, safe_workspace_id, limit=100),
+        }), 200
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        conn.close()
+
+
+def delete_inactive_workspace_share_links(workspace_id):
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'username is required'}), 400
+
+    safe_workspace_id = str(workspace_id or '').strip()
+    if not safe_workspace_id:
+        return jsonify({'error': 'workspace_id is required'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        if not can_user_manage_workspace_share_links(conn, safe_workspace_id, username):
+            return jsonify({'error': 'Only owner (or allowed members) can manage share links'}), 403
+        expire_document_share_links(conn, 0)
+        cursor = conn.execute(
+            '''
+            SELECT id
+            FROM document_share_links
+            WHERE workspace_id = ?
+              AND status <> 'active'
+            ''',
+            (safe_workspace_id,),
+        )
+        inactive_ids = [row_to_dict(row).get('id') for row in cursor.fetchall()]
+        if not inactive_ids:
+            conn.commit()
+            return jsonify({
+                'message': 'No inactive share links to delete',
+                'deleted_count': 0,
+                'items': list_workspace_share_link_payloads(conn, safe_workspace_id, limit=100),
+            }), 200
+        placeholders = ','.join(['?'] * len(inactive_ids))
+        conn.execute(
+            f'DELETE FROM document_share_links WHERE id IN ({placeholders})',
+            tuple(inactive_ids),
+        )
+        conn.commit()
+        return jsonify({
+            'message': 'Inactive workspace share links deleted',
+            'deleted_count': len(inactive_ids),
+            'items': list_workspace_share_link_payloads(conn, safe_workspace_id, limit=100),
+        }), 200
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

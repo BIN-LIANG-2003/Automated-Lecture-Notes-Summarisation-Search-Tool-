@@ -25,6 +25,16 @@ def send_friend_message():
     return friend_service.send_friend_message()
 
 
+@friends_bp.route('/api/friends/file-shares', methods=['POST'])
+def send_friend_file_share():
+    return friend_service.send_friend_file_share()
+
+
+@friends_bp.route('/api/friends/file-shares/<int:notification_id>/respond', methods=['POST'])
+def respond_friend_file_share(notification_id):
+    return friend_service.respond_friend_file_share(notification_id)
+
+
 @friends_bp.route('/api/friends/read', methods=['POST'])
 def mark_friend_items_read():
     return friend_service.mark_friend_items_read()

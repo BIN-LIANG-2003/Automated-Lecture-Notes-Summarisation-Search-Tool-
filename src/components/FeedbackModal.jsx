@@ -24,6 +24,7 @@ export default function FeedbackModal({
   context = {},
   initialFeedbackId = 0,
   onOpenAdmin,
+  onSubmitted,
 }) {
   const [activeTab, setActiveTab] = useState('submit');
   const [form, setForm] = useState(DEFAULT_FORM);
@@ -147,10 +148,13 @@ export default function FeedbackModal({
         workspace_id: context.workspaceId || '',
         document_id: context.documentId || null,
       });
-      setSubmitMessage('Feedback submitted. You can track updates in My Feedback.');
       setForm(DEFAULT_FORM);
-      setActiveTab('mine');
-      await loadMine({ focusId: payload?.item?.id || 0 });
+      setSimilarItems([]);
+      if (typeof onSubmitted === 'function') {
+        onSubmitted(payload);
+      } else {
+        setSubmitMessage('Feedback submitted successfully.');
+      }
     } catch (error) {
       setSubmitError(error?.message || 'Failed to submit feedback');
     } finally {

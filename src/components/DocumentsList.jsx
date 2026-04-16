@@ -190,6 +190,7 @@ export default function DocumentsList({
   onDelete,
   onEdit,
   onEditCategory,
+  onRename,
   onSummarize,
   onSummarizeRefresh,
   onRunImageOcr,
@@ -396,6 +397,25 @@ export default function DocumentsList({
                       >
                         <div className="document-more-group" role="group" aria-label="Edit options">
                           <p className="document-more-group-title">Edit</p>
+                          <button
+                            className="document-more-item"
+                            onClick={() => {
+                              setOpenMenuDocId('');
+                              if (isLoggedIn) onRename?.(doc);
+                            }}
+                            title={
+                              !isLoggedIn
+                                ? 'Please sign in'
+                                : canEditMetadata
+                                  ? undefined
+                                  : 'Editing is disabled in workspace settings'
+                            }
+                            type="button"
+                            disabled={!isLoggedIn || !canEditMetadata}
+                            role="menuitem"
+                          >
+                            Rename
+                          </button>
                           <button
                             className="document-more-item"
                             onClick={() => {

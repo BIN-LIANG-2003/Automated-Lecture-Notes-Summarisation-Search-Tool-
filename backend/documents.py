@@ -55,9 +55,24 @@ def update_document_category(doc_id):
     return document_service.update_document_category(doc_id)
 
 
+@documents_bp.route('/api/documents/<int:doc_id>/title', methods=['PUT'])
+def update_document_title(doc_id):
+    return document_service.update_document_title(doc_id)
+
+
 @documents_bp.route('/api/documents/<int:doc_id>/content', methods=['PUT'])
 def update_document_content(doc_id):
     return document_service.update_document_content(doc_id)
+
+
+@documents_bp.route('/api/documents/<int:doc_id>/convert-to-editable', methods=['POST'])
+def convert_pdf_to_editable_draft(doc_id):
+    return document_service.convert_pdf_to_editable_draft(doc_id)
+
+
+@documents_bp.route('/api/documents/<int:doc_id>/converted-file', methods=['PUT'])
+def save_converted_pdf_document(doc_id):
+    return document_service.save_converted_pdf_document(doc_id)
 
 
 @documents_bp.route('/api/documents/<int:doc_id>/import-text', methods=['POST'])

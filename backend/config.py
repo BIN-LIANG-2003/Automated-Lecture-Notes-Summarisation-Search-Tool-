@@ -108,6 +108,11 @@ try:
     AUTH_TOKEN_TTL_SECONDS = max(3600, int((os.environ.get('AUTH_TOKEN_TTL_SECONDS') or '604800').strip()))
 except Exception:
     AUTH_TOKEN_TTL_SECONDS = 604800
+AUTH_COOKIE_NAME = (os.environ.get('AUTH_COOKIE_NAME') or 'studyhub_auth').strip() or 'studyhub_auth'
+AUTH_COOKIE_SAMESITE = (os.environ.get('AUTH_COOKIE_SAMESITE') or 'Lax').strip() or 'Lax'
+AUTH_COOKIE_SECURE = str(
+    os.environ.get('AUTH_COOKIE_SECURE') or ('1' if IS_PRODUCTION_ENV else '0')
+).strip().lower() in ('1', 'true', 'yes', 'on')
 AUTH_BYPASS_ENDPOINTS = {
     'register',
     'login',

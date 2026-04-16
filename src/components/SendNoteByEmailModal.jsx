@@ -163,9 +163,11 @@ export default function SendNoteByEmailModal({
                 <p className="muted tiny">Share-link management is not available for this note.</p>
               )}
               <div className="notion-modal-actions notion-share-email-manage-actions">
-                <button type="button" className="btn" onClick={onBackToSend} disabled={isSubmitting}>
-                  Back to Send
-                </button>
+                {typeof onBackToSend === 'function' && (
+                  <button type="button" className="btn" onClick={onBackToSend} disabled={isSubmitting}>
+                    Back to Send
+                  </button>
+                )}
                 <button type="button" className="btn btn-primary" onClick={requestClose} disabled={isSubmitting}>
                   Done
                 </button>

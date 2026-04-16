@@ -373,6 +373,10 @@ export default function PdfInlineViewer({
     if (!editable || !editMode || loadingDoc || loadingPage || saveLoading) return;
     if (!canvasSize.width || !canvasSize.height) return;
 
+    const rect = event.currentTarget.getBoundingClientRect();
+    const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
+    const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
+
     if (typeof requestTextInput !== 'function') {
       setEditorError('Text input dialog is unavailable.');
       return;
@@ -394,10 +398,6 @@ export default function PdfInlineViewer({
 
     onClearSaveError?.();
     setEditorError('');
-
-    const rect = event.currentTarget.getBoundingClientRect();
-    const normalizedX = clamp((event.clientX - rect.left) / rect.width, 0, 1);
-    const normalizedY = clamp((event.clientY - rect.top) / rect.height, 0, 1);
 
     setAnnotations((prev) => [
       ...prev,
@@ -602,67 +602,74 @@ export default function PdfInlineViewer({
 
       {editable && (
         <div className="notion-pdf-editbar">
-          <button
-            type="button"
-            className="notion-pdf-btn"
-            onClick={() => {
-              setEditMode((prev) => !prev);
-              onClearSaveError?.();
-              setEditorError('');
-            }}
-            disabled={loadingDoc || saveLoading}
-          >
-            {editMode ? 'Exit Annotation Mode' : 'Add Annotation'}
-          </button>
-          <button
-            type="button"
-            className="notion-pdf-btn"
-            onClick={removeLastAnnotationOnPage}
-            disabled={!pageAnnotations.length || saveLoading}
-          >
-            Undo on This Page
-          </button>
-          <button
-            type="button"
-            className="notion-pdf-btn"
-            onClick={() => setAnnotations([])}
-            disabled={!hasPendingAnnotations || saveLoading}
-          >
-            Clear Annotations
-          </button>
-          <label className="notion-pdf-config">
-            Font size
-            <input
-              type="number"
-              min={MIN_FONT_SIZE}
-              max={MAX_FONT_SIZE}
-              value={annotationSize}
-              onChange={(event) =>
-                setAnnotationSize(clamp(Number(event.target.value) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE))
-              }
-              disabled={saveLoading}
-            />
-          </label>
-          <label className="notion-pdf-config">
-            Color
-            <input
-              type="color"
-              value={annotationColor}
-              onChange={(event) => setAnnotationColor(event.target.value)}
-              disabled={saveLoading}
-            />
-          </label>
-          <span className="notion-pdf-edit-meta">
-            {hasPendingAnnotations ? `${annotations.length} annotations pending save` : 'No pending annotations'}
-          </span>
-          <button
-            type="button"
-            className="notion-pdf-btn notion-pdf-btn-primary"
-            onClick={saveEditedPdf}
-            disabled={!hasPendingAnnotations || saveLoading}
-          >
-            {saveLoading ? 'Saving...' : 'Save to Original PDF'}
-          </button>
+          <div className="notion-pdf-editbar-row">
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => {
+                setEditMode((prev) => !prev);
+                onClearSaveError?.();
+                setEditorError('');
+              }}
+              disabled={loadingDoc || saveLoading}
+            >
+              {editMode ? 'Exit Annotation Mode' : 'Add Annotation'}
+            </button>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={removeLastAnnotationOnPage}
+              disabled={!pageAnnotations.length || saveLoading}
+            >
+              Undo on This Page
+            </button>
+            <button
+              type="button"
+              className="notion-pdf-btn"
+              onClick={() => setAnnotations([])}
+              disabled={!hasPendingAnnotations || saveLoading}
+            >
+              Clear Annotations
+            </button>
+            <label className="notion-pdf-config">
+              Font size
+              <input
+                type="number"
+                min={MIN_FONT_SIZE}
+                max={MAX_FONT_SIZE}
+                value={annotationSize}
+                onChange={(event) =>
+                  setAnnotationSize(clamp(Number(event.target.value) || 14, MIN_FONT_SIZE, MAX_FONT_SIZE))
+                }
+                disabled={saveLoading}
+              />
+            </label>
+            <label className="notion-pdf-config">
+              Color
+              <input
+                type="color"
+                value={annotationColor}
+                onChange={(event) => setAnnotationColor(event.target.value)}
+                disabled={saveLoading}
+              />
+            </label>
+            <span className="notion-pdf-edit-meta">
+              {hasPendingAnnotations ? `${annotations.length} annotations pending save` : 'No pending annotations'}
+            </span>
+            <button
+              type="button"
+              className="notion-pdf-btn notion-pdf-btn-primary"
+              onClick={saveEditedPdf}
+              disabled={!hasPendingAnnotations || saveLoading}
+            >
+              {saveLoading ? 'Saving...' : 'Save to Original PDF'}
+            </button>
+          </div>
+          {editMode && (
+            <p className="muted tiny notion-pdf-edit-hint">
+              Click a blank area to add text annotations; click existing annotations to remove them. Free plan editing appends annotations only.
+            </p>
+          )}
         </div>
       )}
 
@@ -750,11 +757,6 @@ export default function PdfInlineViewer({
         </div>
       </div>
 
-      {editable && editMode && (
-        <p className="muted tiny notion-pdf-edit-hint">
-          Click a blank area to add text annotations; click existing annotations to remove them. Free plan editing appends annotations only.
-        </p>
-      )}
       {(saveError || editorError) && (
         <p className="notion-pdf-edit-error" role="alert">
           Save failed: {saveError || editorError}

@@ -21,7 +21,14 @@ import {
   saveAccountToHistory,
   removeAccountFromHistory,
 } from '../lib/accountHistory.js';
-import { clearStoredAuthSession, logoutCurrentSession } from '../lib/authSession.js';
+import {
+  clearStoredAuthSession,
+  getRememberAuthPreference,
+  isCookieAuthToken,
+  logoutCurrentSession,
+  readStoredAuthSession,
+  storeAuthSession,
+} from '../lib/authSession.js';
 import { authFetch } from '../lib/authFetch.js';
 import {
   createWorkspace,
@@ -34,9 +41,12 @@ import {
   createDocumentShareLink,
   deleteDocumentShareLink,
   deleteInactiveDocumentShareLinks,
+  deleteInactiveWorkspaceShareLinks,
   isActiveShareLink,
   listDocumentShareLinks,
+  listWorkspaceShareLinks,
   revokeAllDocumentShareLinks,
+  revokeAllWorkspaceShareLinks,
   revokeDocumentShareLink,
   sendDocumentShareLinkEmail,
 } from '../lib/shareLinks.js';
@@ -135,6 +145,64 @@ const getLinkSharingModeLabel = (mode) => {
   if (safeMode === 'restricted') return 'Restricted';
   return 'Workspace Members';
 };
+const extractWorkspaceIdFromNotification = (notification = {}) => {
+  const metadata = notification?.metadata && typeof notification.metadata === 'object'
+    ? notification.metadata
+    : {};
+  const metadataWorkspaceId = String(metadata.workspace_id || metadata.workspaceId || '').trim();
+  if (metadataWorkspaceId) return metadataWorkspaceId;
+
+  const linkUrl = String(notification?.link_url || '').trim();
+  const match = linkUrl.match(/[?&](workspace_id|workspaceId)=([^&#]+)/);
+  if (!match) return '';
+  try {
+    return decodeURIComponent(match[2]).trim();
+  } catch {
+    return String(match[2] || '').trim();
+  }
+};
+const extractSharedTokenFromNotification = (notification = {}) => {
+  const metadata = notification?.metadata && typeof notification.metadata === 'object'
+    ? notification.metadata
+    : {};
+  const metadataToken = String(metadata.share_token || metadata.shareToken || '').trim();
+  if (metadataToken) return metadataToken;
+
+  const linkUrl = String(notification?.link_url || '').trim();
+  if (!linkUrl) return '';
+
+  const extractFromPath = (value) => {
+    const match = String(value || '').match(/\/shared\/([^/?#]+)/);
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]).trim();
+    } catch {
+      return String(match[1] || '').trim();
+    }
+  };
+
+  try {
+    const url = new URL(linkUrl, window.location.origin);
+    return extractFromPath(url.hash ? url.hash.slice(1) : url.pathname);
+  } catch {
+    return extractFromPath(linkUrl);
+  }
+};
+const shouldOpenWorkspaceAccessPanel = (notification = {}) => {
+  const metadata = notification?.metadata && typeof notification.metadata === 'object'
+    ? notification.metadata
+    : {};
+  const requestedPanel = String(metadata.open || metadata.panel || '').trim().toLowerCase();
+  const title = String(notification?.title || '').trim().toLowerCase();
+  const linkUrl = String(notification?.link_url || '').trim().toLowerCase();
+  return (
+    requestedPanel === 'invite-members' ||
+    requestedPanel === 'workspace-access' ||
+    linkUrl.includes('open=invite-members') ||
+    title.includes('workspace request received') ||
+    title.includes('workspace member joined')
+  );
+};
 const HOME_TAB_OPTIONS = ['home', 'files'];
 const SIDEBAR_DENSITY_OPTIONS = [
   { value: 'comfortable', label: 'Comfortable' },
@@ -170,11 +238,14 @@ const WORKSPACE_SETTINGS_TABS = [
   { id: 'general', label: 'General', description: 'Name, icon, accent color, workspace identity.' },
   { id: 'defaults', label: 'Defaults', description: 'File views, category rules, and landing behavior.' },
   { id: 'experience', label: 'Experience', description: 'Sidebar density and overview widgets.' },
-  { id: 'notifications', label: 'Notifications', description: 'Control in-app upload, AI, and sharing toasts.' },
+  { id: 'notifications', label: 'Notifications', description: 'Control in-app toasts and your email reminders.' },
   { id: 'permissions', label: 'Permissions', description: 'What members can upload, edit, and export.' },
   { id: 'ai', label: 'AI', description: 'Summaries, OCR, and keyword defaults.' },
   { id: 'danger', label: 'Danger', description: 'Irreversible workspace cleanup actions.' },
 ];
+const DEFAULT_USER_NOTIFICATION_PREFERENCES = {
+  emailNotificationsEnabled: true,
+};
 const KEYBOARD_SHORTCUT_ITEMS = [
   { keys: 'Ctrl/⌘ + K', action: 'Focus search and open Notes view' },
   { keys: '/', action: 'Focus search (when not typing)' },
@@ -258,6 +329,7 @@ const FILES_VIEW_PREFS_KEY = 'studyhub-files-view-prefs-v1';
 const SAVED_VIEWS_STORE_KEY = 'studyhub-saved-views-v1';
 const STARRED_NOTES_STORE_KEY = 'studyhub-starred-notes-v1';
 const RECENT_NOTES_STORE_KEY = 'studyhub-recent-notes-v1';
+const SIDEBAR_COLLAPSED_STORE_KEY = 'studyhub-sidebar-collapsed-v1';
 const SUMMARY_HISTORY_STORE_KEY = 'studyhub-summary-history-v1';
 const MAX_SAVED_VIEWS_PER_WORKSPACE = 10;
 const MAX_STARRED_NOTES_PER_WORKSPACE = 60;
@@ -277,15 +349,9 @@ const FILE_TYPE_FILTER_OPTIONS = [
   { value: 'docx', label: 'DOCX' },
   { value: 'txt', label: 'TXT' },
   { value: 'image', label: 'Images' },
-  { value: 'editable', label: 'Editable' },
-];
-const QUICK_TYPE_FILTER_OPTIONS = [
-  { value: 'image', label: 'Images only' },
-  { value: 'editable', label: 'Editable only' },
 ];
 const FILE_TYPE_FILTER_VALUES = new Set(FILE_TYPE_FILTER_OPTIONS.map((option) => option.value));
 const IMAGE_FILE_TYPE_VALUES = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif']);
-const EDITABLE_FILE_TYPE_VALUES = new Set(['txt', 'docx']);
 
 const createClientId = (prefix) => `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 const createSavedViewId = () => createClientId('view');
@@ -348,9 +414,6 @@ const normalizeFacetFileTypeCounts = (raw) => {
       (counts.jpeg || 0) +
       (counts.webp || 0) +
       (counts.gif || 0);
-  }
-  if (!counts.editable) {
-    counts.editable = (counts.txt || 0) + (counts.docx || 0);
   }
   return counts;
 };
@@ -928,6 +991,18 @@ const normalizeWorkspaceSettings = (raw) => {
   };
 };
 
+const normalizeUserNotificationPreferences = (raw) => {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const rawEmailValue =
+    source.emailNotificationsEnabled ??
+    source.email_notifications_enabled ??
+    source.preferences?.email_notifications_enabled ??
+    DEFAULT_USER_NOTIFICATION_PREFERENCES.emailNotificationsEnabled;
+  return {
+    emailNotificationsEnabled: Boolean(rawEmailValue),
+  };
+};
+
 const normalizeAccountRecord = (raw) => {
   if (!raw) return null;
   if (typeof raw === 'string') {
@@ -1073,6 +1148,15 @@ const getDocExt = (doc) => {
   return parts.length > 1 ? parts.pop() : '';
 };
 
+const replaceFileExtension = (title, ext, fallback = 'Edited document') => {
+  const safeExt = String(ext || '').trim().toLowerCase().replace(/^\./, '');
+  const base = String(title || fallback)
+    .trim()
+    .replace(/\.[A-Za-z0-9]{1,8}$/, '')
+    .trim() || fallback;
+  return safeExt ? `${base}.${safeExt}` : base;
+};
+
 const buildFileTypeCountsFromDocuments = (docs) => {
   const counts = {};
   (Array.isArray(docs) ? docs : []).forEach((doc) => {
@@ -1081,9 +1165,6 @@ const buildFileTypeCountsFromDocuments = (docs) => {
     counts[ext] = (counts[ext] || 0) + 1;
     if (IMAGE_FILE_TYPE_VALUES.has(ext)) {
       counts.image = (counts.image || 0) + 1;
-    }
-    if (EDITABLE_FILE_TYPE_VALUES.has(ext)) {
-      counts.editable = (counts.editable || 0) + 1;
     }
   });
   return counts;
@@ -1102,6 +1183,130 @@ const plainTextToRichHtml = (value) => {
   const lines = text.split('\n');
   if (!lines.length) return '<p><br></p>';
   return lines.map((line) => (line ? `<p>${escapeHtml(line)}</p>` : '<p><br></p>')).join('');
+};
+
+const RICH_HTML_ALLOWED_TAGS = new Set([
+  'p', 'br', 'strong', 'b', 'em', 'i', 'u', 's', 'strike', 'sub', 'sup', 'mark', 'span', 'div',
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'ul', 'ol', 'li', 'blockquote', 'pre',
+  'code', 'a', 'table', 'thead', 'tbody', 'tr', 'th', 'td', 'colgroup', 'col', 'img', 'hr',
+]);
+
+const RICH_HTML_ALLOWED_STYLE_PROPS = new Set([
+  'font-weight', 'font-style', 'text-decoration', 'color', 'background-color',
+  'text-align', 'font-size', 'font-family', 'vertical-align', 'margin-left',
+  'width', 'height', 'border', 'border-collapse',
+]);
+
+const sanitizeRichHtmlStyle = (styleValue) => {
+  const declarations = String(styleValue || '').split(';');
+  const cleanDeclarations = [];
+  declarations.forEach((declaration) => {
+    const separatorIndex = declaration.indexOf(':');
+    if (separatorIndex <= 0) return;
+    const prop = declaration.slice(0, separatorIndex).trim().toLowerCase();
+    const value = declaration.slice(separatorIndex + 1).trim();
+    const loweredValue = value.toLowerCase();
+    if (!RICH_HTML_ALLOWED_STYLE_PROPS.has(prop) || !value) return;
+    if (loweredValue.includes('url(') || loweredValue.includes('expression(') || loweredValue.includes('javascript:')) return;
+    cleanDeclarations.push(`${prop}: ${value}`);
+  });
+  return cleanDeclarations.join('; ');
+};
+
+const isSafeRichHtmlHref = (value) => {
+  const href = String(value || '').trim();
+  if (!href) return false;
+  const lowered = href.toLowerCase();
+  if (lowered.startsWith('#') || lowered.startsWith('/') || lowered.startsWith('./') || lowered.startsWith('../')) {
+    return true;
+  }
+  return lowered.startsWith('http://') || lowered.startsWith('https://') || lowered.startsWith('mailto:');
+};
+
+const isSafeRichHtmlImageSrc = (value) => {
+  const src = String(value || '').trim();
+  if (!src) return false;
+  const lowered = src.toLowerCase();
+  if (lowered.startsWith('/') || lowered.startsWith('./') || lowered.startsWith('../')) return true;
+  if (lowered.startsWith('http://') || lowered.startsWith('https://') || lowered.startsWith('blob:')) return true;
+  return /^data:image\/(png|jpe?g|gif|webp);base64,/i.test(src);
+};
+
+const unwrapRichHtmlElement = (element) => {
+  const parent = element.parentNode;
+  if (!parent) return;
+  while (element.firstChild) {
+    parent.insertBefore(element.firstChild, element);
+  }
+  parent.removeChild(element);
+};
+
+const sanitizeRichHtmlForView = (value) => {
+  const sourceHtml = String(value || '').trim();
+  if (!sourceHtml) return '<p><br></p>';
+  try {
+    const parser = new DOMParser();
+    const parsed = parser.parseFromString(`<div>${sourceHtml}</div>`, 'text/html');
+    const root = parsed.body.firstElementChild;
+    if (!root) return '<p><br></p>';
+
+    Array.from(root.querySelectorAll('script, style')).forEach((element) => element.remove());
+    Array.from(root.querySelectorAll('*')).forEach((element) => {
+      const tag = element.tagName.toLowerCase();
+      if (!RICH_HTML_ALLOWED_TAGS.has(tag)) {
+        unwrapRichHtmlElement(element);
+        return;
+      }
+
+      const sanitizedAttrs = {};
+      const style = sanitizeRichHtmlStyle(element.getAttribute('style'));
+      if (style) sanitizedAttrs.style = style;
+
+      if (tag === 'a') {
+        const href = element.getAttribute('href');
+        if (isSafeRichHtmlHref(href)) {
+          sanitizedAttrs.href = href.trim();
+          sanitizedAttrs.target = '_blank';
+          sanitizedAttrs.rel = 'noopener noreferrer';
+        }
+      } else if (tag === 'img') {
+        const src = element.getAttribute('src');
+        if (isSafeRichHtmlImageSrc(src)) sanitizedAttrs.src = src.trim();
+        const alt = String(element.getAttribute('alt') || '').trim();
+        if (alt) sanitizedAttrs.alt = alt.slice(0, 200);
+        const title = String(element.getAttribute('title') || '').trim();
+        if (title) sanitizedAttrs.title = title.slice(0, 200);
+        ['width', 'height'].forEach((attrName) => {
+          const attrValue = Number.parseInt(element.getAttribute(attrName) || '', 10);
+          if (Number.isInteger(attrValue) && attrValue >= 1 && attrValue <= 4000) {
+            sanitizedAttrs[attrName] = String(attrValue);
+          }
+        });
+      } else if (tag === 'th' || tag === 'td') {
+        ['colspan', 'rowspan'].forEach((attrName) => {
+          const attrValue = Number.parseInt(element.getAttribute(attrName) || '', 10);
+          const maxValue = attrName === 'colspan' ? 20 : 100;
+          if (Number.isInteger(attrValue) && attrValue > 1 && attrValue <= maxValue) {
+            sanitizedAttrs[attrName] = String(attrValue);
+          }
+        });
+      } else if (tag === 'col') {
+        const span = Number.parseInt(element.getAttribute('span') || '', 10);
+        if (Number.isInteger(span) && span > 1 && span <= 20) sanitizedAttrs.span = String(span);
+        const width = Number.parseInt(element.getAttribute('width') || '', 10);
+        if (Number.isInteger(width) && width >= 1 && width <= 4000) sanitizedAttrs.width = String(width);
+      }
+
+      Array.from(element.attributes).forEach((attr) => element.removeAttribute(attr.name));
+      Object.entries(sanitizedAttrs).forEach(([attrName, attrValue]) => {
+        element.setAttribute(attrName, attrValue);
+      });
+    });
+
+    return root.innerHTML.trim() || '<p><br></p>';
+  } catch {
+    return plainTextToRichHtml(value);
+  }
 };
 
 const richHtmlToPlainText = (value) => {
@@ -1191,15 +1396,22 @@ export default function HomePage() {
   const confirmResolverRef = useRef(null);
   const inputDialogResolverRef = useRef(null);
   const summaryProgressTimerRef = useRef(null);
-  const hasInitialAuthenticatedSession = Boolean(
-    sessionStorage.getItem('username') && sessionStorage.getItem('auth_token')
-  );
+  const forceFilesViewAfterWorkspaceChangeRef = useRef(false);
+  const initialAuthSession = readStoredAuthSession();
+  const hasInitialAuthenticatedSession = initialAuthSession.isAuthenticated;
   const [isLoggedIn, setIsLoggedIn] = useState(
     () => hasInitialAuthenticatedSession
   );
   const [showFiles, setShowFiles] = useState(() => location.state?.showFiles || false);
   const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_STORE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [workspaceSettingsOpen, setWorkspaceSettingsOpen] = useState(false);
   const [workspaceInviteOpen, setWorkspaceInviteOpen] = useState(false);
   const [accountManagerOpen, setAccountManagerOpen] = useState(false);
@@ -1215,7 +1427,12 @@ export default function HomePage() {
   const [latestInviteLinks, setLatestInviteLinks] = useState([]);
   const [latestInviteDelivery, setLatestInviteDelivery] = useState(null);
   const [inviteCopied, setInviteCopied] = useState(false);
+  const [messagesOpenRequest, setMessagesOpenRequest] = useState({ key: 0, tab: 'friends' });
   const [accountDraft, setAccountDraft] = useState({ username: '', email: '' });
+  const [userNotificationPreferences, setUserNotificationPreferences] = useState(() =>
+    normalizeUserNotificationPreferences(initialAuthSession.preferences)
+  );
+  const [userNotificationPreferencesSaving, setUserNotificationPreferencesSaving] = useState(false);
   const [savedAccounts, setSavedAccounts] = useState(() => {
     const fromHistory = normalizeAccounts(loadAccountHistory());
     if (fromHistory.length) return fromHistory;
@@ -1223,7 +1440,7 @@ export default function HomePage() {
     return legacy;
   });
   const [workspaceState, setWorkspaceState] = useState(() =>
-    loadWorkspaceState(sessionStorage.getItem('username') || 'Guest')
+    loadWorkspaceState(initialAuthSession.username || 'Guest')
   );
   const [sidebarMenuDocId, setSidebarMenuDocId] = useState(null);
   const [sidebarRecentIds, setSidebarRecentIds] = useState([]);
@@ -1247,6 +1464,12 @@ export default function HomePage() {
   const [activeDocDraftHtml, setActiveDocDraftHtml] = useState('');
   const [activeDocSaveLoading, setActiveDocSaveLoading] = useState(false);
   const [activeDocSaveError, setActiveDocSaveError] = useState('');
+  const [pdfConversionDraft, setPdfConversionDraft] = useState(null);
+  const [pdfConversionLoading, setPdfConversionLoading] = useState(false);
+  const [pdfConversionMode, setPdfConversionMode] = useState('simple');
+  const [pdfConversionOutputFormat, setPdfConversionOutputFormat] = useState('docx');
+  const [pdfConversionSaveMode, setPdfConversionSaveMode] = useState('replace');
+  const [pdfConversionTitle, setPdfConversionTitle] = useState('');
   const [activeDocDownloadLoading, setActiveDocDownloadLoading] = useState(false);
   const [sidebarDownloadDocId, setSidebarDownloadDocId] = useState(0);
   const [activeDocShareLinks, setActiveDocShareLinks] = useState([]);
@@ -1266,6 +1489,8 @@ export default function HomePage() {
   const [analysisResult, setAnalysisResult] = useState(null);
   const [summaryResultOpen, setSummaryResultOpen] = useState(false);
   const [summaryResultTitle, setSummaryResultTitle] = useState('');
+  const [summaryResultHistoryEntry, setSummaryResultHistoryEntry] = useState(null);
+  const [summaryResultReturnToCenter, setSummaryResultReturnToCenter] = useState(false);
   const [ocrResultOpen, setOcrResultOpen] = useState(false);
   const [ocrSourceContext, setOcrSourceContext] = useState(null);
   const [ocrSaveFormat, setOcrSaveFormat] = useState('txt');
@@ -1279,11 +1504,12 @@ export default function HomePage() {
   const sessionStartRef = useRef(null);
   const [now, setNow] = useState(() => new Date());
 
-  const storedUsername = sessionStorage.getItem('username') || '';
-  const authToken = sessionStorage.getItem('auth_token') || '';
+  const currentAuthSession = readStoredAuthSession();
+  const storedUsername = currentAuthSession.username;
+  const authToken = currentAuthSession.authToken;
   const username = authToken ? storedUsername : '';
   const accountName = storedUsername || 'Guest';
-  const accountEmail = authToken ? (sessionStorage.getItem('email') || (storedUsername ? `${storedUsername}` : '')) : '';
+  const accountEmail = authToken ? (currentAuthSession.email || (storedUsername ? `${storedUsername}` : '')) : '';
   const activeWorkspace = useMemo(() => {
     if (!workspaceState?.workspaces?.length) return null;
     return (
@@ -1310,7 +1536,7 @@ export default function HomePage() {
     [activeWorkspaceSettings.allowed_email_domains]
   );
   const canCurrentUserManageShareLinks = useMemo(() => {
-    if (!isLoggedIn || !username || !activeWorkspace) return false;
+    if (!workspaceReady || !isLoggedIn || !username || !activeWorkspace) return false;
     if (activeWorkspace.is_owner === false && !activeWorkspaceSettings.allow_member_share_management) {
       return false;
     }
@@ -1320,6 +1546,7 @@ export default function HomePage() {
     activeWorkspaceSettings.allow_member_share_management,
     isLoggedIn,
     username,
+    workspaceReady,
   ]);
   const activeRecentLimit = useMemo(
     () =>
@@ -1404,6 +1631,13 @@ export default function HomePage() {
     summaryHistory,
   ]);
   useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_COLLAPSED_STORE_KEY, sidebarCollapsed ? '1' : '0');
+    } catch {
+      // Ignore storage failures in private browsing or locked-down browsers.
+    }
+  }, [sidebarCollapsed]);
+  useEffect(() => {
     if (summaryCenterModel === 'all') return;
     if (summaryCenterModelOptions.includes(summaryCenterModel)) return;
     setSummaryCenterModel('all');
@@ -1458,6 +1692,49 @@ export default function HomePage() {
     if (safeChannel === 'summary' && !activeWorkspaceSettings.notify_summary_events) return;
     if (safeChannel === 'sharing' && !activeWorkspaceSettings.notify_sharing_events) return;
     showToast(message, tone);
+  };
+
+  const handleChangeEmailNotifications = async (enabled) => {
+    if (!authToken || !username) {
+      showToast('Please sign in before changing email reminders.', 'warning');
+      return;
+    }
+
+    const nextPreferences = { emailNotificationsEnabled: Boolean(enabled) };
+    const previousPreferences = userNotificationPreferences;
+    setUserNotificationPreferences(nextPreferences);
+    setUserNotificationPreferencesSaving(true);
+    try {
+      const res = await authFetch('/api/auth/preferences', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email_notifications_enabled: nextPreferences.emailNotificationsEnabled,
+        }),
+      }, { authToken });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload.error || 'Failed to save email reminder preference');
+      const savedPreferences = payload.preferences || payload;
+      setUserNotificationPreferences(normalizeUserNotificationPreferences(savedPreferences));
+      storeAuthSession({
+        username,
+        email: accountEmail,
+        authToken,
+        remember: getRememberAuthPreference(),
+        preferences: savedPreferences,
+      });
+      showToast(
+        nextPreferences.emailNotificationsEnabled
+          ? 'Email reminders are on.'
+          : 'Email reminders are off. Updates will stay in Messages.',
+        'success'
+      );
+    } catch (error) {
+      setUserNotificationPreferences(previousPreferences);
+      showToast(error.message || 'Failed to save email reminder preference', 'error');
+    } finally {
+      setUserNotificationPreferencesSaving(false);
+    }
   };
 
   const {
@@ -1654,6 +1931,84 @@ export default function HomePage() {
     } finally {
       setWorkspaceLoading(false);
     }
+  };
+
+  const handleOpenWebsiteNotification = async (notification) => {
+    const sharedToken = extractSharedTokenFromNotification(notification);
+    if (sharedToken) {
+      setWorkspaceMenuOpen(false);
+      setMobileSidebarOpen(false);
+      setWorkspaceSettingsOpen(false);
+      setWorkspaceInviteOpen(false);
+      setAccountManagerOpen(false);
+      setTrashModalOpen(false);
+      navigate(`/shared/${encodeURIComponent(sharedToken)}`, {
+        state: {
+          fromMessages: true,
+          returnToMessages: true,
+          messagesTab: 'site',
+        },
+      });
+      return true;
+    }
+
+    const workspaceId = extractWorkspaceIdFromNotification(notification);
+    if (!workspaceId) return false;
+
+    const nextState = await refreshWorkspaces({
+      preserveActive: false,
+      preferredWorkspaceId: workspaceId,
+    });
+    const targetWorkspace = (nextState?.workspaces || []).find(
+      (workspace) => workspace?.id === workspaceId
+    );
+    if (!targetWorkspace) {
+      showToast('This workspace is no longer available to this account.', 'warning');
+      return true;
+    }
+
+    setWorkspaceMenuOpen(false);
+    setMobileSidebarOpen(false);
+    setWorkspaceSettingsOpen(false);
+    setAccountManagerOpen(false);
+    setTrashModalOpen(false);
+    setShowFiles(true);
+
+    if (shouldOpenWorkspaceAccessPanel(notification)) {
+      setWorkspaceInviteDraft('');
+      setLatestInviteDelivery(null);
+      setInviteCopied(false);
+      setWorkspaceInviteOpen(true);
+    } else {
+      setWorkspaceInviteOpen(false);
+    }
+
+    return true;
+  };
+
+  const handleFriendFileShareAccepted = async (result = {}) => {
+    const targetWorkspaceId = String(result.workspace_id || result.workspaceId || '').trim();
+    if (targetWorkspaceId) {
+      forceFilesViewAfterWorkspaceChangeRef.current = true;
+    }
+    setWorkspaceMenuOpen(false);
+    setMobileSidebarOpen(false);
+    setWorkspaceSettingsOpen(false);
+    setWorkspaceInviteOpen(false);
+    setAccountManagerOpen(false);
+    setTrashModalOpen(false);
+    if (targetWorkspaceId) {
+      await refreshWorkspaces({
+        preserveActive: false,
+        preferredWorkspaceId: targetWorkspaceId,
+      });
+    }
+    setShowFiles(true);
+    setDocumentsPage(1);
+    if (!targetWorkspaceId || targetWorkspaceId === activeWorkspaceId) {
+      await fetchDocuments(1);
+    }
+    showToast('File added to your files.', 'success');
   };
 
   useEffect(() => {
@@ -1918,15 +2273,17 @@ export default function HomePage() {
     setActiveDocEditMode(false);
     setActiveDocSaveError('');
     setActiveDocDraftHtml(getDocumentRichHtml(activeDoc));
+    setPdfConversionDraft(null);
+    setPdfConversionLoading(false);
+    setPdfConversionMode('simple');
+    setPdfConversionOutputFormat('docx');
+    setPdfConversionSaveMode('replace');
+    setPdfConversionTitle('');
   }, [activeDoc?.id, activeDoc?.content, activeDoc?.contentHtml]);
 
   useEffect(() => {
-    if (!activeDoc?.id || !username || !canCurrentUserManageShareLinks) {
-      clearActiveDocShareState();
-      return;
-    }
-    refreshActiveDocShareLinks(activeDoc.id);
-  }, [activeDoc?.id, canCurrentUserManageShareLinks, username]);
+    clearActiveDocShareState();
+  }, [activeDoc?.id, activeWorkspaceId, username, workspaceReady]);
 
   useEffect(() => {
     resetDocumentsData();
@@ -1952,6 +2309,11 @@ export default function HomePage() {
 
   useEffect(() => {
     if (!activeWorkspaceId) return;
+    if (forceFilesViewAfterWorkspaceChangeRef.current) {
+      forceFilesViewAfterWorkspaceChangeRef.current = false;
+      setShowFiles(true);
+      return;
+    }
     applyWorkspaceLandingView(activeWorkspace?.settings || DEFAULT_WORKSPACE_SETTINGS);
   }, [activeWorkspaceId]);
 
@@ -1982,12 +2344,55 @@ export default function HomePage() {
   }, [activeWorkspaceId, location.state?.showFiles, preferredWorkspaceIdFromNavigation]);
 
   useEffect(() => {
+    if (!location.state?.reopenMessages) return;
+    const requestedTab = String(location.state?.messagesTab || 'site').trim();
+    setMessagesOpenRequest((prev) => ({
+      key: prev.key + 1,
+      tab: ['friends', 'requests', 'site'].includes(requestedTab) ? requestedTab : 'site',
+    }));
+  }, [location.key, location.state?.messagesTab, location.state?.reopenMessages]);
+
+  useEffect(() => {
     const handleStorage = () => {
-      setIsLoggedIn(Boolean(sessionStorage.getItem('username') && sessionStorage.getItem('auth_token')));
+      const nextSession = readStoredAuthSession();
+      setIsLoggedIn(nextSession.isAuthenticated);
+      if (nextSession.preferences) {
+        setUserNotificationPreferences(
+          normalizeUserNotificationPreferences(nextSession.preferences)
+        );
+      }
     };
     window.addEventListener('storage', handleStorage);
     return () => window.removeEventListener('storage', handleStorage);
   }, []);
+
+  useEffect(() => {
+    if (!authToken) {
+      setUserNotificationPreferences(DEFAULT_USER_NOTIFICATION_PREFERENCES);
+      return undefined;
+    }
+
+    let cancelled = false;
+    authFetch('/api/auth/me', {}, { authToken })
+      .then(async (res) => {
+        const payload = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(payload.error || 'Failed to load account preferences');
+        if (!cancelled) {
+          setUserNotificationPreferences(
+            normalizeUserNotificationPreferences(payload.preferences || payload)
+          );
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          console.warn(error?.message || 'Failed to load account preferences');
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
 
   useEffect(() => {
     const handleAuthExpired = (event) => {
@@ -3435,14 +3840,21 @@ export default function HomePage() {
     setStarredDragId(0);
   };
 
-  const openSummaryResultModal = (result, title = '') => {
+  const openSummaryResultModal = (result, title = '', historyEntry = null, options = {}) => {
     setAnalysisResult(result);
     setSummaryResultTitle(String(title || '').trim());
+    setSummaryResultHistoryEntry(normalizeSummaryHistoryEntry(historyEntry));
+    setSummaryResultReturnToCenter(Boolean(options?.returnToSummaryCenter));
     setSummaryResultOpen(true);
   };
 
   const closeSummaryResultModal = () => {
+    const shouldReturnToCenter = summaryResultReturnToCenter;
     setSummaryResultOpen(false);
+    setSummaryResultReturnToCenter(false);
+    if (shouldReturnToCenter) {
+      setSummaryCenterOpen(true);
+    }
   };
 
   const closeOcrResultModal = () => {
@@ -3453,6 +3865,8 @@ export default function HomePage() {
     if (!summaryResultOpen) {
       setAnalysisResult(null);
       setSummaryResultTitle('');
+      setSummaryResultHistoryEntry(null);
+      setSummaryResultReturnToCenter(false);
     }
   };
 
@@ -3716,7 +4130,7 @@ export default function HomePage() {
     if (historyEntry) {
       pushSummaryHistoryEntry(historyEntry);
     }
-    openSummaryResultModal(data, historyEntry?.title || ocrSourceContext?.title || 'OCR Text');
+    openSummaryResultModal(data, historyEntry?.title || ocrSourceContext?.title || 'OCR Text', historyEntry);
     if (data.cache_hit) {
       showWorkspaceToast('summary', 'Loaded summary from cache.', 'success');
     } else if (forceRefresh) {
@@ -3856,29 +4270,9 @@ export default function HomePage() {
       },
       document_id: entry.docId || null,
       text_source: 'summary_history',
-    }, entry.title);
+    }, entry.title, entry, { returnToSummaryCenter: true });
     setSummaryCenterOpen(false);
     showWorkspaceToast('summary', `Loaded summary for "${entry.title}".`, 'success');
-  };
-
-  const handleCopySummaryHistoryItem = async (item) => {
-    const entry = normalizeSummaryHistoryEntry(item);
-    const payload = toSummaryExportPayload(entry);
-    if (!entry || !payload) return;
-    const output = buildSummaryExportText(payload);
-    if (!output) return;
-    try {
-      await copyTextToClipboard(output);
-      showWorkspaceToast('summary', `Summary copied for "${entry.title}".`, 'success');
-    } catch {
-      showToast('Copy failed. Please copy manually.', 'error');
-    }
-  };
-
-  const handleEmailSummaryHistoryItem = (item) => {
-    const payload = toSummaryExportPayload(item);
-    if (!payload) return;
-    openSummaryEmailDraft(payload);
   };
 
   const handleClearSummaryHistory = async () => {
@@ -4039,11 +4433,24 @@ export default function HomePage() {
       if (nextEntry) {
         pushSummaryHistoryEntry(nextEntry);
       }
+      if (summaryResultOpen) {
+        openSummaryResultModal(result, nextEntry?.title || entry?.title || docLike?.title || '', nextEntry || {
+          ...entry,
+          docId: targetDocId,
+        }, {
+          returnToSummaryCenter: summaryResultReturnToCenter,
+        });
+      }
       showWorkspaceToast('summary', 'Summary rebuilt successfully.', 'success');
     } finally {
       stopSummaryProgress(progressToken);
       setSummaryCenterActionId('');
     }
+  };
+
+  const handleRebuildCurrentSummaryResult = () => {
+    if (!summaryResultHistoryEntry) return;
+    return handleRebuildSummaryHistoryItem(summaryResultHistoryEntry);
   };
 
   const handleUseDocumentForAI = async (doc, options = {}) => {
@@ -4076,7 +4483,7 @@ export default function HomePage() {
     if (historyEntry) {
       pushSummaryHistoryEntry(historyEntry);
     }
-    openSummaryResultModal(result, String(doc?.title || '').trim());
+    openSummaryResultModal(result, String(doc?.title || '').trim(), historyEntry);
     if (result.cache_hit) {
       showWorkspaceToast('summary', 'Loaded document summary from cache.', 'success');
     } else if (forceRefresh) {
@@ -4093,14 +4500,22 @@ export default function HomePage() {
 
   const refreshActiveDocShareLinks = async (docId = activeDoc?.id) => {
     const targetDocId = Number(docId);
-    if (!Number.isFinite(targetDocId) || targetDocId <= 0 || !username || !canCurrentUserManageShareLinks) {
+    const targetWorkspaceId = String(
+      (workspaceReady ? activeWorkspaceId : '') ||
+        activeDoc?.workspace_id ||
+        activeDoc?.workspaceId ||
+        ''
+    ).trim();
+    if (!workspaceReady || !username || !canCurrentUserManageShareLinks || (!targetWorkspaceId && (!Number.isFinite(targetDocId) || targetDocId <= 0))) {
       clearActiveDocShareState();
       return;
     }
     setActiveDocShareLinksLoading(true);
     setActiveDocShareLinksError('');
     try {
-      const items = await listDocumentShareLinks(targetDocId, { username });
+      const items = targetWorkspaceId
+        ? await listWorkspaceShareLinks(targetWorkspaceId, { username, limit: 100 })
+        : await listDocumentShareLinks(targetDocId, { username });
       setActiveDocShareLinks(items);
     } catch (err) {
       setActiveDocShareLinks([]);
@@ -4111,14 +4526,16 @@ export default function HomePage() {
   };
 
   const handleRevokeActiveDocShareLink = async (shareLink) => {
-    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    if (!username || !canCurrentUserManageShareLinks) return;
     const shareLinkId = Number(shareLink?.id);
+    const shareDocId = Number(shareLink?.document_id || shareLink?.documentId || activeDoc?.id);
     if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
+    if (!Number.isFinite(shareDocId) || shareDocId <= 0) return;
     setActiveDocShareActionLoadingId(shareLinkId);
     setActiveDocShareActionLoadingType('revoke');
     try {
-      await revokeDocumentShareLink(activeDoc.id, shareLinkId, { username });
-      await refreshActiveDocShareLinks(activeDoc.id);
+      await revokeDocumentShareLink(shareDocId, shareLinkId, { username });
+      await refreshActiveDocShareLinks(activeDoc?.id);
     } catch (err) {
       showToast(err.message || 'Failed to revoke share link', 'error');
     } finally {
@@ -4128,9 +4545,11 @@ export default function HomePage() {
   };
 
   const handleDeleteActiveDocShareLink = async (shareLink) => {
-    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    if (!username || !canCurrentUserManageShareLinks) return;
     const shareLinkId = Number(shareLink?.id);
+    const shareDocId = Number(shareLink?.document_id || shareLink?.documentId || activeDoc?.id);
     if (!Number.isFinite(shareLinkId) || shareLinkId <= 0) return;
+    if (!Number.isFinite(shareDocId) || shareDocId <= 0) return;
     const shouldDelete = await requestConfirmation({
       title: 'Delete share link record?',
       description: 'This removes the inactive share link from the list permanently.',
@@ -4143,8 +4562,8 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(shareLinkId);
     setActiveDocShareActionLoadingType('delete');
     try {
-      await deleteDocumentShareLink(activeDoc.id, shareLinkId, { username });
-      await refreshActiveDocShareLinks(activeDoc.id);
+      await deleteDocumentShareLink(shareDocId, shareLinkId, { username });
+      await refreshActiveDocShareLinks(activeDoc?.id);
       showWorkspaceToast('sharing', 'Share link deleted.', 'success');
     } catch (err) {
       showToast(err.message || 'Failed to delete share link', 'error');
@@ -4155,10 +4574,13 @@ export default function HomePage() {
   };
 
   const handleDeleteInactiveActiveDocShareLinks = async () => {
-    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    const targetWorkspaceId = String(activeWorkspaceId || '').trim();
+    if (!username || !canCurrentUserManageShareLinks || (!targetWorkspaceId && !activeDoc)) return;
     const shouldDelete = await requestConfirmation({
       title: 'Delete all inactive share links?',
-      description: 'This permanently removes all expired and revoked share links from the list.',
+      description: targetWorkspaceId
+        ? 'This permanently removes all expired and revoked share links in this workspace.'
+        : 'This permanently removes all expired and revoked share links from the list.',
       confirmLabel: 'Delete All Inactive',
       cancelLabel: 'Cancel',
       danger: true,
@@ -4168,7 +4590,9 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(-2);
     setActiveDocShareActionLoadingType('delete-inactive');
     try {
-      const payload = await deleteInactiveDocumentShareLinks(activeDoc.id, { username });
+      const payload = targetWorkspaceId
+        ? await deleteInactiveWorkspaceShareLinks(targetWorkspaceId, { username })
+        : await deleteInactiveDocumentShareLinks(activeDoc.id, { username });
       setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showWorkspaceToast('sharing', `Deleted ${payload.deleted_count || 0} inactive share link(s).`, 'success');
     } catch (err) {
@@ -4180,10 +4604,13 @@ export default function HomePage() {
   };
 
   const handleRevokeAllActiveDocShareLinks = async () => {
-    if (!activeDoc || !username || !canCurrentUserManageShareLinks) return;
+    const targetWorkspaceId = String(activeWorkspaceId || '').trim();
+    if (!username || !canCurrentUserManageShareLinks || (!targetWorkspaceId && !activeDoc)) return;
     const shouldRevokeAll = await requestConfirmation({
       title: 'Revoke all share links?',
-      description: 'All active links of this document will be revoked immediately.',
+      description: targetWorkspaceId
+        ? 'All active links in this workspace will be revoked immediately.'
+        : 'All active links of this document will be revoked immediately.',
       confirmLabel: 'Revoke All',
       cancelLabel: 'Cancel',
       danger: true,
@@ -4192,7 +4619,9 @@ export default function HomePage() {
     setActiveDocShareActionLoadingId(-1);
     setActiveDocShareActionLoadingType('revoke-all');
     try {
-      const payload = await revokeAllDocumentShareLinks(activeDoc.id, { username });
+      const payload = targetWorkspaceId
+        ? await revokeAllWorkspaceShareLinks(targetWorkspaceId, { username })
+        : await revokeAllDocumentShareLinks(activeDoc.id, { username });
       setActiveDocShareLinks(Array.isArray(payload.items) ? payload.items : []);
       showWorkspaceToast('sharing', `Revoked ${payload.revoked_count || 0} share link(s).`, 'success');
     } catch (err) {
@@ -4253,7 +4682,7 @@ export default function HomePage() {
   };
 
   const openActiveDocShareManagerInModal = () => {
-    const disabledReason = getShareDisabledReasonForDoc(activeDoc);
+    const disabledReason = workspaceShareManagementDisabledReason;
     if (disabledReason) {
       showToast(disabledReason, 'warning');
       return;
@@ -4261,7 +4690,7 @@ export default function HomePage() {
     resetActiveDocShareEmailDraft();
     setActiveDocShareModalMode('manage');
     setActiveDocShareEmailOpen(true);
-    void refreshActiveDocShareLinks(activeDoc.id);
+    void refreshActiveDocShareLinks();
   };
 
   const handleActiveDocShareSendAnother = () => {
@@ -4595,6 +5024,12 @@ export default function HomePage() {
     setActiveDocEditMode(false);
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
+    setPdfConversionDraft(null);
+    setPdfConversionLoading(false);
+    setPdfConversionMode('simple');
+    setPdfConversionOutputFormat('docx');
+    setPdfConversionSaveMode('replace');
+    setPdfConversionTitle('');
     setSidebarMenuDocId(null);
     setActiveDoc(null);
     clearActiveDocShareState();
@@ -5392,6 +5827,77 @@ export default function HomePage() {
     }
   };
 
+  const applyUpdatedDocument = (rawDocument) => {
+    const normalized = normalizeDocument(rawDocument);
+    const docId = toPositiveDocId(normalized.id);
+    if (!docId) return normalized;
+
+    setDocuments((prev) => prev.map((item) => (toPositiveDocId(item.id) === docId ? normalized : item)));
+    setActiveDoc((prev) => (toPositiveDocId(prev?.id) === docId ? normalized : prev));
+    setSidebarRecentMeta((prev) => {
+      if (!prev?.[docId]) return prev;
+      return {
+        ...prev,
+        [docId]: {
+          ...prev[docId],
+          title: normalized.title,
+          fileType: String(getDocExt(normalized) || '').trim().toLowerCase(),
+          updatedAt: new Date().toISOString(),
+        },
+      };
+    });
+    setStarredNotes((prev) => prev.map((entry) => (
+      toPositiveDocId(entry.id) === docId
+        ? {
+            ...entry,
+            title: normalized.title,
+            fileType: String(getDocExt(normalized) || '').trim().toLowerCase(),
+            updatedAt: new Date().toISOString(),
+          }
+        : entry
+    )));
+    setSummaryHistory((prev) => prev.map((entry) => (
+      toPositiveDocId(entry.docId) === docId ? { ...entry, title: normalized.title } : entry
+    )));
+    return normalized;
+  };
+
+  const handleRenameDocument = async (doc) => {
+    if (!activeWorkspaceSettings.allow_note_editing) {
+      showToast('Editing is disabled in this workspace settings.', 'warning');
+      return;
+    }
+    const currentTitle = String(doc?.title || '').trim();
+    const input = await requestTextInput({
+      title: 'Rename Note',
+      description: 'Change the name shown in StudyHub. The stored file stays unchanged.',
+      placeholder: 'e.g. Lecture notes.pdf',
+      initialValue: currentTitle,
+      confirmLabel: 'Save',
+      cancelLabel: 'Cancel',
+      required: true,
+      trimResult: true,
+    });
+    if (input === null) return;
+    const nextTitle = String(input || '').trim();
+    if (!nextTitle || nextTitle === currentTitle) return;
+
+    try {
+      const res = await authFetch(`/api/documents/${doc.id}/title`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: nextTitle, username: username || '' }),
+      }, { authToken });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to rename note');
+
+      const normalized = applyUpdatedDocument(data);
+      showToast(`Renamed to "${normalized.title}".`, 'success');
+    } catch (err) {
+      showToast(err.message || 'Failed to rename note', 'error');
+    }
+  };
+
   const handleEdit = async (doc) => {
     if (!activeWorkspaceSettings.allow_note_editing) {
       showToast('Editing is disabled in this workspace settings.', 'warning');
@@ -5421,9 +5927,7 @@ export default function HomePage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update tags');
 
-      const normalized = normalizeDocument(data);
-      setDocuments((prev) => prev.map((item) => (item.id === doc.id ? normalized : item)));
-      setActiveDoc((prev) => (prev?.id === doc.id ? normalized : prev));
+      applyUpdatedDocument(data);
     } catch (err) {
       showToast(err.message || 'Failed to update tags', 'error');
     }
@@ -5456,9 +5960,7 @@ export default function HomePage() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || 'Failed to update category');
 
-      const normalized = normalizeDocument(data);
-      setDocuments((prev) => prev.map((item) => (item.id === doc.id ? normalized : item)));
-      setActiveDoc((prev) => (prev?.id === doc.id ? normalized : prev));
+      applyUpdatedDocument(data);
     } catch (err) {
       showToast(err.message || 'Failed to update category', 'error');
     }
@@ -5543,6 +6045,155 @@ export default function HomePage() {
       const message = err.message || 'Failed to save PDF';
       setActiveDocSaveError(message);
       throw err;
+    } finally {
+      setActiveDocSaveLoading(false);
+    }
+  };
+
+  const handleStartPdfConversion = async (mode = 'simple') => {
+    if (!activeDoc) return;
+    if (!activeDocIsPdf) {
+      showToast('Only PDF notes can be converted to an editable draft.', 'warning');
+      return;
+    }
+    if (!isLoggedIn) {
+      showToast('Please sign in before converting a PDF.', 'warning');
+      return;
+    }
+    if (!activeWorkspaceSettings.allow_note_editing) {
+      showToast('Editing is disabled in this workspace settings.', 'warning');
+      return;
+    }
+
+    const safeMode = mode === 'layout' ? 'layout' : 'simple';
+    setPdfConversionLoading(true);
+    setPdfConversionMode(safeMode);
+    setActiveDocSaveError('');
+
+    try {
+      const res = await authFetch(`/api/documents/${activeDoc.id}/convert-to-editable`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: safeMode, username: username || '' }),
+      }, { authToken });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to convert PDF');
+
+      const draftHtml = data.content_html || plainTextToRichHtml(data.content || '');
+      setPdfConversionDraft(data);
+      setPdfConversionOutputFormat('docx');
+      setPdfConversionSaveMode('replace');
+      setPdfConversionTitle(data.suggested_docx_title || replaceFileExtension(activeDoc.title || activeDoc.filename, 'docx'));
+      setActiveDocDraftHtml(draftHtml);
+      showToast(
+        safeMode === 'layout'
+          ? 'Layout draft created. Review the formatting before saving.'
+          : 'Editable draft created. Review it before saving.',
+        'success'
+      );
+    } catch (err) {
+      setPdfConversionDraft(null);
+      setActiveDocSaveError(err.message || 'Failed to convert PDF');
+      showToast(err.message || 'Failed to convert PDF', 'error');
+    } finally {
+      setPdfConversionLoading(false);
+    }
+  };
+
+  const handleChangePdfConversionOutputFormat = (nextFormat) => {
+    const safeFormat = nextFormat === 'pdf' ? 'pdf' : 'docx';
+    setPdfConversionOutputFormat(safeFormat);
+    setPdfConversionTitle((prev) => {
+      const fallbackTitle = safeFormat === 'pdf'
+        ? pdfConversionDraft?.suggested_pdf_title
+        : pdfConversionDraft?.suggested_docx_title;
+      return replaceFileExtension(prev || fallbackTitle || activeDoc?.title || activeDoc?.filename, safeFormat);
+    });
+  };
+
+  const handleDiscardPdfConversionDraft = () => {
+    setPdfConversionDraft(null);
+    setPdfConversionLoading(false);
+    setPdfConversionMode('simple');
+    setPdfConversionOutputFormat('docx');
+    setPdfConversionSaveMode('replace');
+    setPdfConversionTitle('');
+    setActiveDocSaveError('');
+    setActiveDocDraftHtml(getDocumentRichHtml(activeDoc));
+  };
+
+  const handleSavePdfConversionDraft = async () => {
+    if (!activeDoc || !pdfConversionDraft) return;
+    if (!activeWorkspaceSettings.allow_note_editing) {
+      setActiveDocSaveError('Editing is disabled in this workspace settings.');
+      return;
+    }
+
+    const saveMode = pdfConversionSaveMode === 'copy' ? 'copy' : 'replace';
+    const outputFormat = pdfConversionOutputFormat === 'pdf' ? 'pdf' : 'docx';
+    if (saveMode === 'replace') {
+      const confirmed = await requestConfirmation({
+        title: 'Replace original PDF?',
+        description: 'The current PDF file will be replaced with the edited version. Choose "Save as new document" if you want to keep the original PDF.',
+        confirmLabel: 'Replace PDF',
+        cancelLabel: 'Cancel',
+        danger: true,
+      });
+      if (!confirmed) return;
+    }
+
+    const sourceDocId = Number(activeDoc.id);
+    setActiveDocSaveLoading(true);
+    setActiveDocSaveError('');
+
+    try {
+      const contentHtml = activeDocDraftHtml || '';
+      const res = await authFetch(`/api/documents/${activeDoc.id}/converted-file`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          output_format: outputFormat,
+          save_mode: saveMode,
+          title: pdfConversionTitle,
+          content_html: contentHtml,
+          content: richHtmlToPlainText(contentHtml),
+          username: username || '',
+        }),
+      }, { authToken });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || 'Failed to save converted document');
+
+      const normalized = normalizeDocument(data.document || data);
+      if (saveMode === 'copy') {
+        setDocuments((prev) => {
+          const nextId = toPositiveDocId(normalized.id);
+          const withoutExisting = prev.filter((item) => toPositiveDocId(item.id) !== nextId);
+          return [normalized, ...withoutExisting];
+        });
+        setDocumentsTotal((prev) => Number(prev || 0) + 1);
+        setDocumentsPage(1);
+        setActiveDoc(normalized);
+        bumpSidebarRecent(normalized);
+        showToast(`Saved as "${normalized.title}".`, 'success');
+      } else {
+        applyUpdatedDocument(normalized);
+        setSummaryHistory((prev) => prev.filter((entry) => toPositiveDocId(entry.docId) !== sourceDocId));
+        showToast(`Replaced with "${normalized.title}".`, 'success');
+      }
+
+      setPdfConversionDraft(null);
+      setPdfConversionLoading(false);
+      setPdfConversionMode('simple');
+      setPdfConversionOutputFormat('docx');
+      setPdfConversionSaveMode('replace');
+      setPdfConversionTitle('');
+      setActiveDocEditMode(false);
+      setActiveDocDraftHtml(getDocumentRichHtml(normalized));
+      setActiveDocFileVersion(Date.now());
+    } catch (err) {
+      const message = err.message || 'Failed to save converted document';
+      setActiveDocSaveError(message);
+      showToast(message, 'error');
     } finally {
       setActiveDocSaveLoading(false);
     }
@@ -5666,7 +6317,7 @@ export default function HomePage() {
     const params = new URLSearchParams();
     if (activeDocFileVersion) params.set('v', String(activeDocFileVersion));
     if (username) params.set('username', username);
-    if (authToken) params.set('auth_token', authToken);
+    if (authToken && !isCookieAuthToken(authToken)) params.set('auth_token', authToken);
     const qs = params.toString();
     return `/api/documents/${activeDoc.id}/file${qs ? `?${qs}` : ''}`;
   }, [activeDoc, activeDocFileVersion, authToken, username]);
@@ -5724,6 +6375,7 @@ export default function HomePage() {
   const activeDocProcessingMessage = getDocumentProcessingMessage(activeDoc);
   const activeDocCanEditText = ['txt', 'docx'].includes(activeDocExt);
   const activeDocViewHtml = useMemo(() => getDocumentRichHtml(activeDoc), [activeDoc]);
+  const activeDocSafeViewHtml = useMemo(() => sanitizeRichHtmlForView(activeDocViewHtml), [activeDocViewHtml]);
   const showOuterDocHeader = !activeDocIsPdf;
   const activeDocEditButtonLabel = 'Edit Content';
   const activeDocSaveButtonLabel = 'Save Content';
@@ -5738,6 +6390,12 @@ export default function HomePage() {
     setActiveDocEditMode(false);
     setActiveDocDraftHtml('');
     setActiveDocSaveError('');
+    setPdfConversionDraft(null);
+    setPdfConversionLoading(false);
+    setPdfConversionMode('simple');
+    setPdfConversionOutputFormat('docx');
+    setPdfConversionSaveMode('replace');
+    setPdfConversionTitle('');
     setActiveDocDownloadLoading(false);
     clearActiveDocShareState();
   };
@@ -6020,16 +6678,35 @@ export default function HomePage() {
   const activeDocShareModeLabel = getLinkSharingModeLabel(activeWorkspaceSettings.link_sharing_mode);
   const activeDocShareDisabledReason = getShareDisabledReasonForDoc(activeDoc);
   const activeDocShareHint = activeDocShareDisabledReason || 'Send this note by email.';
-  const activeDocCanShowShareManagement = Boolean(username && canCurrentUserManageShareLinks && activeDoc?.id);
+  const workspaceShareManagementDisabledReason = !username
+    ? 'Please sign in to manage share links.'
+    : !workspaceReady
+      ? 'Workspace is still loading.'
+    : !activeWorkspaceId
+      ? 'Open a workspace before managing share links.'
+      : !canCurrentUserManageShareLinks
+        ? 'Only workspace owner can manage share links in current settings.'
+        : '';
+  const canShowWorkspaceShareManagement = Boolean(username && workspaceReady && activeWorkspaceId);
+  const canOpenWorkspaceShareManagement = Boolean(
+    canShowWorkspaceShareManagement && !workspaceShareManagementDisabledReason
+  );
+  const summaryResultRebuildDocId = toPositiveDocId(summaryResultHistoryEntry?.docId);
+  const summaryResultRebuildId = String(summaryResultHistoryEntry?.id || '').trim();
+  const summaryResultRebuildLoading = Boolean(
+    summaryCenterActionId &&
+      (summaryCenterActionId === summaryResultRebuildId ||
+        summaryCenterActionId === `doc-${summaryResultRebuildDocId}`)
+  );
   const activeDocShareEmailExpiryLabel = activeDocShareEmailResult?.expires_at
     ? formatDateTimeLabel(activeDocShareEmailResult.expires_at)
     : '';
-  const activeDocShareLinksManagerContent = activeDocCanShowShareManagement ? (
+  const activeDocShareLinksManagerContent = canOpenWorkspaceShareManagement ? (
     <section className="document-detail-share-links-panel notion-home-share-links-panel" aria-label="Share links management">
       <div className="notion-doc-share-manager-head">
         <div>
           <h3>Manage Links</h3>
-          <p className="muted tiny">All share links for this note are listed together here.</p>
+          <p className="muted tiny">All share links in this workspace are listed together here.</p>
         </div>
         <div className="notion-doc-share-actions">
           <button
@@ -6059,7 +6736,7 @@ export default function HomePage() {
           <button
             type="button"
             className="btn"
-            onClick={() => activeDoc?.id && refreshActiveDocShareLinks(activeDoc.id)}
+            onClick={() => refreshActiveDocShareLinks()}
             disabled={activeDocShareLinksLoading || activeDocShareActionLoadingId !== 0}
           >
             Refresh
@@ -6073,7 +6750,7 @@ export default function HomePage() {
         <p className="muted tiny">Loading share links...</p>
       )}
       {!activeDocShareLinksLoading && !activeDocShareLinksError && !activeDocShareLinks.length && (
-        <p className="muted tiny">No share links yet. Send this note or copy a link to create one.</p>
+        <p className="muted tiny">No share links yet. Open a note and send it by email to create one.</p>
       )}
       {activeDocShareLinks.length > 0 && (
         <ul className="notion-doc-share-list">
@@ -6081,12 +6758,22 @@ export default function HomePage() {
             const status = String(item?.status || 'unknown').toLowerCase();
             const isActive = isActiveShareLink(item);
             const loading = Number(item?.id) === activeDocShareActionLoadingId;
+            const documentLabel = String(
+              item?.document_title ||
+                item?.documentTitle ||
+                item?.document_filename ||
+                item?.documentFilename ||
+                ''
+            ).trim();
+            const recipientLabel = String(item?.recipient_email || item?.recipientEmail || '').trim();
             return (
               <li key={`doc-share-${item?.id || item?.token || index}`}>
+                {documentLabel && <strong className="notion-doc-share-document">{documentLabel}</strong>}
                 <a href={item?.share_url || '#'} target="_blank" rel="noreferrer">
                   {item?.share_url || 'Invalid link'}
                 </a>
                 <span className="notion-doc-share-meta">
+                  {recipientLabel ? `Sent to: ${recipientLabel} · ` : ''}
                   Status: {item?.is_expired ? 'expired' : status} · Expires: {formatDateTimeLabel(item?.expires_at)}
                 </span>
                 <div className="notion-doc-share-actions">
@@ -6184,7 +6871,12 @@ export default function HomePage() {
 
   return (
     <div
-      className={`notion-shell ${sidebarDensityClass}${mobileSidebarOpen ? ' is-mobile-sidebar-open' : ''}`.trim()}
+      className={[
+        'notion-shell',
+        sidebarDensityClass,
+        sidebarCollapsed ? 'is-sidebar-collapsed' : '',
+        mobileSidebarOpen ? 'is-mobile-sidebar-open' : '',
+      ].filter(Boolean).join(' ')}
       style={workspaceThemeStyle}
     >
       <a className="skip-link" href="#main">
@@ -6295,11 +6987,28 @@ export default function HomePage() {
         }}
         onDownloadRecentDocument={handleDownloadRecentDocument}
         downloadingRecentDocId={sidebarDownloadDocId}
+        onCollapseSidebar={() => {
+          setWorkspaceMenuOpen(false);
+          setSidebarMenuDocId(null);
+          setSidebarCollapsed(true);
+        }}
       />
 
       <div className="notion-main">
         <header className="notion-topbar" role="banner">
           <div className="notion-top-left">
+            {sidebarCollapsed && (
+              <button
+                type="button"
+                className="notion-sidebar-expand-btn"
+                onClick={() => setSidebarCollapsed(false)}
+                aria-label="Show sidebar"
+                title="Show sidebar"
+              >
+                <span aria-hidden="true">☰</span>
+                <span>Sidebar</span>
+              </button>
+            )}
             <button
               type="button"
               className="notion-mobile-nav-btn"
@@ -6319,7 +7028,14 @@ export default function HomePage() {
               enabled={isLoggedIn}
               authToken={authToken}
               username={username}
+              activeWorkspaceId={activeWorkspaceId}
+              activeWorkspaceName={activeWorkspace?.name || ''}
+              workspaces={workspaceState.workspaces || []}
               variant="topbar"
+              onOpenNotification={handleOpenWebsiteNotification}
+              onFileShareAccepted={handleFriendFileShareAccepted}
+              openRequestKey={messagesOpenRequest.key}
+              openRequestTab={messagesOpenRequest.tab}
             />
             <FeedbackWidget
               enabled={isLoggedIn}
@@ -6327,13 +7043,13 @@ export default function HomePage() {
               documentId={activeDoc?.id || ''}
               variant="topbar"
             />
-            {activeDocCanShowShareManagement && (
+            {canShowWorkspaceShareManagement && (
               <button
                 type="button"
                 className="btn notion-top-summary-btn notion-top-manage-links-btn"
                 onClick={openActiveDocShareManagerInModal}
-                disabled={Boolean(activeDocShareDisabledReason)}
-                title={activeDocShareDisabledReason || 'Review, copy, revoke, or delete existing share links'}
+                disabled={Boolean(workspaceShareManagementDisabledReason)}
+                title={workspaceShareManagementDisabledReason || 'Review, copy, revoke, or delete existing share links'}
               >
                 Manage Links
               </button>
@@ -6406,17 +7122,28 @@ export default function HomePage() {
               )}
 
               {!activeDocLoading && activeDoc && (
-                <article className="document-detail-card">
+                <article
+                  className={`document-detail-card notion-inline-doc-card${
+                    activeDocIsPdf ? ' notion-inline-doc-card-pdf' : ''
+                  }`}
+                >
                   {showOuterDocHeader && (
                     <header className="notion-inline-doc-head">
-                      <div>
+                      <div className="notion-inline-doc-summary">
                         <h2>{activeDoc.title}</h2>
-                        <div className="document-meta">
-                          Uploaded: {activeDoc.uploadedAt ? new Date(activeDoc.uploadedAt).toLocaleString() : ''}
-                        </div>
-                        <div className="document-meta">Category: {normalizeCategory(activeDoc.category)}</div>
-                        <div className="document-meta">
-                          Tags: {activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}
+                        <div className="notion-inline-doc-meta-grid" aria-label="Document details">
+                          <span className="notion-inline-doc-meta-item">
+                            <span>Uploaded</span>
+                            <strong>{activeDoc.uploadedAt ? new Date(activeDoc.uploadedAt).toLocaleString() : 'Unknown'}</strong>
+                          </span>
+                          <span className="notion-inline-doc-meta-item">
+                            <span>Category</span>
+                            <strong>{normalizeCategory(activeDoc.category)}</strong>
+                          </span>
+                          <span className="notion-inline-doc-meta-item">
+                            <span>Tags</span>
+                            <strong>{activeDoc.tags?.length ? activeDoc.tags.join(', ') : 'None'}</strong>
+                          </span>
                         </div>
                         {activeDocProcessingMeta && (
                           <div className={`document-processing-message is-${activeDoc.processingStatus}`} role="status">
@@ -6486,6 +7213,18 @@ export default function HomePage() {
                         <button
                           type="button"
                           className="edit-tags"
+                          onClick={() => handleRenameDocument(activeDoc)}
+                          disabled={
+                            !isLoggedIn ||
+                            activeDocSaveLoading ||
+                            !activeWorkspaceSettings.allow_note_editing
+                          }
+                        >
+                          Rename
+                        </button>
+                        <button
+                          type="button"
+                          className="edit-tags"
                           onClick={() => handleEditCategory(activeDoc)}
                           disabled={
                             !isLoggedIn ||
@@ -6528,7 +7267,7 @@ export default function HomePage() {
                       <div>
                         <strong>Share this note</strong>
                         <p className="muted tiny">
-                          Send by email first. Manage links from the top bar when this note is open.
+                          Send by email first. Convert a PDF when you need an editable copy.
                         </p>
                       </div>
                       <div className="notion-doc-share-actions">
@@ -6541,6 +7280,38 @@ export default function HomePage() {
                         >
                           Send
                         </button>
+                        {activeDocIsPdf && (
+                          <>
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => handleStartPdfConversion('simple')}
+                              disabled={
+                                pdfConversionLoading ||
+                                activeDocSaveLoading ||
+                                !isLoggedIn ||
+                                !activeWorkspaceSettings.allow_note_editing
+                              }
+                              title="Extract text into a clean editable draft"
+                            >
+                              {pdfConversionLoading && pdfConversionMode === 'simple' ? 'Converting...' : 'Edit as Word'}
+                            </button>
+                            <button
+                              type="button"
+                              className="btn"
+                              onClick={() => handleStartPdfConversion('layout')}
+                              disabled={
+                                pdfConversionLoading ||
+                                activeDocSaveLoading ||
+                                !isLoggedIn ||
+                                !activeWorkspaceSettings.allow_note_editing
+                              }
+                              title="Try to preserve page order, font sizes, and image placeholders"
+                            >
+                              {pdfConversionLoading && pdfConversionMode === 'layout' ? 'Converting...' : 'Keep Layout'}
+                            </button>
+                          </>
+                        )}
                       </div>
                     </section>
                   )}
@@ -6553,7 +7324,94 @@ export default function HomePage() {
                   <section
                     className={`document-body notion-inline-doc-body${activeDocIsPdf ? ' notion-inline-doc-body-pdf' : ''}`}
                   >
-                    {activeDocCanEditText && activeDocEditMode ? (
+                    {pdfConversionDraft ? (
+                      <div className="notion-doc-editor notion-pdf-conversion-editor">
+                        <div className="notion-pdf-conversion-head">
+                          <div>
+                            <strong>Editable PDF draft</strong>
+                            <p className="muted tiny">
+                              Review and edit the converted content, then save it as Word or PDF.
+                            </p>
+                          </div>
+                          <span className="notion-chip">
+                            {pdfConversionDraft.mode === 'layout' ? 'Layout draft' : 'Simple draft'}
+                          </span>
+                        </div>
+                        <Suspense fallback={<p className="muted">Loading editor...</p>}>
+                          <RichTextEditor
+                            value={activeDocDraftHtml}
+                            onChange={setActiveDocDraftHtml}
+                            disabled={activeDocSaveLoading}
+                            placeholder="Edit converted PDF content here..."
+                            requestTextInput={requestTextInput}
+                          />
+                        </Suspense>
+                        {Array.isArray(pdfConversionDraft.warnings) && pdfConversionDraft.warnings.length > 0 && (
+                          <div className="notion-pdf-conversion-warning" role="note">
+                            {pdfConversionDraft.warnings.slice(0, 3).map((warning) => (
+                              <p key={warning}>{warning}</p>
+                            ))}
+                          </div>
+                        )}
+                        <div className="notion-pdf-conversion-controls">
+                          <label className="notion-pdf-conversion-field">
+                            <span>Save as</span>
+                            <select
+                              value={pdfConversionOutputFormat}
+                              onChange={(event) => handleChangePdfConversionOutputFormat(event.target.value)}
+                              disabled={activeDocSaveLoading}
+                            >
+                              <option value="docx">Word document (.docx)</option>
+                              <option value="pdf">PDF (.pdf)</option>
+                            </select>
+                          </label>
+                          <label className="notion-pdf-conversion-field">
+                            <span>Save mode</span>
+                            <select
+                              value={pdfConversionSaveMode}
+                              onChange={(event) => setPdfConversionSaveMode(event.target.value === 'copy' ? 'copy' : 'replace')}
+                              disabled={activeDocSaveLoading}
+                            >
+                              <option value="replace">Replace original file</option>
+                              <option value="copy">Save as new document</option>
+                            </select>
+                          </label>
+                          <label className="notion-pdf-conversion-field notion-pdf-conversion-field-wide">
+                            <span>File name</span>
+                            <input
+                              type="text"
+                              value={pdfConversionTitle}
+                              onChange={(event) => setPdfConversionTitle(event.target.value)}
+                              disabled={activeDocSaveLoading}
+                              placeholder={`Edited document.${pdfConversionOutputFormat}`}
+                            />
+                          </label>
+                        </div>
+                        <div className="notion-pdf-conversion-actions">
+                          <button
+                            type="button"
+                            className="btn btn-primary"
+                            onClick={handleSavePdfConversionDraft}
+                            disabled={activeDocSaveLoading || !activeWorkspaceSettings.allow_note_editing}
+                          >
+                            {activeDocSaveLoading ? 'Saving...' : 'Save Converted File'}
+                          </button>
+                          <button
+                            type="button"
+                            className="btn"
+                            onClick={handleDiscardPdfConversionDraft}
+                            disabled={activeDocSaveLoading}
+                          >
+                            Discard Draft
+                          </button>
+                        </div>
+                        {activeDocSaveError && (
+                          <p className="notion-doc-editor-error" role="alert">
+                            Save failed: {activeDocSaveError}
+                          </p>
+                        )}
+                      </div>
+                    ) : activeDocCanEditText && activeDocEditMode ? (
                       <div className="notion-doc-editor">
                         <Suspense fallback={<p className="muted">Loading editor...</p>}>
                           <RichTextEditor
@@ -6576,7 +7434,7 @@ export default function HomePage() {
                     ) : activeDocCanEditText ? (
                       <div
                         className="notion-doc-rich-view"
-                        dangerouslySetInnerHTML={{ __html: activeDocViewHtml || '<p><br></p>' }}
+                        dangerouslySetInnerHTML={{ __html: activeDocSafeViewHtml }}
                       />
                     ) : activeDocIsImage ? (
                       <img src={activeDocFileUrl} alt={activeDoc.title} />
@@ -7045,29 +7903,6 @@ export default function HomePage() {
                             </label>
                           </div>
                         </div>
-                        <div className="notion-type-quick-switch" role="group" aria-label="Quick type filter">
-                          {QUICK_TYPE_FILTER_OPTIONS.map((option) => {
-                            const isActive = normalizeFileTypeFilter(filters.fileType) === option.value;
-                            return (
-                              <button
-                                key={`quick-file-type-${option.value}`}
-                                type="button"
-                                className={`notion-quick-type-btn${isActive ? ' active' : ''}`}
-                                onClick={() => {
-                                  setSelectedDocumentIds([]);
-                                  setDocumentsPage(1);
-                                  setFilters((prev) => ({
-                                    ...prev,
-                                    fileType: isActive ? '' : option.value,
-                                  }));
-                                }}
-                                aria-pressed={isActive ? 'true' : 'false'}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
                         <div className="tags-row notion-type-filter-row">
                           <span className="muted">Type:</span>
                           <div className="tags notion-type-filter-tags" role="list" aria-label="File type filters">
@@ -7457,6 +8292,7 @@ export default function HomePage() {
                       onDelete={handleDelete}
                       onEdit={handleEdit}
                       onEditCategory={handleEditCategory}
+                      onRename={handleRenameDocument}
                       onSummarize={handleUseDocumentForAI}
                       onSummarizeRefresh={handleRegenerateDocumentSummary}
                       onRunImageOcr={handleRunDocumentImageOcr}
@@ -7554,7 +8390,7 @@ export default function HomePage() {
         onSubmit={handleSendActiveDocByEmail}
         onSendAnother={handleActiveDocShareSendAnother}
         onCopyLink={handleCopySentActiveDocShareLink}
-        onBackToSend={handleActiveDocShareSendAnother}
+        onBackToSend={activeDoc?.id ? handleActiveDocShareSendAnother : null}
         recipientEmail={activeDocShareEmailRecipient}
         onRecipientEmailChange={setActiveDocShareEmailRecipient}
         message={activeDocShareEmailMessage}
@@ -7567,7 +8403,7 @@ export default function HomePage() {
         successResult={activeDocShareEmailResult}
         successExpiryLabel={activeDocShareEmailExpiryLabel}
         manageLinksContent={activeDocShareLinksManagerContent}
-        canManageLinks={activeDocCanShowShareManagement}
+        canManageLinks={canOpenWorkspaceShareManagement}
       />
 
       <SummaryResultModal
@@ -7580,6 +8416,10 @@ export default function HomePage() {
         onExportSummary={handleExportSummary}
         onExportSummaryPdf={handleExportSummaryPdf}
         onEmailSummary={handleEmailSummary}
+        onRebuildSummary={handleRebuildCurrentSummaryResult}
+        canRebuildSummary={summaryResultRebuildDocId > 0}
+        rebuildSummaryLoading={summaryResultRebuildLoading}
+        closeLabel={summaryResultReturnToCenter ? 'Back to Summaries' : 'Close'}
         allowExport={activeWorkspaceSettings.allow_export}
       />
 
@@ -7624,21 +8464,17 @@ export default function HomePage() {
         modelOptions={summaryCenterModelOptions}
         items={summaryHistoryItems}
         expandedIds={summaryCenterExpandedIds}
-        actionId={summaryCenterActionId}
         onExportTxt={handleExportSummaryHistoryTxt}
         onExportPdf={handleExportSummaryHistoryPdf}
         onExportJson={handleExportSummaryHistoryJson}
         onClearAll={handleClearSummaryHistory}
         onApplyItem={handleApplySummaryHistoryItem}
-        onCopyItem={handleCopySummaryHistoryItem}
-        onEmailItem={handleEmailSummaryHistoryItem}
         onOpenItemDocument={(entry) => {
           const targetId = toPositiveDocId(entry?.docId);
           if (!targetId) return;
           setSummaryCenterOpen(false);
           void openDocumentInPane(targetId, { fromSidebar: true });
         }}
-        onRebuildItem={handleRebuildSummaryHistoryItem}
         onToggleExpanded={toggleSummaryHistoryExpanded}
         onDeleteItem={removeSummaryHistoryEntry}
         getSummarySourceLabel={getSummarySourceLabel}
@@ -7917,6 +8753,9 @@ export default function HomePage() {
             isLoggedIn={isLoggedIn}
             activeWorkspace={activeWorkspace}
             onLeaveWorkspace={handleLeaveWorkspace}
+            userNotificationPreferences={userNotificationPreferences}
+            userNotificationPreferencesSaving={userNotificationPreferencesSaving}
+            onChangeEmailNotifications={handleChangeEmailNotifications}
             workspaceInsights={{
               totalNotes: dashboardStats.total,
               categoryCount: dashboardStats.categories,

@@ -10,7 +10,11 @@ import {
   removeAccountFromHistory,
   saveAccountToHistory,
 } from '../lib/accountHistory.js';
-import { storeAuthSession } from '../lib/authSession.js';
+import {
+  getRememberAuthPreference,
+  readStoredAuthSession,
+  storeAuthSession,
+} from '../lib/authSession.js';
 
 export default function AuthPage() {
   const navigate = useNavigate();
@@ -29,6 +33,7 @@ export default function AuthPage() {
   const wrapperRef = useRef(null);
   const [loginUsername, setLoginUsername] = useState('');
   const [loginPassword, setLoginPassword] = useState('');
+  const [rememberSession, setRememberSession] = useState(() => getRememberAuthPreference());
   const [accountHistory, setAccountHistory] = useState(() => loadAccountHistory());
   const [showAccountSelector, setShowAccountSelector] = useState(true);
   const [signupData, setSignupData] = useState({
@@ -39,8 +44,9 @@ export default function AuthPage() {
   });
   const [verificationPrompt, setVerificationPrompt] = useState(null);
 
-  const existingUser = sessionStorage.getItem('username');
-  const existingToken = sessionStorage.getItem('auth_token');
+  const existingSession = readStoredAuthSession();
+  const existingUser = existingSession.username;
+  const existingToken = existingSession.authToken;
   const postAuthRedirect = String(location.state?.from || '/').trim() || '/';
 
   const subtitle =
@@ -60,6 +66,11 @@ export default function AuthPage() {
     document.body.classList.add('auth-light-body');
     return () => document.body.classList.remove('auth-light-body');
   }, []);
+
+  useEffect(() => {
+    if (!existingUser || !existingToken) return;
+    navigate(postAuthRedirect, { replace: true });
+  }, [existingToken, existingUser, navigate, postAuthRedirect]);
 
   useEffect(() => {
     const resize = () => {
@@ -154,7 +165,8 @@ export default function AuthPage() {
         body: JSON.stringify({ 
           token: token,
           email: decoded.email,
-          name: decoded.name 
+          name: decoded.name,
+          remember: rememberSession,
         })
       });
 
@@ -165,6 +177,8 @@ export default function AuthPage() {
           username: data.username,
           email: data.email || decoded.email || '',
           authToken: data.auth_token,
+          remember: rememberSession,
+          preferences: data.preferences || {},
         });
         rememberAccount({
           username: data.username,
@@ -195,7 +209,8 @@ export default function AuthPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           username: loginUsername.trim(),
-          password: loginPassword
+          password: loginPassword,
+          remember: rememberSession,
         })
       });
 
@@ -207,6 +222,8 @@ export default function AuthPage() {
           username: data.username,
           email: data.email || (loginUsername.includes('@') ? loginUsername.trim() : ''),
           authToken: data.auth_token,
+          remember: rememberSession,
+          preferences: data.preferences || {},
         });
         rememberAccount({
           username: data.username,
@@ -376,6 +393,21 @@ export default function AuthPage() {
               onChange={setLoginPassword}
               autoComplete="current-password"
             />
+
+            <label className="auth-remember-row" htmlFor="login-remember-session">
+              <input
+                id="login-remember-session"
+                type="checkbox"
+                checked={rememberSession}
+                onChange={(event) => setRememberSession(event.target.checked)}
+              />
+              <span>
+                <strong>Keep me signed in on this device</strong>
+                <small>
+                  Opens email share and invite links with this account. StudyHub does not store your password.
+                </small>
+              </span>
+            </label>
 
             <button type="submit" className="btn btn-primary login-btn">
               Sign in

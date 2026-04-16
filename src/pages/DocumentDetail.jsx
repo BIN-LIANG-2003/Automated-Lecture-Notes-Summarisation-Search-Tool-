@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import OcrResultModal from '../components/OcrResultModal.jsx';
 import FeedbackWidget from '../components/FeedbackWidget.jsx';
 import SendNoteByEmailModal from '../components/SendNoteByEmailModal.jsx';
@@ -7,6 +7,7 @@ import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
 import { authFetch } from '../lib/authFetch.js';
+import { isCookieAuthToken, readStoredAuthSession } from '../lib/authSession.js';
 import { copyTextToClipboard } from '../lib/clipboard.js';
 import { formatDateTimeLabel } from '../lib/dates.js';
 import { downloadFileWithAuth } from '../lib/fileDownload.js';
@@ -170,6 +171,7 @@ const normalizeDocument = (raw) => {
 export default function DocumentDetail() {
   const { docId, shareToken } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [document, setDocument] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
@@ -206,10 +208,19 @@ export default function DocumentDetail() {
     requestConfirmation,
     closeConfirmDialog,
   } = useUiFeedback();
-  const authToken = sessionStorage.getItem('auth_token') || '';
-  const username = authToken ? (sessionStorage.getItem('username') || '') : '';
+  const currentAuthSession = readStoredAuthSession();
+  const authToken = currentAuthSession.authToken;
+  const username = authToken ? currentAuthSession.username : '';
   const safeShareToken = String(shareToken || '').trim();
   const isSharedView = Boolean(safeShareToken);
+  const shouldReturnToMessages = isSharedView && Boolean(
+    location.state?.fromMessages || location.state?.returnToMessages
+  );
+  const sharedReturnMessagesTab = ['friends', 'requests', 'site'].includes(
+    String(location.state?.messagesTab || '').trim()
+  )
+    ? String(location.state?.messagesTab || '').trim()
+    : 'site';
   const canManageShareLinks = Boolean(document?.canManageShareLinks);
   const canUseAiTools = Boolean(document?.allowAiTools);
   const canUseOcr = canUseAiTools && Boolean(document?.allowOcr);
@@ -271,7 +282,7 @@ export default function DocumentDetail() {
       }
     };
     fetchDoc();
-  }, [docId, shareToken, username]);
+  }, [authToken, docId, shareToken, username]);
 
   useEffect(() => {
     if (!document?.id || !username || !canManageShareLinks) {
@@ -284,6 +295,20 @@ export default function DocumentDetail() {
     }
     refreshShareLinks(document.id);
   }, [canManageShareLinks, document?.id, username]);
+
+  const handleBackFromDocument = () => {
+    if (shouldReturnToMessages) {
+      navigate('/', {
+        replace: true,
+        state: {
+          reopenMessages: true,
+          messagesTab: sharedReturnMessagesTab,
+        },
+      });
+      return;
+    }
+    navigate('/', { state: { showFiles: true } });
+  };
 
   useEffect(() => {
     return () => {
@@ -323,8 +348,8 @@ export default function DocumentDetail() {
                     Sign In To Continue
                   </button>
                 )}
-                <button type="button" className="btn" onClick={() => navigate('/')}>
-                  Go Home
+                <button type="button" className="btn" onClick={handleBackFromDocument}>
+                  {shouldReturnToMessages ? 'Back to Messages' : 'Go Home'}
                 </button>
               </div>
             </section>
@@ -345,7 +370,7 @@ export default function DocumentDetail() {
   if (username) previewFileParams.set('username', username);
   if (shareToken) {
     previewFileParams.set('share_token', shareToken);
-  } else if (authToken) {
+  } else if (authToken && !isCookieAuthToken(authToken)) {
     previewFileParams.set('auth_token', authToken);
   }
   const fileUrl = `/api/documents/${document.id}/file${previewFileParams.toString() ? `?${previewFileParams.toString()}` : ''}`;
@@ -1017,76 +1042,18 @@ export default function DocumentDetail() {
           : 'container document-detail'}
         role="main"
       >
-      <button 
-        className="btn document-detail-back" 
-        type="button" 
-        onClick={() => navigate('/', { state: { showFiles: true } })} 
-      >
-        {isSharedView ? '← Back Home' : '← Back'}
-      </button>
+        <button
+          className="btn document-detail-back"
+          type="button"
+          onClick={handleBackFromDocument}
+        >
+          {shouldReturnToMessages ? '← Back to Messages' : (isSharedView ? '← Back Home' : '← Back')}
+        </button>
 
-      {isSharedView && (
-        <section className="document-share-hero">
-          <div className="document-share-head">
-            <div>
-              <span className="document-share-kicker">Shared Document</span>
-              <h1>Open Shared Note</h1>
-              <strong className="document-share-title">{document.title}</strong>
-              <p>
-                {document.linkSharingMode === 'public'
-                  ? 'Anyone with this link can open and download the file.'
-                  : 'This file was shared from a workspace. Keep the link private and use it before it expires.'}
-              </p>
-            </div>
-            <div className="document-share-pill-group" aria-label="Share access details">
-              <span className="document-share-pill">{shareModeLabel}</span>
-              {document?.share?.isExpired ? (
-                <span className="document-share-pill danger">Expired</span>
-              ) : (
-                <span className="document-share-pill success">Active Link</span>
-              )}
-            </div>
-          </div>
-          <div className="document-share-meta-grid">
-            <div>
-              <span>Shared access</span>
-              <strong>{shareModeLabel}</strong>
-            </div>
-            <div>
-              <span>Expires</span>
-              <strong>{formatDateTimeLabel(document?.share?.expiresAt)}</strong>
-            </div>
-            <div>
-              <span>Last opened</span>
-              <strong>{formatDateTimeLabel(document?.share?.lastAccessAt)}</strong>
-            </div>
-          </div>
-          <div className="document-share-actions">
-            <button
-              type="button"
-              className="btn btn-primary"
-              onClick={handleDownloadFile}
-              disabled={isDownloadingFile}
-            >
-              {isDownloadingFile ? 'Downloading...' : 'Download Shared File'}
-            </button>
-            {!username && (
-              <button
-                type="button"
-                className="btn"
-                onClick={() => navigate('/login', { state: { from: `/shared/${safeShareToken}` } })}
-              >
-                Sign In For Full Access
-              </button>
-            )}
-          </div>
-        </section>
-      )}
-
-      <article className="document-detail-card">
+        <article className={`document-detail-card${isSharedView ? ' document-detail-card-shared' : ''}`}>
         <header className="document-detail-head">
           <div className="document-detail-hero-copy">
-            <span className="document-detail-kicker">{isSharedView ? 'Shared Note' : 'Reading View'}</span>
+            <span className="document-detail-kicker">{isSharedView ? 'Shared Document' : 'Reading View'}</span>
             <h1>{document.title}</h1>
             <div className="document-detail-meta-pills" aria-label="Document metadata">
               {detailMetaPills.map((item) => (
@@ -1104,7 +1071,30 @@ export default function DocumentDetail() {
               </div>
             )}
           </div>
-          {!isSharedView && (
+          {isSharedView ? (
+            <div className="document-detail-head-side document-share-inline-panel">
+              <div className="document-detail-share-status" aria-label="Share status">
+                <span className="document-share-pill">{shareModeLabel}</span>
+                {document?.share?.isExpired ? (
+                  <span className="document-share-pill danger">Expired</span>
+                ) : (
+                  <span className="document-share-pill success">Active Link</span>
+                )}
+              </div>
+              <div className="document-share-inline-meta">
+                <span>Expires</span>
+                <strong>{formatDateTimeLabel(document?.share?.expiresAt)}</strong>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary document-share-download-btn"
+                onClick={handleDownloadFile}
+                disabled={isDownloadingFile}
+              >
+                {isDownloadingFile ? 'Downloading...' : 'Download Shared File'}
+              </button>
+            </div>
+          ) : (
             <div className="document-detail-head-side">
               <div className="document-detail-primary-actions">
                 <button
@@ -1203,7 +1193,7 @@ export default function DocumentDetail() {
             </div>
           )}
         </header>
-        <div className="document-detail-layout">
+        <div className={`document-detail-layout${isSharedView ? ' document-detail-layout-shared' : ''}`}>
           <section className="document-detail-main">
             <section className="document-body document-detail-reading-panel" aria-labelledby="document-reading-title">
               <div className="document-detail-reading-head">
@@ -1227,43 +1217,43 @@ export default function DocumentDetail() {
             </section>
           </section>
 
-          <aside className="document-detail-sidebar" aria-label="Document tools">
-            <section className="document-detail-sidebar-card document-detail-info-card">
-              <div className="document-detail-sidebar-head">
-                <span className="document-detail-sidebar-kicker">Document Info</span>
-                <strong>At a glance</strong>
-              </div>
-              <dl className="document-detail-fact-list">
-                <div>
-                  <dt>Type</dt>
-                  <dd>{document.fileType ? String(document.fileType).toUpperCase() : 'NOTE'}</dd>
+          {!isSharedView && (
+            <aside className="document-detail-sidebar" aria-label="Document tools">
+              <section className="document-detail-sidebar-card document-detail-info-card">
+                <div className="document-detail-sidebar-head">
+                  <span className="document-detail-sidebar-kicker">Document Info</span>
+                  <strong>At a glance</strong>
                 </div>
-                <div>
-                  <dt>Uploaded</dt>
-                  <dd>{formatDateTimeLabel(document.uploadedAt)}</dd>
+                <dl className="document-detail-fact-list">
+                  <div>
+                    <dt>Type</dt>
+                    <dd>{document.fileType ? String(document.fileType).toUpperCase() : 'NOTE'}</dd>
+                  </div>
+                  <div>
+                    <dt>Uploaded</dt>
+                    <dd>{formatDateTimeLabel(document.uploadedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Category</dt>
+                    <dd>{document.category}</dd>
+                  </div>
+                </dl>
+                <div className="document-detail-tag-group">
+                  <span>Tags</span>
+                  <div className="document-detail-tag-list">
+                    {document.tags?.length ? (
+                      document.tags.map((tag) => (
+                        <span key={`detail-tag-${tag}`} className="document-detail-tag-chip">
+                          {tag}
+                        </span>
+                      ))
+                    ) : (
+                      <span className="document-detail-tag-empty">No tags</span>
+                    )}
+                  </div>
                 </div>
-                <div>
-                  <dt>Category</dt>
-                  <dd>{document.category}</dd>
-                </div>
-              </dl>
-              <div className="document-detail-tag-group">
-                <span>Tags</span>
-                <div className="document-detail-tag-list">
-                  {document.tags?.length ? (
-                    document.tags.map((tag) => (
-                      <span key={`detail-tag-${tag}`} className="document-detail-tag-chip">
-                        {tag}
-                      </span>
-                    ))
-                  ) : (
-                    <span className="document-detail-tag-empty">No tags</span>
-                  )}
-                </div>
-              </div>
-            </section>
+              </section>
 
-            {!isSharedView && (
               <section className="document-detail-sidebar-card document-detail-study-card">
                 <div className="document-detail-sidebar-head">
                   <span className="document-detail-sidebar-kicker">Study Tools</span>
@@ -1346,9 +1336,8 @@ export default function DocumentDetail() {
                   <p className="muted tiny">Latest summary is ready. Open the modal anytime to review it again.</p>
                 )}
               </section>
-            )}
-
-          </aside>
+            </aside>
+          )}
         </div>
       </article>
       </main>

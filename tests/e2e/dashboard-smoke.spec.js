@@ -26,6 +26,36 @@ test('guest sign-in warning links to login', async ({ page }) => {
   await expect(page).toHaveURL(/#\/login$/);
 });
 
+test('remember sign-in restores the account when opening a new browser tab link', async ({ page }) => {
+  await page.goto('/#/login');
+  await expect(page.getByRole('heading', { name: 'Sign in' })).toBeVisible();
+
+  const rememberCheckbox = page.locator('#login-remember-session');
+  await expect(rememberCheckbox).toBeVisible();
+  await rememberCheckbox.check();
+  await page.locator('#login-username').fill('alice');
+  await page.locator('#login-password').fill('password123');
+  await page.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeVisible();
+
+  const persistedSession = await page.evaluate(() =>
+    JSON.parse(window.localStorage.getItem('studyhub-auth-session') || '{}')
+  );
+  expect(persistedSession.username).toBe('alice');
+  expect(persistedSession.authToken).toBeUndefined();
+  expect(persistedSession.cookieBacked).toBe(true);
+  expect(String(persistedSession.expiresAt || '')).not.toBe('');
+  const cookies = await page.context().cookies();
+  expect(cookies.some((cookie) => cookie.name === 'studyhub_auth' && cookie.httpOnly)).toBeTruthy();
+
+  await page.evaluate(() => {
+    window.sessionStorage.clear();
+  });
+  await page.goto('/#/');
+  await expect(page.locator('#login-warning')).toHaveCount(0);
+  await expect(page.locator('.notion-top-muted')).toContainText('Private workspace');
+});
+
 test('invite sign-in accepts the invitation and opens the workspace after login', async ({ page }) => {
   const token = 'return-to-invite-token';
   const invitedWorkspaceId = 'ws-invited';
@@ -505,6 +535,7 @@ test('workspace invitation list refreshes while modal is open', async ({ page })
 
 test('workspace access settings are managed from invite members modal', async ({ page }) => {
   let savedSettings = null;
+  let savedPreferences = null;
   let workspaceSettings = {
     allow_member_invites: false,
     restrict_invites_to_domains: false,
@@ -562,6 +593,36 @@ test('workspace access settings are managed from invite members modal', async ({
       body: JSON.stringify([]),
     });
   });
+  await page.route(/\/api\/auth\/me$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        username: 'alice',
+        email: 'alice@example.com',
+        friend_code: 'ALICE123',
+        preferences: {
+          email_notifications_enabled: true,
+        },
+        authenticated: true,
+      }),
+    });
+  });
+  await page.route(/\/api\/auth\/preferences$/, async (route) => {
+    const body = route.request().postDataJSON();
+    savedPreferences = body;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        username: 'alice',
+        email: 'alice@example.com',
+        preferences: {
+          email_notifications_enabled: body.email_notifications_enabled,
+        },
+      }),
+    });
+  });
 
   await loginAsAlice(page);
   await page.locator('.notion-workspace-trigger').click();
@@ -570,6 +631,11 @@ test('workspace access settings are managed from invite members modal', async ({
   const settingsDialog = page.getByRole('dialog', { name: 'Workspace Settings' });
   await expect(settingsDialog).toBeVisible();
   await expect(settingsDialog.getByRole('button', { name: 'Access' })).toHaveCount(0);
+  await settingsDialog.getByRole('button', { name: 'Notifications' }).click();
+  await settingsDialog
+    .getByLabel('Send email reminders for messages and workspace updates')
+    .uncheck();
+  await expect.poll(() => savedPreferences?.email_notifications_enabled).toBe(false);
   await settingsDialog.getByLabel('Close workspace settings').click();
 
   await page.locator('.notion-workspace-trigger').click();
@@ -680,6 +746,474 @@ test('messages center exposes friend code and add friend options', async ({ page
   await expect(dialog.getByRole('button', { name: 'Add Friend' })).toBeVisible();
 });
 
+test('friend chat can send an uploaded file without email', async ({ page }) => {
+  let shareRequest = null;
+  const friendSummary = () => ({
+    user: {
+      username: 'alice',
+      email: 'alice@example.com',
+      friend_code: 'ALICE123',
+    },
+    friends: [
+      {
+        username: 'bob',
+        email: 'bob@example.com',
+        friend_code: 'BOB12345',
+        unread_count: 0,
+        last_message: null,
+      },
+    ],
+    incoming_requests: [],
+    outgoing_requests: [],
+    messages: [],
+    notifications: [],
+    unread_count: 0,
+  });
+
+  await page.route(/\/api\/friends\/summary$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(friendSummary()),
+    });
+  });
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [
+          {
+            id: 41,
+            filename: 'graph-notes.pdf',
+            title: 'Graph Notes',
+            uploaded_at: '2026-04-14T09:00:00.000Z',
+            file_type: 'pdf',
+            content: 'graph traversal',
+            content_html: '',
+            username: 'alice',
+            tags: '',
+            category: 'Computer Science',
+            workspace_id: 'ws-e2e',
+            processing_status: 'processed',
+            processing_error: '',
+            processed_at: '2026-04-14T09:00:00.000Z',
+          },
+        ],
+        total: 1,
+        limit: 100,
+        offset: 0,
+        has_more: false,
+        facets: {
+          tags: [],
+          categories: ['Computer Science'],
+          file_types: { pdf: 1 },
+        },
+      }),
+    });
+  });
+  await page.route(/\/api\/friends\/file-shares$/, async (route) => {
+    shareRequest = await route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: 'File share sent to bob.',
+        summary: friendSummary(),
+      }),
+    });
+  });
+
+  await loginAsAlice(page);
+  await page.getByRole('button', { name: /Messages/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Messages' });
+  await dialog.getByRole('button', { name: 'Share File' }).click();
+  const sharePanel = dialog.locator('.studyhub-file-share-panel');
+  await expect(sharePanel.getByLabel('File')).toHaveValue('41');
+  await sharePanel.getByRole('textbox', { name: 'Note' }).fill('Please read this.');
+  await sharePanel.getByRole('button', { name: 'Send File' }).click();
+
+  await expect(dialog.getByText('File share sent to bob.')).toBeVisible();
+  expect(shareRequest).toEqual({
+    recipient_username: 'bob',
+    document_id: '41',
+    note: 'Please read this.',
+  });
+});
+
+test('website file share request can be accepted into the files area', async ({ page }) => {
+  let accepted = false;
+  let respondRequest = null;
+  const notificationSummary = () => ({
+    user: {
+      username: 'alice',
+      email: 'alice@example.com',
+      friend_code: 'ALICE123',
+    },
+    friends: [
+      {
+        username: 'liangbin',
+        email: 'liangbin@example.com',
+        friend_code: 'LB123456',
+        unread_count: 0,
+        last_message: null,
+      },
+    ],
+    incoming_requests: [],
+    outgoing_requests: [],
+    messages: [],
+    notifications: [
+      {
+        id: 811,
+        type: 'friend_file_share',
+        title: 'File shared with you',
+        body: 'liangbin shared Shared Lab PDF with you. Accept it to add a copy to your files.',
+        actor_username: 'liangbin',
+        created_at: '2026-04-16T01:45:06.000Z',
+        read_at: accepted ? '2026-04-16T01:46:00.000Z' : '',
+        is_unread: !accepted,
+        link_url: '',
+        metadata: {
+          status: accepted ? 'accepted' : 'pending',
+          sender_username: 'liangbin',
+          source_document_id: 77,
+          document_title: 'Shared Lab PDF',
+          document_file_type: 'pdf',
+          accepted_document_id: accepted ? 91 : 0,
+          accepted_workspace_id: accepted ? 'ws-e2e' : '',
+        },
+      },
+    ],
+    unread_count: accepted ? 0 : 1,
+  });
+
+  await page.route(/\/api\/friends\/summary$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(notificationSummary()),
+    });
+  });
+  await page.route(/\/api\/friends\/file-shares\/811\/respond$/, async (route) => {
+    respondRequest = await route.request().postDataJSON();
+    accepted = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: 'File added to your files.',
+        status: 'accepted',
+        document_id: 91,
+        workspace_id: 'ws-e2e',
+        document: {
+          id: 91,
+          title: 'Shared Lab PDF',
+          filename: 'shared-lab-copy.pdf',
+          file_type: 'pdf',
+          username: 'alice',
+          workspace_id: 'ws-e2e',
+        },
+        summary: notificationSummary(),
+      }),
+    });
+  });
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: accepted
+          ? [
+            {
+              id: 91,
+              filename: 'shared-lab-copy.pdf',
+              title: 'Shared Lab PDF',
+              uploaded_at: '2026-04-16T01:46:00.000Z',
+              file_type: 'pdf',
+              content: 'shared lab body',
+              content_html: '',
+              username: 'alice',
+              tags: '',
+              category: 'Computer Science',
+              workspace_id: 'ws-e2e',
+              processing_status: 'processed',
+              processing_error: '',
+              processed_at: '2026-04-16T01:46:00.000Z',
+            },
+          ]
+          : [],
+        total: accepted ? 1 : 0,
+        limit: 100,
+        offset: 0,
+        has_more: false,
+        facets: {
+          tags: [],
+          categories: accepted ? ['Computer Science'] : [],
+          file_types: accepted ? { pdf: 1 } : {},
+        },
+      }),
+    });
+  });
+
+  await loginAsAlice(page);
+  await page.getByRole('button', { name: /Messages/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Messages' });
+  await dialog.getByRole('button', { name: /Website/ }).click();
+  await expect(dialog.getByText('File shared with you')).toBeVisible();
+  const saveWorkspace = dialog.getByLabel('Save to workspace');
+  await expect(saveWorkspace).toBeVisible();
+  await expect(saveWorkspace).toHaveValue('ws-e2e');
+  await dialog.getByRole('button', { name: 'Accept' }).click();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator('.document-card', { hasText: 'Shared Lab PDF' })).toBeVisible();
+  expect(respondRequest).toEqual({ action: 'accept', target_workspace_id: 'ws-e2e' });
+});
+
+test('website message Open switches to the related workspace access panel', async ({ page }) => {
+  let notificationRead = false;
+  const readRequests = [];
+  const notificationSummary = () => ({
+    user: {
+      username: 'alice',
+      email: 'alice@example.com',
+      friend_code: 'ALICE123',
+    },
+    friends: [],
+    incoming_requests: [],
+    outgoing_requests: [],
+    messages: [],
+    notifications: [
+      {
+        id: 701,
+        type: 'workspace',
+        title: 'Workspace member joined',
+        body: "bob joined Message Workspace using your invitation.",
+        created_at: '2026-04-14T13:05:26.000Z',
+        read_at: notificationRead ? '2026-04-14T13:06:00.000Z' : '',
+        is_unread: !notificationRead,
+        link_url: '/#/?workspace_id=ws-message',
+        metadata: { workspace_id: 'ws-message' },
+      },
+    ],
+    unread_count: notificationRead ? 0 : 1,
+  });
+
+  await page.route(/\/api\/friends\/summary$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(notificationSummary()),
+    });
+  });
+  await page.route(/\/api\/friends\/read$/, async (route) => {
+    readRequests.push(await route.request().postDataJSON());
+    notificationRead = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ summary: notificationSummary() }),
+    });
+  });
+  await page.route(/\/api\/workspaces\?username=alice$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: 'ws-alice-own',
+          name: "Alice's Workspace",
+          plan: 'Free',
+          owner_username: 'alice',
+          is_owner: true,
+          members_count: 1,
+          members: [
+            {
+              username: 'alice',
+              email: 'alice@example.com',
+              role: 'owner',
+              status: 'active',
+              created_at: '2026-04-14T09:00:00.000Z',
+            },
+          ],
+          invites: [],
+          pending_requests: [],
+          settings: {},
+        },
+        {
+          id: 'ws-message',
+          name: 'Message Workspace',
+          plan: 'Free',
+          owner_username: 'alice',
+          is_owner: true,
+          members_count: 2,
+          members: [
+            {
+              username: 'alice',
+              email: 'alice@example.com',
+              role: 'owner',
+              status: 'active',
+              created_at: '2026-04-14T09:00:00.000Z',
+            },
+            {
+              username: 'bob',
+              email: 'bob@example.com',
+              role: 'member',
+              status: 'active',
+              created_at: '2026-04-14T13:05:26.000Z',
+            },
+          ],
+          invites: [],
+          pending_requests: [],
+          settings: {},
+        },
+      ]),
+    });
+  });
+  await page.route(/\/api\/workspaces\/ws-message\/invitations$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([]),
+    });
+  });
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [],
+        total: 0,
+        limit: 20,
+        offset: 0,
+        has_more: false,
+        facets: { tags: [], categories: [], file_types: {} },
+      }),
+    });
+  });
+
+  await loginAsAlice(page);
+  await page.getByRole('button', { name: /Messages/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Messages' });
+  await dialog.getByRole('button', { name: /Website/ }).click();
+  await expect(dialog.getByText('Workspace member joined')).toBeVisible();
+
+  await dialog.getByRole('button', { name: 'Open' }).click();
+
+  await expect(page.locator('.notion-top-title-group strong')).toHaveText('Message Workspace');
+  await expect(page.getByRole('dialog', { name: 'Invite Members' })).toBeVisible();
+  await expect(page.getByRole('dialog', { name: 'Invite Members' }).getByText('bob@example.com')).toBeVisible();
+  await expect.poll(() => readRequests.length).toBe(1);
+  expect(readRequests[0]).toEqual({ notification_ids: [701] });
+});
+
+test('shared note website message returns to the messages panel', async ({ page }) => {
+  const shareToken = 'message-share-token';
+  let notificationRead = false;
+  const notificationSummary = () => ({
+    user: {
+      username: 'alice',
+      email: 'alice@example.com',
+      friend_code: 'ALICE123',
+    },
+    friends: [],
+    incoming_requests: [],
+    outgoing_requests: [],
+    messages: [],
+    notifications: [
+      {
+        id: 801,
+        type: 'share',
+        title: 'Shared note from a friend',
+        body: 'liangbin shared Message Shared PDF with you.',
+        created_at: '2026-04-16T01:45:06.000Z',
+        read_at: notificationRead ? '2026-04-16T01:46:00.000Z' : '',
+        is_unread: !notificationRead,
+        link_url: `/#/shared/${shareToken}`,
+        metadata: { share_token: shareToken },
+      },
+    ],
+    unread_count: notificationRead ? 0 : 1,
+  });
+
+  await page.route(/\/api\/friends\/summary$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(notificationSummary()),
+    });
+  });
+  await page.route(/\/api\/friends\/read$/, async (route) => {
+    notificationRead = true;
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ summary: notificationSummary() }),
+    });
+  });
+  await page.route(new RegExp(`/api/share-links/${shareToken}(?:\\\\?.*)?$`), async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 88,
+        filename: 'message-shared.pdf',
+        title: 'Message Shared PDF',
+        uploaded_at: '2026-04-13T22:38:31.000Z',
+        file_type: 'pdf',
+        content: 'message shared body',
+        content_html: '<p>message shared body</p>',
+        username: 'liangbin',
+        tags: '',
+        category: 'Computer Science',
+        workspace_id: 'ws-friend',
+        link_sharing_mode: 'workspace',
+        can_manage_share_links: false,
+        allow_ai_tools: true,
+        allow_ocr: true,
+        allow_export: true,
+        share: {
+          token: shareToken,
+          status: 'active',
+          expires_at: '2026-04-23T01:44:44.000Z',
+          created_at: '2026-04-16T01:44:44.000Z',
+          last_access_at: '2026-04-16T02:33:21.000Z',
+          is_expired: false,
+          is_accessible: true,
+        },
+      }),
+    });
+  });
+
+  await loginAsAlice(page);
+  await page.getByRole('button', { name: /Messages/ }).click();
+  const dialog = page.getByRole('dialog', { name: 'Messages' });
+  await dialog.getByRole('button', { name: /Website/ }).click();
+  await dialog.getByRole('button', { name: 'Open' }).click();
+
+  await expect(page).toHaveURL(new RegExp(`#/shared/${shareToken}`));
+  await expect(page.locator('.document-detail-card h1')).toHaveText('Message Shared PDF');
+
+  await page.getByRole('button', { name: '← Back to Messages' }).click();
+
+  const returnedDialog = page.getByRole('dialog', { name: 'Messages' });
+  await expect(returnedDialog).toBeVisible();
+  await expect(returnedDialog.getByRole('button', { name: /Website/ })).toHaveClass(/is-active/);
+  await expect(returnedDialog.getByText('Shared note from a friend')).toBeVisible();
+});
+
 test('login, search documents, and open document detail pane', async ({ page }) => {
   await loginAsAlice(page);
   await page.getByRole('button', { name: 'Notes', exact: true }).click();
@@ -695,4 +1229,47 @@ test('login, search documents, and open document detail pane', async ({ page }) 
 
   await expect(page.locator('.document-detail-card h2')).toHaveText('Graph Notes');
   await expect(page.locator('.document-detail-card')).toContainText('graph traversal bfs dfs');
+});
+
+test('document cards can be renamed from the more menu', async ({ page }) => {
+  await page.route(/\/api\/documents\/1\/title$/, async (route) => {
+    if (route.request().method() !== 'PUT') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        id: 1,
+        filename: 'graph-notes.txt',
+        title: 'Renamed Graph Notes.pdf',
+        uploaded_at: '2026-04-03T12:00:00.000Z',
+        file_type: 'txt',
+        content: 'graph traversal bfs dfs shortest path smoke test content',
+        content_html: '<p>graph traversal bfs dfs shortest path smoke test content</p>',
+        username: 'alice',
+        tags: 'graphs,smoke',
+        category: 'Computer Science',
+        workspace_id: 'ws-e2e',
+        processing_status: 'processed',
+        processing_error: '',
+        processed_at: '2026-04-03T12:00:00.000Z',
+      }),
+    });
+  });
+  await loginAsAlice(page);
+  await page.getByRole('button', { name: 'Notes', exact: true }).click();
+
+  const graphCard = page.locator('.document-card', { hasText: 'Graph Notes' });
+  await expect(graphCard).toBeVisible();
+  await graphCard.getByRole('button', { name: /More actions for Graph Notes/ }).click();
+  await graphCard.getByRole('menuitem', { name: 'Rename' }).click();
+
+  const renameDialog = page.locator('.notion-input-modal');
+  await expect(renameDialog.getByRole('heading', { name: 'Rename Note' })).toBeVisible();
+  await renameDialog.getByRole('textbox').fill('Renamed Graph Notes.pdf');
+  await renameDialog.getByRole('button', { name: 'Save' }).click();
+
+  await expect(page.locator('.document-card', { hasText: 'Renamed Graph Notes.pdf' })).toBeVisible();
 });

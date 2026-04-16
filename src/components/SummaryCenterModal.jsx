@@ -31,16 +31,12 @@ export default function SummaryCenterModal({
   modelOptions,
   items,
   expandedIds,
-  actionId,
   onExportTxt,
   onExportPdf,
   onExportJson,
   onClearAll,
   onApplyItem,
-  onCopyItem,
-  onEmailItem,
   onOpenItemDocument,
-  onRebuildItem,
   onToggleExpanded,
   onDeleteItem,
   getSummarySourceLabel,
@@ -235,12 +231,6 @@ export default function SummaryCenterModal({
                     <button type="button" className="btn btn-primary" onClick={() => onApplyItem(entry)}>
                       Open Summary
                     </button>
-                    <button type="button" className="btn" onClick={() => onCopyItem(entry)}>
-                      Copy Summary
-                    </button>
-                    <button type="button" className="btn" onClick={() => onEmailItem(entry)}>
-                      Share by Email
-                    </button>
                     <button
                       type="button"
                       className="btn"
@@ -248,15 +238,6 @@ export default function SummaryCenterModal({
                       disabled={!hasDocument}
                     >
                       Open Note
-                    </button>
-                    <button
-                      type="button"
-                      className="btn"
-                      onClick={() => onRebuildItem(entry)}
-                      disabled={actionId === String(entry.id)}
-                      title="Bypass cache and refresh document text before summarizing"
-                    >
-                      {actionId === String(entry.id) ? 'Rebuilding...' : 'Rebuild + Refresh'}
                     </button>
                     <button type="button" className="btn" onClick={() => onToggleExpanded(entry.id)}>
                       {expanded ? 'Collapse' : 'Expand'}

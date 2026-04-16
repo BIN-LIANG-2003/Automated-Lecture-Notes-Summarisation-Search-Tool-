@@ -9,20 +9,35 @@ const formatDateLabel = (value) => {
 
 const eventLabel = (event) => {
   const type = String(event?.event_type || '').trim();
-  if (type === 'submitted') return 'Submitted';
+  if (type === 'submitted') return 'Received';
   if (type === 'status_changed') {
     return `Status changed to ${getFeedbackStatusLabel(event?.new_status)}`;
   }
-  if (type === 'public_reply') return 'Public reply';
-  if (type === 'internal_note') return 'Internal note';
-  if (type === 'email_sent') return 'Email sent';
+  if (type === 'public_reply') return 'Reply sent';
+  if (type === 'internal_note') return 'Private note';
   if (type === 'email_failed') return 'Email failed';
   return type || 'Update';
 };
 
+const shouldShowEvent = (event, admin) => {
+  const type = String(event?.event_type || '').trim();
+  if (type === 'email_sent') return false;
+  if (!admin && event?.visibility === 'internal') return false;
+  return true;
+};
+
+const eventMessage = (event) => {
+  const type = String(event?.event_type || '').trim();
+  const message = String(event?.message || '').trim();
+  if (type === 'submitted' && message.toLowerCase() === 'feedback submitted.') {
+    return '';
+  }
+  return message;
+};
+
 export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
   if (!item) return null;
-  const events = Array.isArray(item.events) ? item.events : [];
+  const events = Array.isArray(item.events) ? item.events.filter((event) => shouldShowEvent(event, admin)) : [];
 
   return (
     <section className="studyhub-feedback-detail" aria-label="Feedback detail">
@@ -81,18 +96,21 @@ export default function FeedbackDetailPanel({ item, onBack, admin = false }) {
         <h4>Timeline</h4>
         {events.length ? (
           <ol>
-            {events.map((event) => (
-              <li
-                key={event.id || `${event.event_type}-${event.created_at}`}
-                className={event.visibility === 'internal' ? 'is-internal' : ''}
-              >
-                <div>
-                  <strong>{eventLabel(event)}</strong>
-                  <span>{formatDateLabel(event.created_at)}</span>
-                </div>
-                {event.message && <p>{event.message}</p>}
-              </li>
-            ))}
+            {events.map((event) => {
+              const message = eventMessage(event);
+              return (
+                <li
+                  key={event.id || `${event.event_type}-${event.created_at}`}
+                  className={event.visibility === 'internal' ? 'is-internal' : ''}
+                >
+                  <div>
+                    <strong>{eventLabel(event)}</strong>
+                    <span>{formatDateLabel(event.created_at)}</span>
+                  </div>
+                  {message && <p>{message}</p>}
+                </li>
+              );
+            })}
           </ol>
         ) : (
           <p className="muted tiny">No timeline updates yet.</p>

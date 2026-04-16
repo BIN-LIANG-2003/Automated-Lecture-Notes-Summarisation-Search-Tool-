@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useLocation, useNavigate, useParams } from 'react-router-dom';
 import { authFetch } from '../lib/authFetch.js';
+import { readStoredAuthSession } from '../lib/authSession.js';
 
 const statusLabel = (status) => {
   if (status === 'pending') return 'Ready to join';
@@ -23,9 +24,10 @@ export default function InviteJoinPage() {
   const [data, setData] = useState(null);
   const acceptingRef = useRef(false);
 
-  const authToken = sessionStorage.getItem('auth_token') || '';
-  const username = authToken ? (sessionStorage.getItem('username') || '') : '';
-  const email = authToken ? (sessionStorage.getItem('email') || '') : '';
+  const currentAuthSession = readStoredAuthSession();
+  const authToken = currentAuthSession.authToken;
+  const username = authToken ? currentAuthSession.username : '';
+  const email = authToken ? currentAuthSession.email : '';
   const returnPath = `${location.pathname}${location.search}${location.hash}`;
 
   const fetchInvitation = useCallback(async () => {

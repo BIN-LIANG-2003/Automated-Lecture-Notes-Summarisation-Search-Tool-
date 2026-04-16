@@ -35,6 +35,11 @@ def get_current_user():
     return shared.me()
 
 
+@auth_bp.route('/api/auth/preferences', methods=['PATCH', 'PUT'])
+def update_preferences():
+    return shared.update_preferences()
+
+
 @auth_bp.route('/api/auth/logout', methods=['POST'])
 def logout():
     return shared.logout()

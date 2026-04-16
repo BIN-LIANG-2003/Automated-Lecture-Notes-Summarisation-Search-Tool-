@@ -13,7 +13,7 @@ import requests
 from datetime import datetime, timedelta
 from urllib.parse import quote, urlparse
 
-from flask import request, jsonify, send_from_directory, redirect
+from flask import make_response, request, jsonify, send_from_directory, redirect
 from werkzeug.utils import secure_filename
 from werkzeug.security import generate_password_hash, check_password_hash
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -29,6 +29,10 @@ from .config import (
     ENABLE_PDF_OCR_FALLBACK,
     EXTERNAL_OCR_SERVICE_URL,
     EXTERNAL_OCR_TIMEOUT_SECONDS,
+    AUTH_COOKIE_NAME,
+    AUTH_COOKIE_SAMESITE,
+    AUTH_COOKIE_SECURE,
+    AUTH_TOKEN_TTL_SECONDS,
     GOOGLE_CLIENT_ID,
     HF_MODEL_BASE_URL,
     INVITE_BASE_URL,
@@ -57,7 +61,13 @@ from .document_domain import (
     score_pdf_text_quality,
     user_can_edit_document,
 )
-from .security import create_auth_token, decode_auth_token, get_authenticated_username, get_bearer_token
+from .security import (
+    create_auth_token,
+    decode_auth_token,
+    get_authenticated_username,
+    get_bearer_token,
+    get_request_auth_token,
+)
 from .share_domain import (
     check_document_access,
     is_document_soft_deleted,
@@ -82,6 +92,7 @@ from .workspace_domain import (
     workspace_belongs_to_user,
 )
 from .email_service import send_resend_email
+from .user_preferences import normalize_user_preferences
 
 
 # ================= 配置部分 =================
@@ -89,6 +100,46 @@ app = None
 
 
 # ================= 辅助函数 =================
+
+
+def _auth_response(payload, auth_token='', remember=False, status_code=200):
+    response = make_response(jsonify(payload), status_code)
+    safe_token = str(auth_token or '').strip()
+    if safe_token:
+        response.set_cookie(
+            AUTH_COOKIE_NAME,
+            safe_token,
+            max_age=AUTH_TOKEN_TTL_SECONDS if remember else None,
+            httponly=True,
+            secure=AUTH_COOKIE_SECURE,
+            samesite=AUTH_COOKIE_SAMESITE,
+            path='/',
+        )
+    return response
+
+
+def _clear_auth_cookie_response(payload, status_code=200):
+    response = make_response(jsonify(payload), status_code)
+    response.set_cookie(
+        AUTH_COOKIE_NAME,
+        '',
+        expires=0,
+        max_age=0,
+        httponly=True,
+        secure=AUTH_COOKIE_SECURE,
+        samesite=AUTH_COOKIE_SAMESITE,
+        path='/',
+    )
+    return response
+
+
+def _resolve_authenticated_username_from_request():
+    username = get_authenticated_username()
+    if username:
+        return True, username, ''
+    auth_token = get_request_auth_token()
+    token_ok, token_username, token_error = decode_auth_token(auth_token)
+    return token_ok, token_username, token_error
 
 
 def build_summary_cache_text_hash(text):
@@ -496,6 +547,7 @@ def login():
     data = request.get_json(silent=True) or {}
     username_or_email = str(data.get('username') or '').strip()
     password = data.get('password')
+    remember_session = parse_bool(data.get('remember'), False)
     normalized_identifier = normalize_email(username_or_email)
     if not username_or_email or not password:
         return jsonify({'error': 'Username/email and password are required'}), 400
@@ -518,12 +570,13 @@ def login():
             }), 403
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
         auth_token = create_auth_token(user['username'])
-        return jsonify({
+        return _auth_response({
             'message': 'Login successful',
             'username': user['username'],
             'email': user_email,
             'auth_token': auth_token,
-        }), 200
+            'preferences': normalize_user_preferences(user),
+        }, auth_token, remember_session, 200)
     else:
         return jsonify({'error': 'Invalid credentials'}), 401
 
@@ -670,8 +723,7 @@ def resend_verification():
 
 
 def me():
-    bearer_token = get_bearer_token()
-    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+    token_ok, token_username, token_error = _resolve_authenticated_username_from_request()
     if not token_ok:
         return jsonify({'error': token_error or 'Invalid auth token'}), 401
 
@@ -680,7 +732,11 @@ def me():
         return jsonify({'error': 'Database connection failed'}), 500
     try:
         cursor = conn.execute(
-            'SELECT username, email, friend_code FROM users WHERE username = ?',
+            '''
+            SELECT username, email, friend_code, email_notifications_enabled
+            FROM users
+            WHERE username = ?
+            ''',
             (token_username,),
         )
         user = cursor.fetchone()
@@ -692,28 +748,83 @@ def me():
             'username': user['username'],
             'email': user.get('email') if hasattr(user, 'get') else user['email'],
             'friend_code': friend_code or (user.get('friend_code') if hasattr(user, 'get') else user['friend_code']),
+            'auth_token': create_auth_token(token_username),
+            'preferences': normalize_user_preferences(user),
             'authenticated': True,
         }), 200
     finally:
         conn.close()
 
 
-def logout():
-    bearer_token = get_bearer_token()
-    token_ok, token_username, token_error = decode_auth_token(bearer_token)
+def update_preferences():
+    token_ok, token_username, token_error = _resolve_authenticated_username_from_request()
     if not token_ok:
         return jsonify({'error': token_error or 'Invalid auth token'}), 401
-    return jsonify({
+
+    data = request.get_json(silent=True) or {}
+    next_email_notifications = parse_bool(
+        data.get('email_notifications_enabled'),
+        True,
+    )
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        db_email_notifications_value = (
+            next_email_notifications if conn.db_type == 'postgres' else (1 if next_email_notifications else 0)
+        )
+        conn.execute(
+            '''
+            UPDATE users
+            SET email_notifications_enabled = ?
+            WHERE username = ?
+            ''',
+            (db_email_notifications_value, token_username),
+        )
+        conn.commit()
+        cursor = conn.execute(
+            '''
+            SELECT username, email, friend_code, email_notifications_enabled
+            FROM users
+            WHERE username = ?
+            ''',
+            (token_username,),
+        )
+        user = row_to_dict(cursor.fetchone())
+        if not user:
+            return jsonify({'error': 'User account not found for this session'}), 404
+        return jsonify({
+            'username': user.get('username') or token_username,
+            'email': normalize_email(user.get('email')),
+            'preferences': normalize_user_preferences(user),
+        }), 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return jsonify({'error': f'Failed to save preferences: {e}'}), 500
+    finally:
+        conn.close()
+
+
+def logout():
+    token_ok, token_username, token_error = _resolve_authenticated_username_from_request()
+    if not token_ok:
+        return _clear_auth_cookie_response({'error': token_error or 'Invalid auth token'}, 401)
+    return _clear_auth_cookie_response({
         'message': 'Signed out successfully',
         'username': token_username,
         'stateless': True,
-    }), 200
+    }, 200)
 
 
 def google_login():
     try:
         data = request.get_json(silent=True) or {}
         token = data.get('token')
+        remember_session = parse_bool(data.get('remember'), False)
         
         id_info = id_token.verify_oauth2_token(token, google_requests.Request(), GOOGLE_CLIENT_ID)
         email = normalize_email(id_info['email'])
@@ -782,12 +893,13 @@ def google_login():
         conn.close()
         user_email = user.get('email') if hasattr(user, 'get') else user['email']
         auth_token = create_auth_token(user['username'])
-        return jsonify({
+        return _auth_response({
             'message': 'Login successful',
             'username': user['username'],
             'email': user_email,
             'auth_token': auth_token,
-        }), 200
+            'preferences': normalize_user_preferences(user),
+        }, auth_token, remember_session, 200)
     except ValueError:
         return jsonify({'error': 'Invalid Google token'}), 401
     except Exception as e:
@@ -2265,7 +2377,7 @@ def uploaded_file(filename):
     if not safe_filename or safe_filename != str(filename or '').strip():
         return jsonify({'error': 'File not found'}), 404
 
-    bearer_token = get_bearer_token() or (request.args.get('auth_token') or '').strip()
+    bearer_token = get_request_auth_token() or (request.args.get('auth_token') or '').strip()
     token_ok, token_username, _ = decode_auth_token(bearer_token)
     username = token_username if token_ok else ''
     share_token = (request.args.get('share_token') or '').strip()

@@ -21,6 +21,21 @@ def list_document_share_links(doc_id):
     return share_link_service.list_document_share_links(doc_id)
 
 
+@share_links_bp.route('/api/workspaces/<workspace_id>/share-links', methods=['GET'])
+def list_workspace_share_links(workspace_id):
+    return share_link_service.list_workspace_share_links(workspace_id)
+
+
+@share_links_bp.route('/api/workspaces/<workspace_id>/share-links', methods=['DELETE'])
+def revoke_all_workspace_share_links(workspace_id):
+    return share_link_service.revoke_all_workspace_share_links(workspace_id)
+
+
+@share_links_bp.route('/api/workspaces/<workspace_id>/share-links/inactive', methods=['DELETE'])
+def delete_inactive_workspace_share_links(workspace_id):
+    return share_link_service.delete_inactive_workspace_share_links(workspace_id)
+
+
 @share_links_bp.route('/api/documents/<int:doc_id>/share-links', methods=['DELETE'])
 def revoke_all_document_share_links(doc_id):
     return share_link_service.revoke_all_document_share_links(doc_id)

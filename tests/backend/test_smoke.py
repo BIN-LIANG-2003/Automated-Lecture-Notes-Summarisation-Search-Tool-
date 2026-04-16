@@ -14,7 +14,7 @@ from werkzeug.security import generate_password_hash
 os.environ.setdefault('APP_ENV', 'development')
 
 from backend import create_app
-from backend.config import DEFAULT_WORKSPACE_SETTINGS
+from backend.config import AUTH_COOKIE_NAME, DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend import document_service
 from backend.document_processing import process_queued_documents_once
@@ -106,6 +106,77 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             conn.commit()
         finally:
             conn.close()
+
+    def test_user_can_update_email_notification_preference(self):
+        response = self.client.patch(
+            '/api/auth/preferences',
+            headers=self._auth_headers(),
+            json={'email_notifications_enabled': False},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertFalse(payload['preferences']['email_notifications_enabled'])
+
+        me_response = self.client.get('/api/auth/me', headers=self._auth_headers())
+        self.assertEqual(me_response.status_code, 200)
+        me_payload = me_response.get_json()
+        self.assertFalse(me_payload['preferences']['email_notifications_enabled'])
+
+    def test_login_sets_http_only_cookie_and_cookie_can_restore_session(self):
+        login_response = self.client.post(
+            '/api/auth/login',
+            json={
+                'username': self.email,
+                'password': self.password,
+                'remember': True,
+            },
+        )
+        self.assertEqual(login_response.status_code, 200)
+        self.assertTrue(str(login_response.get_json().get('auth_token') or '').strip())
+        cookie_header = login_response.headers.get('Set-Cookie', '')
+        self.assertIn(f'{AUTH_COOKIE_NAME}=', cookie_header)
+        self.assertIn('HttpOnly', cookie_header)
+        self.assertIn('SameSite=Lax', cookie_header)
+
+        me_response = self.client.get('/api/auth/me')
+        self.assertEqual(me_response.status_code, 200)
+        me_payload = me_response.get_json()
+        self.assertEqual(me_payload.get('username'), self.username)
+        self.assertTrue(str(me_payload.get('auth_token') or '').strip())
+
+        logout_response = self.client.post('/api/auth/logout')
+        self.assertEqual(logout_response.status_code, 200)
+        self.assertIn(f'{AUTH_COOKIE_NAME}=', logout_response.headers.get('Set-Cookie', ''))
+
+        after_logout_response = self.client.get('/api/auth/me')
+        self.assertEqual(after_logout_response.status_code, 401)
+
+    @patch('backend.workspace_service.send_workspace_invite_email', return_value=(True, ''))
+    def test_workspace_invite_respects_recipient_email_preference(self, mock_send_invite):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                'UPDATE users SET email_notifications_enabled = ? WHERE username = ?',
+                (0, 'bob'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace_id}/invitations',
+            headers=self._auth_headers(),
+            json={'emails': ['bob@example.com']},
+        )
+        self.assertEqual(response.status_code, 201)
+        payload = response.get_json()
+        self.assertEqual(payload['email_sent_count'], 0)
+        self.assertEqual(payload['email_failed_count'], 1)
+        self.assertTrue(payload['manual_share_recommended'])
+        self.assertTrue(payload['created'][0]['email_skipped'])
+        self.assertIn('disabled', payload['send_errors'][0]['error'])
+        mock_send_invite.assert_not_called()
 
     def _insert_document(
         self,
@@ -853,6 +924,80 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(username_request.status_code, 201)
 
+    def test_friend_file_share_accept_copies_document_to_recipient_workspace(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                'INSERT INTO friendships (user_a, user_b, created_at) VALUES (?, ?, ?)',
+                ('alice', 'bob', utcnow_iso()),
+            )
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    'ws-bob-received',
+                    'Bob Received Files',
+                    'Free',
+                    'bob',
+                    workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            ensure_owner_membership(conn, 'ws-bob-received', 'bob')
+            conn.commit()
+        finally:
+            conn.close()
+
+        os.makedirs('uploads', exist_ok=True)
+        source_filename = 'friend-source.txt'
+        with open(os.path.join('uploads', source_filename), 'wb') as f:
+            f.write(b'friend share source text')
+        document_id = self._insert_document(
+            'Friend Source Note',
+            'friend share source text',
+            file_type='txt',
+            filename=source_filename,
+        )
+
+        share_response = self.client.post(
+            '/api/friends/file-shares',
+            headers=self._auth_headers(),
+            json={'recipient_username': 'bob', 'document_id': document_id, 'note': 'Use this one.'},
+        )
+        self.assertEqual(share_response.status_code, 201)
+
+        bob_summary = self.client.get('/api/friends/summary', headers=self._auth_headers('bob')).get_json()
+        pending = next(
+            item for item in bob_summary['notifications']
+            if item.get('type') == 'friend_file_share'
+        )
+        self.assertEqual(pending['metadata']['status'], 'pending')
+        self.assertEqual(pending['metadata']['source_document_id'], document_id)
+
+        accept_response = self.client.post(
+            f"/api/friends/file-shares/{pending['id']}/respond",
+            headers=self._auth_headers('bob'),
+            json={'action': 'accept', 'target_workspace_id': 'ws-bob-received'},
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        payload = accept_response.get_json()
+        self.assertEqual(payload['status'], 'accepted')
+        self.assertGreater(payload['document_id'], 0)
+        self.assertEqual(payload['workspace_id'], 'ws-bob-received')
+        self.assertEqual(payload['document']['workspace_id'], 'ws-bob-received')
+        self.assertEqual(payload['document']['username'], 'bob')
+        self.assertEqual(payload['document']['title'], 'Friend Source Note')
+
+        copied_filename = payload['document']['filename']
+        self.assertNotEqual(copied_filename, source_filename)
+        with open(os.path.join('uploads', copied_filename), 'rb') as f:
+            self.assertEqual(f.read(), b'friend share source text')
+
     @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
     @patch('backend.shared.HF_TOKEN', 'hf-test-token')
     @patch('backend.shared.requests.post')
@@ -1019,7 +1164,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             share_row = row_to_dict(
                 conn.execute(
                     '''
-                    SELECT token, status, created_by
+                    SELECT token, status, created_by, recipient_email
                     FROM document_share_links
                     WHERE document_id = ?
                     ORDER BY id DESC
@@ -1032,6 +1177,46 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             conn.close()
         self.assertEqual(str(share_row.get('status') or '').strip().lower(), 'active')
         self.assertEqual(str(share_row.get('created_by') or '').strip(), self.username)
+        self.assertEqual(str(share_row.get('recipient_email') or '').strip(), 'classmate@example.com')
+
+    @patch('backend.share_link_service.send_document_share_email', return_value=(True, ''))
+    def test_workspace_share_links_list_links_across_documents(self, _mock_send_share_email):
+        first_document_id = self._insert_document(
+            'First Shared Notes',
+            'first share content',
+            filename='first-share.txt',
+        )
+        second_document_id = self._insert_document(
+            'Second Shared Notes',
+            'second share content',
+            filename='second-share.txt',
+        )
+
+        for document_id in (first_document_id, second_document_id):
+            response = self.client.post(
+                f'/api/documents/{document_id}/email-share',
+                headers=self._auth_headers(),
+                json={
+                    'username': self.username,
+                    'recipient_email': 'classmate@example.com',
+                    'message': 'Please review this note.',
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+
+        list_response = self.client.get(
+            f'/api/workspaces/{self.workspace_id}/share-links?username={self.username}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(list_response.status_code, 200)
+        payload = list_response.get_json()
+        items = payload.get('items') or []
+        self.assertEqual(len(items), 2)
+        document_ids = {int(item.get('document_id') or 0) for item in items}
+        self.assertEqual(document_ids, {first_document_id, second_document_id})
+        self.assertTrue(all(item.get('recipient_email') == 'classmate@example.com' for item in items))
+        titles = {item.get('document_title') for item in items}
+        self.assertEqual(titles, {'First Shared Notes', 'Second Shared Notes'})
 
     @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
     def test_register_requires_email_verification_before_password_login(self, _mock_send_email):
@@ -1122,6 +1307,100 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertIn('Mathematics', payload['facets']['categories'])
         self.assertGreaterEqual(payload['facets']['file_types'].get('txt', 0), 3)
 
+    def test_update_document_title_changes_visible_name_and_search_index(self):
+        document_id = self._insert_document(
+            'Original Lecture Name.pdf',
+            'renaming smoke coverage',
+            filename='stored-original.pdf',
+            file_type='pdf',
+        )
+
+        response = self.client.put(
+            f'/api/documents/{document_id}/title',
+            headers=self._auth_headers(),
+            json={'title': '  Renamed Lecture 08.pdf  '},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['title'], 'Renamed Lecture 08.pdf')
+        self.assertEqual(payload['filename'], 'stored-original.pdf')
+
+        search_response = self.client.get(
+            '/api/documents',
+            headers=self._auth_headers(),
+            query_string={'q': 'Renamed Lecture 08', 'include_meta': '1'},
+        )
+        self.assertEqual(search_response.status_code, 200)
+        search_payload = search_response.get_json()
+        self.assertEqual(search_payload['total'], 1)
+        self.assertEqual(search_payload['items'][0]['title'], 'Renamed Lecture 08.pdf')
+
+        empty_response = self.client.put(
+            f'/api/documents/{document_id}/title',
+            headers=self._auth_headers(),
+            json={'title': '   '},
+        )
+        self.assertEqual(empty_response.status_code, 400)
+
+    def test_pdf_conversion_draft_can_replace_or_copy_document(self):
+        filename = 'convert-source.pdf'
+        self._save_pdf_upload_file(filename, 'First line for conversion', 'Second line for conversion')
+        document_id = self._insert_document(
+            'Convert Source.pdf',
+            'First line for conversion\nSecond line for conversion',
+            filename=filename,
+            file_type='pdf',
+        )
+
+        draft_response = self.client.post(
+            f'/api/documents/{document_id}/convert-to-editable',
+            headers=self._auth_headers(),
+            json={'mode': 'layout'},
+        )
+        self.assertEqual(draft_response.status_code, 200)
+        draft_payload = draft_response.get_json()
+        self.assertEqual(draft_payload['document_id'], document_id)
+        self.assertIn('First line for conversion', draft_payload['content'])
+        self.assertIn('content_html', draft_payload)
+        self.assertIn('copy', draft_payload['available_save_modes'])
+
+        copy_response = self.client.put(
+            f'/api/documents/{document_id}/converted-file',
+            headers=self._auth_headers(),
+            json={
+                'output_format': 'docx',
+                'save_mode': 'copy',
+                'title': 'Converted Copy.docx',
+                'content_html': '<h1>Converted Copy</h1><p>Edited copy body</p>',
+            },
+        )
+        self.assertEqual(copy_response.status_code, 201)
+        copy_payload = copy_response.get_json()
+        copy_doc = copy_payload['document']
+        self.assertNotEqual(copy_doc['id'], document_id)
+        self.assertEqual(copy_doc['title'], 'Converted Copy.docx')
+        self.assertEqual(copy_doc['file_type'], 'docx')
+        self.assertEqual(copy_payload['source_document_id'], document_id)
+
+        replace_response = self.client.put(
+            f'/api/documents/{document_id}/converted-file',
+            headers=self._auth_headers(),
+            json={
+                'output_format': 'pdf',
+                'save_mode': 'replace',
+                'title': 'Converted Replacement.pdf',
+                'content_html': '<h1>Converted Replacement</h1><p>Edited replacement body</p>',
+            },
+        )
+        self.assertEqual(replace_response.status_code, 200)
+        replace_payload = replace_response.get_json()
+        replaced_doc = replace_payload['document']
+        self.assertEqual(replaced_doc['id'], document_id)
+        self.assertEqual(replaced_doc['title'], 'Converted Replacement.pdf')
+        self.assertEqual(replaced_doc['file_type'], 'pdf')
+        self.assertIn('Edited replacement body', replaced_doc['content'])
+        self.assertFalse(os.path.exists(os.path.join('uploads', filename)))
+
     def test_share_link_public_access_returns_document_payload(self):
         document_id = self._insert_document(
             'Shared Revision Sheet',
@@ -1161,6 +1440,13 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(authenticated_response.status_code, 200)
         self.assertEqual(authenticated_response.get_data(), b'private route smoke content')
         authenticated_response.close()
+
+        cookie_client = self.app.test_client()
+        cookie_client.set_cookie(AUTH_COOKIE_NAME, create_auth_token(self.username))
+        cookie_response = cookie_client.get(f'/uploads/{filename}')
+        self.assertEqual(cookie_response.status_code, 200)
+        self.assertEqual(cookie_response.get_data(), b'private route smoke content')
+        cookie_response.close()
 
     def test_expired_and_revoked_share_links_are_rejected(self):
         expired_doc_id = self._insert_document(

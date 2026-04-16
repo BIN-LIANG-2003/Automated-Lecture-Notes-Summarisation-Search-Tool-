@@ -1221,6 +1221,118 @@ def extract_text_from_pdf_bytes(file_bytes, *, allow_ocr=True):
     return text
 
 
+def convert_pdf_bytes_to_editable_draft(file_bytes, *, mode='simple', fallback_text=''):
+    safe_mode = str(mode or 'simple').strip().lower()
+    if safe_mode not in ('simple', 'layout'):
+        safe_mode = 'simple'
+
+    byte_payload = file_bytes or b''
+    fallback = normalize_pdf_text(fallback_text or '')
+
+    def simple_payload(extra_warnings=None):
+        text = fallback
+        if not is_pdf_text_available(text):
+            text = normalize_pdf_text(extract_text_from_pdf_bytes(byte_payload, allow_ocr=True))
+        if not is_pdf_text_available(text):
+            raise ValueError('No editable text could be extracted from this PDF. Run OCR or upload a text-selectable PDF first.')
+
+        return {
+            'mode': safe_mode,
+            'content': text,
+            'content_html': sanitize_editor_html(plaintext_to_html(text)),
+            'page_count': 0,
+            'warnings': list(extra_warnings or []),
+        }
+
+    if safe_mode == 'simple':
+        return simple_payload()
+
+    if fitz is None:
+        return simple_payload(['Layout conversion is unavailable because PyMuPDF is not installed. Used simple text conversion.'])
+
+    try:
+        pdf_doc = fitz.open(stream=byte_payload, filetype='pdf')
+    except Exception as e:
+        return simple_payload([f'Layout conversion failed to open the PDF: {e}. Used simple text conversion.'])
+
+    html_parts = []
+    text_parts = []
+    warnings = []
+    try:
+        for page_index, page in enumerate(pdf_doc, start=1):
+            html_parts.append(f'<h2>Page {page_index}</h2>')
+            page_dict = page.get_text('dict') or {}
+            blocks = page_dict.get('blocks') or []
+            text_blocks = [block for block in blocks if parse_int(block.get('type'), 0, 0) == 0]
+            image_blocks = [block for block in blocks if parse_int(block.get('type'), 0, 0) == 1]
+
+            for block in sorted(text_blocks, key=lambda item: (
+                float((item.get('bbox') or [0, 0, 0, 0])[1] or 0),
+                float((item.get('bbox') or [0, 0, 0, 0])[0] or 0),
+            )):
+                bbox = block.get('bbox') or [0, 0, 0, 0]
+                left = max(0, min(72, float(bbox[0] or 0) / 2))
+                for line in block.get('lines') or []:
+                    spans = line.get('spans') or []
+                    pieces = []
+                    plain_line = ''
+                    max_size = 0
+                    for span in spans:
+                        raw_text = str(span.get('text') or '')
+                        if not raw_text:
+                            continue
+                        plain_line += raw_text
+                        size = float(span.get('size') or 0)
+                        max_size = max(max_size, size)
+                        escaped = html_escape(raw_text)
+                        style_parts = []
+                        if size:
+                            style_parts.append(f'font-size: {max(8, min(24, round(size, 1)))}pt')
+                        font = str(span.get('font') or '').strip()
+                        if font:
+                            style_parts.append(f'font-family: {html_escape(font[:60])}')
+                        color_value = span.get('color')
+                        if isinstance(color_value, int):
+                            style_parts.append(f'color: #{color_value & 0xFFFFFF:06x}')
+                        style_text = '; '.join(style_parts)
+                        style_attr = f' style="{style_text}"' if style_text else ''
+                        pieces.append(f'<span{style_attr}>{escaped}</span>')
+
+                    clean_line = plain_line.strip()
+                    if not clean_line:
+                        continue
+                    text_parts.append(clean_line)
+                    paragraph_style = [f'margin-left: {round(left, 1)}pt']
+                    if max_size:
+                        paragraph_style.append(f'font-size: {max(8, min(24, round(max_size, 1)))}pt')
+                    paragraph_style_text = '; '.join(paragraph_style)
+                    html_parts.append(f'<p style="{paragraph_style_text}">{"".join(pieces)}</p>')
+
+            for _ in image_blocks[:8]:
+                html_parts.append('<p><em>[Image from original PDF]</em></p>')
+                text_parts.append('[Image from original PDF]')
+            if image_blocks:
+                warnings.append('Images were represented as placeholders in the editable draft.')
+            html_parts.append('<hr/>')
+
+        text = normalize_pdf_text('\n'.join(text_parts))
+        if not is_pdf_text_available(text):
+            return simple_payload(['Layout conversion found no editable text. Used simple OCR/text extraction.'])
+
+        return {
+            'mode': 'layout',
+            'content': text,
+            'content_html': sanitize_editor_html('\n'.join(html_parts)),
+            'page_count': len(pdf_doc),
+            'warnings': warnings,
+        }
+    finally:
+        try:
+            pdf_doc.close()
+        except Exception:
+            pass
+
+
 def create_pdf_bytes_from_text(content):
     try:
         from reportlab.lib.pagesizes import A4
@@ -1325,6 +1437,7 @@ __all__ = [
     'PDF_TEXT_PENDING_ERROR',
     'PDF_TEXT_PENDING_STATUS',
     'build_editable_file_bytes',
+    'convert_pdf_bytes_to_editable_draft',
     'extract_document_content',
     'extract_text_from_pdf_bytes',
     'extract_text_from_pdf_bytes_with_meta',

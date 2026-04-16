@@ -10,6 +10,10 @@ export default function SummaryResultModal({
   onExportSummary,
   onExportSummaryPdf,
   onEmailSummary,
+  onRebuildSummary,
+  canRebuildSummary = false,
+  rebuildSummaryLoading = false,
+  closeLabel = 'Close',
   allowExport = true,
 }) {
   if (!open || !analysisResult) return null;
@@ -40,7 +44,7 @@ export default function SummaryResultModal({
             type="button"
             className="notion-modal-close"
             onClick={onClose}
-            aria-label="Close Summary Result"
+            aria-label="Dismiss Summary Result"
           >
             ×
           </button>
@@ -116,13 +120,24 @@ export default function SummaryResultModal({
               >
                 Share by Email
               </button>
+              {canRebuildSummary && (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onRebuildSummary}
+                  disabled={rebuildSummaryLoading}
+                  title="Bypass cache and refresh document text before summarizing"
+                >
+                  {rebuildSummaryLoading ? 'Rebuilding...' : 'Rebuild + Refresh'}
+                </button>
+              )}
             </div>
           </article>
         </section>
 
         <div className="notion-modal-actions">
           <button type="button" className="btn" onClick={onClose}>
-            Close
+            {closeLabel}
           </button>
         </div>
       </section>

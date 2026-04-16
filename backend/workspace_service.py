@@ -8,6 +8,7 @@ from .db import get_db_connection
 from .friend_service import create_system_notification
 from .security import get_authenticated_username
 from .storage import remove_document_file_from_storage
+from .user_preferences import user_allows_email_notifications
 from .utils import invitation_is_expired, normalize_email, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import (
     create_invite_token,
@@ -39,10 +40,40 @@ def _user_can_manage_workspace_invites(conn, workspace_row, username, workspace_
     return workspace_belongs_to_user(conn, workspace.get('id', ''), actor)
 
 
-def _deliver_workspace_invitation_email(workspace_row, invitation_row, inviter_username):
+def _deliver_workspace_invitation_email(conn, workspace_row, invitation_row, inviter_username):
     invite_payload = serialize_invitation_row(invitation_row)
+    recipient_email = invite_payload.get('email', '')
+    if not user_allows_email_notifications(conn, email=recipient_email):
+        send_error = 'Email reminders are disabled for this recipient'
+        recipient_cursor = conn.execute(
+            'SELECT username FROM users WHERE LOWER(email) = ? LIMIT 1',
+            (normalize_email(recipient_email),),
+        )
+        recipient_user = row_to_dict(recipient_cursor.fetchone()) or {}
+        recipient_username = str(recipient_user.get('username') or '').strip()
+        if recipient_username and recipient_username != inviter_username:
+            workspace_name = str(workspace_row.get('name') or 'this workspace').strip()
+            create_system_notification(
+                conn,
+                recipient_username,
+                'Workspace invitation',
+                f'{inviter_username} invited you to {workspace_name}.',
+                notification_type='workspace',
+                actor_username=inviter_username,
+                link_url=invite_payload.get('invite_url') or '',
+                metadata={
+                    'workspace_id': workspace_row.get('id') or '',
+                    'workspace_name': workspace_name,
+                    'invitation_token': invite_payload.get('token') or '',
+                },
+            )
+        invite_payload['email_sent'] = False
+        invite_payload['email_skipped'] = True
+        invite_payload['email_error'] = send_error
+        return invite_payload, False, send_error
+
     ok, send_error = send_workspace_invite_email(
-        invite_payload.get('email', ''),
+        recipient_email,
         workspace_row.get('name', ''),
         inviter_username,
         invite_payload.get('invite_url', ''),
@@ -593,6 +624,7 @@ def create_workspace_invitations(workspace_id):
             )
             invite_row = row_to_dict(invite_row_cursor.fetchone())
             invite_payload, ok, send_error = _deliver_workspace_invitation_email(
+                conn,
                 workspace_row,
                 invite_row,
                 username,
@@ -734,6 +766,7 @@ def resend_workspace_invitation(workspace_id, invitation_id):
         )
         refreshed = row_to_dict(refreshed_cursor.fetchone())
         invite_payload, ok, send_error = _deliver_workspace_invitation_email(
+            conn,
             workspace_row,
             refreshed,
             username,

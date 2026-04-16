@@ -43,6 +43,7 @@ export default function WorkspaceSidebar({
   onOpenRecentDocument,
   onDownloadRecentDocument,
   downloadingRecentDocId,
+  onCollapseSidebar,
 }) {
   const activeWorkspaceLabel = activeWorkspace?.name || `${accountName}'s Workspace`;
   const activeWorkspaceIcon = getWorkspaceIconLabel(activeWorkspace, accountName);
@@ -66,23 +67,34 @@ export default function WorkspaceSidebar({
         </button>
       </div>
       <div className={`notion-workspace-picker ${workspaceMenuOpen ? 'open' : ''}`} ref={workspaceMenuRef}>
-        <button
-          type="button"
-          className="notion-workspace-trigger"
-          aria-expanded={workspaceMenuOpen ? 'true' : 'false'}
-          aria-controls="workspace-account-menu"
-          onClick={onToggleWorkspaceMenu}
-        >
-          <span className="notion-workspace-trigger-main">
-            <span className="notion-avatar" aria-hidden="true">
-              {activeWorkspaceIcon}
+        <div className="notion-workspace-picker-row">
+          <button
+            type="button"
+            className="notion-workspace-trigger"
+            aria-expanded={workspaceMenuOpen ? 'true' : 'false'}
+            aria-controls="workspace-account-menu"
+            onClick={onToggleWorkspaceMenu}
+          >
+            <span className="notion-workspace-trigger-main">
+              <span className="notion-avatar" aria-hidden="true">
+                {activeWorkspaceIcon}
+              </span>
+              <span className="notion-workspace-trigger-label">{activeWorkspaceLabel}</span>
             </span>
-            <span className="notion-workspace-trigger-label">{activeWorkspaceLabel}</span>
-          </span>
-          <span className="notion-workspace-trigger-chevron" aria-hidden="true">
-            ▾
-          </span>
-        </button>
+            <span className="notion-workspace-trigger-chevron" aria-hidden="true">
+              ▾
+            </span>
+          </button>
+          <button
+            type="button"
+            className="notion-sidebar-collapse-btn"
+            aria-label="Collapse sidebar"
+            title="Collapse sidebar"
+            onClick={onCollapseSidebar}
+          >
+            ‹
+          </button>
+        </div>
 
         <section
           id="workspace-account-menu"

@@ -1,22 +1,128 @@
-import { authFetch } from './authFetch.js';
+const SESSION_STORAGE_KEYS = ['username', 'email', 'auth_token', 'loginAt', 'preferences_json'];
+const PERSISTED_AUTH_SESSION_KEY = 'studyhub-auth-session';
+const REMEMBER_AUTH_PREF_KEY = 'studyhub-remember-auth';
+const PERSISTED_AUTH_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const COOKIE_AUTH_TOKEN = '__studyhub_cookie_session__';
 
-const SESSION_STORAGE_KEYS = ['username', 'email', 'auth_token', 'loginAt'];
+export const isCookieAuthToken = (value = '') => String(value || '').trim() === COOKIE_AUTH_TOKEN;
 
-export function readStoredAuthSession() {
+const readJsonSafely = (value) => {
+  try {
+    return JSON.parse(value);
+  } catch {
+    return null;
+  }
+};
+
+const readSessionOnly = () => {
   const username = String(sessionStorage.getItem('username') || '').trim();
   const email = String(sessionStorage.getItem('email') || '').trim();
   const authToken = String(sessionStorage.getItem('auth_token') || '').trim();
   const loginAt = String(sessionStorage.getItem('loginAt') || '').trim();
+  const preferences = readJsonSafely(sessionStorage.getItem('preferences_json') || '') || {};
   return {
     username,
     email,
     authToken,
     loginAt,
+    preferences,
+    cookieBacked: false,
     isAuthenticated: Boolean(username && authToken),
+  };
+};
+
+const emptyAuthSession = () => ({
+  username: '',
+  email: '',
+  authToken: '',
+  loginAt: '',
+  preferences: {},
+  expiresAt: '',
+  cookieBacked: false,
+  isAuthenticated: false,
+});
+
+const resolvePersistedExpiry = (parsed, loginAt) => {
+  const explicitExpiresAt = String(parsed?.expiresAt || parsed?.expires_at || '').trim();
+  if (explicitExpiresAt) return explicitExpiresAt;
+  const loginTime = Date.parse(loginAt || '');
+  if (!Number.isFinite(loginTime)) return '';
+  return new Date(loginTime + PERSISTED_AUTH_SESSION_TTL_MS).toISOString();
+};
+
+const persistedSessionExpired = (expiresAt) => {
+  const expiresTime = Date.parse(expiresAt || '');
+  return Number.isFinite(expiresTime) && expiresTime <= Date.now();
+};
+
+const writeSessionStorage = ({ username = '', email = '', authToken = '', loginAt = '', preferences = {} } = {}) => {
+  const safeUsername = String(username || '').trim();
+  const safeEmail = String(email || '').trim();
+  const safeToken = String(authToken || '').trim();
+  const safeLoginAt = String(loginAt || '').trim() || new Date().toISOString();
+  sessionStorage.setItem('username', safeUsername);
+  sessionStorage.setItem('email', safeEmail);
+  sessionStorage.setItem('auth_token', safeToken);
+  sessionStorage.setItem('loginAt', safeLoginAt);
+  sessionStorage.setItem('preferences_json', JSON.stringify(preferences && typeof preferences === 'object' ? preferences : {}));
+};
+
+export function readPersistedAuthSession() {
+  const raw = String(localStorage.getItem(PERSISTED_AUTH_SESSION_KEY) || '').trim();
+  const parsed = raw ? readJsonSafely(raw) : null;
+  if (!parsed || typeof parsed !== 'object') {
+    return emptyAuthSession();
+  }
+  const username = String(parsed.username || '').trim();
+  const email = String(parsed.email || '').trim();
+  const legacyAuthToken = String(parsed.authToken || parsed.auth_token || '').trim();
+  const loginAt = String(parsed.loginAt || parsed.login_at || '').trim();
+  const expiresAt = resolvePersistedExpiry(parsed, loginAt);
+  if (persistedSessionExpired(expiresAt)) {
+    localStorage.removeItem(PERSISTED_AUTH_SESSION_KEY);
+    return emptyAuthSession();
+  }
+  const preferences = parsed.preferences && typeof parsed.preferences === 'object' ? parsed.preferences : {};
+  const cookieBacked = !legacyAuthToken;
+  return {
+    username,
+    email,
+    authToken: legacyAuthToken || COOKIE_AUTH_TOKEN,
+    loginAt,
+    preferences,
+    expiresAt,
+    cookieBacked,
+    isAuthenticated: Boolean(username && (legacyAuthToken || cookieBacked)),
   };
 }
 
-export function storeAuthSession({ username = '', email = '', authToken = '' } = {}) {
+export function hydrateStoredAuthSession() {
+  const current = readSessionOnly();
+  if (current.isAuthenticated) return current;
+
+  const persisted = readPersistedAuthSession();
+  if (!persisted.isAuthenticated) return current;
+
+  writeSessionStorage(persisted);
+  return readSessionOnly();
+}
+
+export function readStoredAuthSession() {
+  return hydrateStoredAuthSession();
+}
+
+export function getRememberAuthPreference() {
+  const stored = String(localStorage.getItem(REMEMBER_AUTH_PREF_KEY) || '').trim();
+  if (stored === '0') return false;
+  if (stored === '1') return true;
+  return readPersistedAuthSession().isAuthenticated;
+}
+
+export function setRememberAuthPreference(remember) {
+  localStorage.setItem(REMEMBER_AUTH_PREF_KEY, remember ? '1' : '0');
+}
+
+export function storeAuthSession({ username = '', email = '', authToken = '', remember = false, preferences = {} } = {}) {
   const safeUsername = String(username || '').trim();
   const safeEmail = String(email || '').trim();
   const safeToken = String(authToken || '').trim();
@@ -26,28 +132,50 @@ export function storeAuthSession({ username = '', email = '', authToken = '' } =
     return readStoredAuthSession();
   }
 
-  sessionStorage.setItem('username', safeUsername);
-  sessionStorage.setItem('email', safeEmail);
-  sessionStorage.setItem('auth_token', safeToken);
-  sessionStorage.setItem('loginAt', new Date().toISOString());
+  const loginAt = new Date().toISOString();
+  const expiresAt = new Date(Date.parse(loginAt) + PERSISTED_AUTH_SESSION_TTL_MS).toISOString();
+  writeSessionStorage({
+    username: safeUsername,
+    email: safeEmail,
+    authToken: safeToken,
+    loginAt,
+    preferences,
+  });
+  setRememberAuthPreference(Boolean(remember));
+  if (remember) {
+    localStorage.setItem(
+      PERSISTED_AUTH_SESSION_KEY,
+      JSON.stringify({
+        username: safeUsername,
+        email: safeEmail,
+        loginAt,
+        expiresAt,
+        cookieBacked: true,
+        preferences,
+      }),
+    );
+  } else {
+    localStorage.removeItem(PERSISTED_AUTH_SESSION_KEY);
+  }
   return readStoredAuthSession();
 }
 
 export function clearStoredAuthSession() {
   SESSION_STORAGE_KEYS.forEach((key) => sessionStorage.removeItem(key));
+  localStorage.removeItem(PERSISTED_AUTH_SESSION_KEY);
 }
 
 export async function fetchCurrentSession(authToken = '') {
   const safeToken = String(authToken || '').trim();
-  if (!safeToken) {
-    return { ok: false, status: 401, error: 'Missing auth token', networkError: false };
+  const useCookieSession = !safeToken || isCookieAuthToken(safeToken);
+  const headers = {};
+  if (!useCookieSession) {
+    headers.Authorization = `Bearer ${safeToken}`;
   }
 
   try {
-    const response = await authFetch('/api/auth/me', {
-      headers: {
-        Authorization: `Bearer ${safeToken}`,
-      },
+    const response = await fetch('/api/auth/me', {
+      headers,
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
@@ -64,7 +192,8 @@ export async function fetchCurrentSession(authToken = '') {
       user: {
         username: String(payload?.username || '').trim(),
         email: String(payload?.email || '').trim(),
-        authToken: safeToken,
+        authToken: String(payload?.auth_token || (useCookieSession ? '' : safeToken)).trim(),
+        preferences: payload?.preferences && typeof payload.preferences === 'object' ? payload.preferences : {},
       },
     };
   } catch (error) {
@@ -79,16 +208,16 @@ export async function fetchCurrentSession(authToken = '') {
 
 export async function logoutCurrentSession(authToken = '') {
   const safeToken = String(authToken || '').trim();
-  if (!safeToken) {
-    return { ok: true, skipped: true };
+  const useCookieSession = !safeToken || isCookieAuthToken(safeToken);
+  const headers = {};
+  if (!useCookieSession) {
+    headers.Authorization = `Bearer ${safeToken}`;
   }
 
   try {
-    const response = await authFetch('/api/auth/logout', {
+    const response = await fetch('/api/auth/logout', {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${safeToken}`,
-      },
+      headers,
     });
     const payload = await response.json().catch(() => ({}));
     return {

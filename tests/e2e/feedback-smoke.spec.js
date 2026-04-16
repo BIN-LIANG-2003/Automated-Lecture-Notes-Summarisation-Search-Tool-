@@ -42,23 +42,29 @@ test('private feedback flow supports user submission and admin public update', a
   await feedbackModal.getByLabel('Description').fill('Feedback modal should submit and appear in private history.');
   await feedbackModal.locator('form').getByRole('button', { name: 'Submit Feedback' }).click();
 
-  await expect(feedbackModal.getByRole('tab', { name: 'My Feedback' })).toHaveAttribute('aria-selected', 'true');
-  await expect(feedbackModal.getByText(feedbackTitle)).toBeVisible();
-  await feedbackModal.getByLabel('Close feedback').click();
+  const submittedToast = page.getByText('Feedback submitted successfully.');
+  await expect(submittedToast).toBeVisible();
+  await expect(feedbackModal).toHaveCount(0);
+  await expect(submittedToast).toHaveCount(0, { timeout: 2500 });
 
   await page.goto('/#/admin/feedback');
   await expect(page.getByRole('heading', { name: 'Feedback Inbox' })).toBeVisible();
+  await expect(page.locator('.studyhub-admin-feedback-list-panel')).toBeVisible();
+  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toHaveCount(0);
   const feedbackRow = page.getByRole('row').filter({ hasText: feedbackTitle });
   await expect(feedbackRow).toHaveCount(1);
   await feedbackRow.click();
-  await expect(page.locator('.studyhub-admin-feedback-detail-panel')).toContainText(feedbackTitle);
+  const detailPanel = page.locator('.studyhub-admin-feedback-detail-panel');
+  await expect(page.locator('.studyhub-admin-feedback-list-panel')).toHaveCount(0);
+  await expect(detailPanel).toContainText(feedbackTitle);
+  await expect(detailPanel.getByRole('button', { name: 'Back to inbox' })).toBeVisible();
 
   const controls = page.locator('.studyhub-admin-feedback-controls');
   await controls.getByLabel('Status').selectOption('resolved');
   await controls.getByRole('button', { name: 'Save Status' }).click();
   await expect(page.getByText('Feedback updated.')).toBeVisible();
-  await controls.getByLabel('Public reply').fill('Resolved in the Playwright smoke test.');
-  await controls.getByRole('button', { name: 'Add Public Reply' }).click();
+  await controls.getByLabel('Reply to user').fill('Resolved in the Playwright smoke test.');
+  await controls.getByRole('button', { name: 'Send reply' }).click();
   await expect(page.getByText('Public reply added')).toBeVisible();
 
   await page.goto('/#/');

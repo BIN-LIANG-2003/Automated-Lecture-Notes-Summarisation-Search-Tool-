@@ -206,6 +206,20 @@ def ensure_workspaces_columns(conn):
     ensure_workspaces_column(conn, 'settings_json', 'TEXT')
 
 
+def ensure_document_share_links_column(conn, column_name, column_type='TEXT'):
+    safe_column = str(column_name or '').strip()
+    safe_type = str(column_type or 'TEXT').strip()
+    if not safe_column:
+        return
+    if table_column_exists(conn, 'document_share_links', safe_column):
+        return
+    conn.execute(f'ALTER TABLE document_share_links ADD COLUMN {safe_column} {safe_type}')
+
+
+def ensure_document_share_links_columns(conn):
+    ensure_document_share_links_column(conn, 'recipient_email', 'TEXT')
+
+
 def ensure_users_column(conn, column_name, column_type='TEXT'):
     safe_column = str(column_name or '').strip()
     safe_type = str(column_type or 'TEXT').strip()
@@ -218,11 +232,13 @@ def ensure_users_column(conn, column_name, column_type='TEXT'):
 
 def ensure_users_columns(conn, timestamp_type='TEXT'):
     email_verified_type = 'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'
+    email_notifications_type = 'BOOLEAN NOT NULL DEFAULT TRUE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 1'
     ensure_users_column(conn, 'friend_code', 'TEXT')
     ensure_users_column(conn, 'email_verified', email_verified_type)
     ensure_users_column(conn, 'email_verification_token', 'TEXT')
     ensure_users_column(conn, 'email_verification_expires_at', timestamp_type)
     ensure_users_column(conn, 'verified_at', timestamp_type)
+    ensure_users_column(conn, 'email_notifications_enabled', email_notifications_type)
 
     backfill_verified_at = utcnow_iso()
     verified_value = True if conn.db_type == 'postgres' else 1
@@ -279,7 +295,8 @@ def init_db():
             email_verified {'BOOLEAN NOT NULL DEFAULT FALSE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 0'},
             email_verification_token TEXT,
             email_verification_expires_at {optional_timestamp_type},
-            verified_at {optional_timestamp_type}
+            verified_at {optional_timestamp_type},
+            email_notifications_enabled {'BOOLEAN NOT NULL DEFAULT TRUE' if conn.db_type == 'postgres' else 'INTEGER NOT NULL DEFAULT 1'}
         );
     '''
 
@@ -352,6 +369,7 @@ def init_db():
             workspace_id TEXT,
             token TEXT UNIQUE NOT NULL,
             created_by TEXT,
+            recipient_email TEXT,
             status TEXT NOT NULL DEFAULT 'active',
             expires_at {timestamp_type},
             created_at {timestamp_type},
@@ -594,6 +612,7 @@ def init_db():
         backfill_user_friend_codes(conn)
         ensure_documents_columns(conn, optional_timestamp_type)
         ensure_workspaces_columns(conn)
+        ensure_document_share_links_columns(conn)
         conn.execute(workspace_members_unique_sql)
         conn.execute(workspace_owner_idx_sql)
         conn.execute(users_email_verification_token_idx_sql)

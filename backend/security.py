@@ -3,7 +3,13 @@ import re
 from flask import g, jsonify, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, BadTimeSignature, SignatureExpired
 
-from .config import AUTH_BYPASS_ENDPOINTS, AUTH_TOKEN_SALT, AUTH_TOKEN_SECRET, AUTH_TOKEN_TTL_SECONDS
+from .config import (
+    AUTH_BYPASS_ENDPOINTS,
+    AUTH_COOKIE_NAME,
+    AUTH_TOKEN_SALT,
+    AUTH_TOKEN_SECRET,
+    AUTH_TOKEN_TTL_SECONDS,
+)
 from .utils import utcnow_iso
 
 
@@ -60,6 +66,10 @@ def get_request_auth_token():
     bearer_token = get_bearer_token()
     if bearer_token:
         return bearer_token
+
+    cookie_token = str(request.cookies.get(AUTH_COOKIE_NAME) or '').strip()
+    if cookie_token:
+        return cookie_token
 
     if _FILE_AUTH_TOKEN_PATH_RE.fullmatch(str(request.path or '').strip()):
         query_token = (request.args.get('auth_token') or '').strip()

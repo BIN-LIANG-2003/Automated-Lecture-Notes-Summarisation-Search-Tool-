@@ -1,3 +1,5 @@
+import { isCookieAuthToken, readStoredAuthSession } from './authSession.js';
+
 const resolveRequestUrl = (input) => {
   try {
     if (typeof input === 'string') {
@@ -27,7 +29,7 @@ const mergeHeaders = (input, headers = {}) => {
 
 const readStoredAuthToken = () => {
   try {
-    return String(sessionStorage.getItem('auth_token') || '').trim();
+    return String(readStoredAuthSession().authToken || '').trim();
   } catch {
     return '';
   }
@@ -36,7 +38,7 @@ const readStoredAuthToken = () => {
 export function buildAuthHeaders(input, headers = {}, { authToken = '' } = {}) {
   const nextHeaders = mergeHeaders(input, headers);
   const safeToken = String(authToken || readStoredAuthToken()).trim();
-  if (safeToken && !nextHeaders.has('Authorization')) {
+  if (safeToken && !isCookieAuthToken(safeToken) && !nextHeaders.has('Authorization')) {
     nextHeaders.set('Authorization', `Bearer ${safeToken}`);
   }
   return nextHeaders;
