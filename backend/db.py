@@ -183,6 +183,7 @@ def ensure_documents_columns(conn, timestamp_type='TEXT'):
     ensure_documents_column(conn, 'key_sentences_json', 'TEXT')
     ensure_documents_column(conn, 'summary_generated_at', timestamp_type)
     ensure_documents_column(conn, 'summary_error', 'TEXT')
+    ensure_documents_column(conn, 'summary_input_hash', 'TEXT')
     conn.execute(
         '''
         UPDATE documents
@@ -356,7 +357,8 @@ def init_db():
             ai_summary TEXT,
             key_sentences_json TEXT,
             summary_generated_at {optional_timestamp_type},
-            summary_error TEXT
+            summary_error TEXT,
+            summary_input_hash TEXT
         );
     '''
 

@@ -16,6 +16,7 @@ from .document_domain import (
     normalize_pdf_text,
 )
 from .storage import storage_file_as_local_path
+from .summary_service import clear_document_summary_cache
 from .utils import normalize_document_category, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_workspace_settings
 
@@ -138,6 +139,7 @@ def _mark_document_processed(document_id, extracted_text, extracted_html, catego
             ''',
             (extracted_text, extracted_html or '', category, 'processed', '', now_iso, document_id),
         )
+        clear_document_summary_cache(conn, document_id)
         conn.commit()
     except Exception:
         try:
@@ -197,6 +199,7 @@ def _mark_document_needs_ocr(document_id, category):
             ''',
             ('', '', category, PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, now_iso, document_id),
         )
+        clear_document_summary_cache(conn, document_id)
         conn.commit()
     except Exception as update_error:
         try:

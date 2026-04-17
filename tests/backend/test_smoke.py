@@ -20,7 +20,14 @@ from backend import document_service
 from backend.document_domain import extract_text_from_pdf_bytes
 from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
-from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input, build_summary_bundle, split_summary_chunks
+from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input, build_summary_cache_text_hash
+from backend.summary_service import (
+    build_summary_bundle,
+    finish_summary_generation,
+    get_summary_length_targets,
+    split_summary_chunks,
+    try_begin_summary_generation,
+)
 from backend.utils import parse_int, row_to_dict, utcnow_iso
 from backend.workspace_domain import ensure_owner_membership, normalize_workspace_settings, workspace_settings_to_json
 
@@ -1803,8 +1810,39 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(len(chunks), 3)
         self.assertGreater(len(chunks[0].split()), len(chunks[-1].split()))
 
-    @patch('backend.shared.HF_TOKEN', 'test-hf-token')
-    @patch('backend.shared.requests.post')
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_length_preset_mapping_controls_generation_targets(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'AI preset summary.'}])
+        content = ' '.join([
+            'Graph traversal compares breadth first search and depth first search in lecture examples.'
+            ' Priority queues, stacks, and recursion shape the algorithmic tradeoffs.'
+        ] * 12)
+
+        short_bundle = build_summary_bundle(content, summary_length='short')
+        short_payload = mock_post.call_args.kwargs.get('json') or {}
+        mock_post.reset_mock()
+
+        long_bundle = build_summary_bundle(content, summary_length='long')
+        long_payload = mock_post.call_args.kwargs.get('json') or {}
+
+        self.assertEqual(get_summary_length_targets('short')['target_max_words'], 90)
+        self.assertEqual(get_summary_length_targets('short')['textrank_sentence_count'], 3)
+        self.assertEqual(get_summary_length_targets('medium')['target_max_words'], 140)
+        self.assertEqual(get_summary_length_targets('medium')['textrank_sentence_count'], 5)
+        self.assertEqual(get_summary_length_targets('long')['target_max_words'], 220)
+        self.assertEqual(get_summary_length_targets('long')['textrank_sentence_count'], 7)
+        self.assertEqual(short_bundle.get('target_max_words'), 90)
+        self.assertEqual(short_bundle.get('textrank_sentence_count'), 3)
+        self.assertEqual(long_bundle.get('target_max_words'), 220)
+        self.assertEqual(long_bundle.get('textrank_sentence_count'), 7)
+        self.assertGreater(
+            long_payload.get('parameters', {}).get('max_new_tokens', 0),
+            short_payload.get('parameters', {}).get('max_new_tokens', 0),
+        )
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
     def test_document_summarize_endpoint_uses_hf_and_caches_bundle(self, mock_post):
         mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'AI summary of graph traversal notes.'}])
         content = ' '.join(
@@ -1823,6 +1861,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload.get('summary_source'), 'bart_hf')
         self.assertEqual(payload.get('ai_summary'), 'AI summary of graph traversal notes.')
         self.assertFalse(payload.get('used_fallback'))
+        self.assertTrue(payload.get('summary_input_hash'))
 
         doc_response = self.client.get(
             f'/api/documents/{document_id}',
@@ -1842,8 +1881,8 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertTrue(cached_response.get_json().get('cache_hit'))
         self.assertEqual(mock_post.call_count, 1)
 
-    @patch('backend.shared.HF_TOKEN', 'test-hf-token')
-    @patch('backend.shared.requests.post')
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
     def test_document_summarize_endpoint_falls_back_when_hf_fails(self, mock_post):
         mock_post.side_effect = Exception('hf offline')
         content = ' '.join(
@@ -1863,6 +1902,116 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertTrue(payload.get('used_fallback'))
         self.assertIn('Neural networks', payload.get('summary') or '')
         self.assertIn('hf offline', payload.get('summary_error') or '')
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_cache_is_invalidated_when_document_text_changes(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'Initial AI summary.'}])
+        content = ' '.join(
+            ['Caching notes explain why summaries must match the latest extracted text.'] * 18
+        )
+        document_id = self._insert_document('Cache Invalidation Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.get_json().get('summary_input_hash'))
+
+        update_response = self.client.put(
+            f'/api/documents/{document_id}/content',
+            headers=self._auth_headers(),
+            json={'content': 'Updated extracted text invalidates the previous cached summary.'},
+        )
+        self.assertEqual(update_response.status_code, 200)
+
+        conn = self._connection()
+        try:
+            cursor = conn.execute(
+                'SELECT summary_text, summary_input_hash, key_sentences_json FROM documents WHERE id = ?',
+                (document_id,),
+            )
+            doc = row_to_dict(cursor.fetchone()) or {}
+        finally:
+            conn.close()
+
+        self.assertFalse(str(doc.get('summary_text') or '').strip())
+        self.assertFalse(str(doc.get('summary_input_hash') or '').strip())
+        self.assertFalse(str(doc.get('key_sentences_json') or '').strip())
+
+        doc_response = self.client.get(
+            f'/api/documents/{document_id}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(doc_response.status_code, 200)
+        self.assertNotIn('cached_summary', doc_response.get_json())
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_duplicate_summary_generation_returns_in_progress(self, mock_post):
+        content = ' '.join(
+            ['Duplicate prevention avoids sending the same lecture text to the AI service twice.'] * 18
+        )
+        document_id = self._insert_document('Duplicate Summary Notes', content)
+        input_hash = build_summary_cache_text_hash(content)
+        self.assertTrue(try_begin_summary_generation(document_id, input_hash))
+        try:
+            response = self.client.post(
+                f'/api/documents/{document_id}/summarize',
+                headers=self._auth_headers(),
+                json={},
+            )
+        finally:
+            finish_summary_generation(document_id, input_hash)
+
+        self.assertEqual(response.status_code, 202)
+        payload = response.get_json()
+        self.assertTrue(payload.get('in_progress'))
+        self.assertEqual(payload.get('summary_input_hash'), input_hash)
+        mock_post.assert_not_called()
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_cache_is_not_reused_after_input_hash_changes(self, mock_post):
+        mock_post.side_effect = [
+            self._fake_http_response(200, [{'summary_text': 'First AI summary.'}]),
+            self._fake_http_response(200, [{'summary_text': 'Second AI summary.'}]),
+        ]
+        first_content = ' '.join(
+            ['Hash version one describes queues and stacks for graph search.'] * 18
+        )
+        second_content = ' '.join(
+            ['Hash version two describes dynamic programming tables and recurrence relations.'] * 18
+        )
+        document_id = self._insert_document('Hash Notes', first_content)
+
+        first_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(first_response.status_code, 200)
+        first_hash = first_response.get_json().get('summary_input_hash')
+
+        conn = self._connection()
+        try:
+            conn.execute('UPDATE documents SET content = ? WHERE id = ?', (second_content, document_id))
+            conn.commit()
+        finally:
+            conn.close()
+
+        second_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(second_response.status_code, 200)
+        second_payload = second_response.get_json()
+        self.assertEqual(second_payload.get('ai_summary'), 'Second AI summary.')
+        self.assertNotEqual(second_payload.get('summary_input_hash'), first_hash)
+        self.assertEqual(mock_post.call_count, 2)
 
     def test_document_summarize_endpoint_enforces_document_access(self):
         self._insert_user('bob', 'bob@example.com')

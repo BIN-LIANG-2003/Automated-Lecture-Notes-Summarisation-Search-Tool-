@@ -47,6 +47,7 @@ from .share_domain import (
 )
 from .security import get_authenticated_username
 from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, upload_local_file_to_storage, write_file_bytes_to_storage
+from .summary_service import build_summary_input_hash, clear_document_summary_cache
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
@@ -72,6 +73,10 @@ def _cached_summary_from_document(doc_data):
     summary_text = str(doc_data.get('summary_text') or '').strip()
     if not summary_text:
         return None
+    summary_input_hash = str(doc_data.get('summary_input_hash') or '').strip()
+    current_input_hash = build_summary_input_hash(doc_data.get('content') or '')
+    if not summary_input_hash or summary_input_hash != current_input_hash:
+        return None
     try:
         key_sentences = json.loads(doc_data.get('key_sentences_json') or '[]')
     except Exception:
@@ -88,6 +93,7 @@ def _cached_summary_from_document(doc_data):
         'key_sentences': [str(item).strip() for item in key_sentences if str(item).strip()],
         'summary_generated_at': doc_data.get('summary_generated_at') or '',
         'summary_error': str(doc_data.get('summary_error') or '').strip(),
+        'summary_input_hash': summary_input_hash,
     }
 
 
@@ -853,6 +859,7 @@ def finalize_pdf_upload_text(doc_id):
             ''',
             (next_text, next_status, next_error, now_iso, doc_id),
         )
+        clear_document_summary_cache(conn, doc_id)
         conn.commit()
 
         return jsonify({
@@ -1203,6 +1210,7 @@ def update_document_content(doc_id):
             return jsonify({'error': 'Failed to update source file'}), 500
 
         conn.execute('UPDATE documents SET content = ?, content_html = ? WHERE id = ?', (content, content_html, doc_id))
+        clear_document_summary_cache(conn, doc_id)
         conn.commit()
 
         cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
@@ -1479,7 +1487,7 @@ def save_converted_pdf_document(doc_id):
             }), 201
 
         old_filename = str(_document_value(doc, 'filename') or '').strip()
-        conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (doc_id,))
+        clear_document_summary_cache(conn, doc_id)
         conn.execute(
             '''
             UPDATE documents
@@ -1616,6 +1624,7 @@ def update_document_pdf_file(doc_id):
                 ''',
                 ('', '', PDF_NEEDS_OCR_STATUS, PDF_NEEDS_OCR_ERROR, utcnow_iso(), doc_id),
             )
+        clear_document_summary_cache(conn, doc_id)
         conn.commit()
 
         cursor = conn.execute('SELECT * FROM documents WHERE id = ?', (doc_id,))
