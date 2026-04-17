@@ -1503,23 +1503,31 @@ def _probe_external_ocr_service():
             'error': 'External OCR service is not configured',
         }
     health_endpoint = external_ocr_health_url(endpoint)
+    timeout_seconds = min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS))
+    probe_meta = {
+        'method': 'GET',
+        'path': urlparse(health_endpoint).path or '/',
+        'timeout_seconds': timeout_seconds,
+    }
     try:
         response = requests.get(
             health_endpoint,
             headers=get_external_ocr_auth_headers(),
-            timeout=min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS)),
+            timeout=timeout_seconds,
             allow_redirects=True,
         )
     except requests.exceptions.Timeout:
         return {
             'checked': True,
             'ok': False,
-            'error': f'External OCR health check timed out after {min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS))}s',
+            **probe_meta,
+            'error': f'External OCR health check timed out after {timeout_seconds}s',
         }
     except Exception as exc:
         return {
             'checked': True,
             'ok': False,
+            **probe_meta,
             'error': f'External OCR health check failed: {redact_external_ocr_diagnostic(exc)}',
         }
 
@@ -1527,6 +1535,7 @@ def _probe_external_ocr_service():
     return {
         'checked': True,
         'ok': bool(status_code < 400 or status_code == 405),
+        **probe_meta,
         'status_code': status_code,
         'error': '' if status_code < 400 or status_code == 405 else f'External OCR health check returned HTTP {status_code}',
     }
