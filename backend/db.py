@@ -184,6 +184,7 @@ def ensure_documents_columns(conn, timestamp_type='TEXT'):
     ensure_documents_column(conn, 'summary_generated_at', timestamp_type)
     ensure_documents_column(conn, 'summary_error', 'TEXT')
     ensure_documents_column(conn, 'summary_input_hash', 'TEXT')
+    ensure_documents_column(conn, 'summary_cache_key', 'TEXT')
     conn.execute(
         '''
         UPDATE documents
@@ -358,7 +359,8 @@ def init_db():
             key_sentences_json TEXT,
             summary_generated_at {optional_timestamp_type},
             summary_error TEXT,
-            summary_input_hash TEXT
+            summary_input_hash TEXT,
+            summary_cache_key TEXT
         );
     '''
 
@@ -431,6 +433,18 @@ def init_db():
             summary_note TEXT,
             created_at {timestamp_type},
             updated_at {timestamp_type}
+        );
+    '''
+
+    summary_generation_locks_sql = '''
+        CREATE TABLE IF NOT EXISTS summary_generation_locks (
+            document_id INTEGER NOT NULL,
+            summary_cache_key TEXT NOT NULL,
+            lock_token TEXT,
+            lease_expires_at TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (document_id, summary_cache_key)
         );
     '''
 
@@ -560,6 +574,11 @@ def init_db():
         ON document_summary_cache(updated_at);
     '''
 
+    summary_generation_locks_expires_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_summary_generation_locks_expires
+        ON summary_generation_locks(lease_expires_at);
+    '''
+
     documents_owner_deleted_uploaded_idx_sql = '''
         CREATE INDEX IF NOT EXISTS idx_documents_owner_deleted_uploaded
         ON documents(username, deleted_at, uploaded_at);
@@ -643,6 +662,7 @@ def init_db():
         conn.execute(workspace_invitations_sql)
         conn.execute(document_share_links_sql)
         conn.execute(document_summary_cache_sql)
+        conn.execute(summary_generation_locks_sql)
         conn.execute(feedback_items_sql)
         conn.execute(feedback_events_sql)
         conn.execute(friend_requests_sql)
@@ -663,6 +683,7 @@ def init_db():
         conn.execute(document_share_links_doc_idx_sql)
         conn.execute(document_summary_cache_lookup_idx_sql)
         conn.execute(document_summary_cache_recent_idx_sql)
+        conn.execute(summary_generation_locks_expires_idx_sql)
         conn.execute(documents_owner_deleted_uploaded_idx_sql)
         conn.execute(documents_workspace_deleted_uploaded_idx_sql)
         conn.execute(documents_owner_category_idx_sql)

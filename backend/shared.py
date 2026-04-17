@@ -77,6 +77,7 @@ from .storage import (
 )
 from .summary_service import (
     build_summary_bundle,
+    build_summary_cache_key,
     build_summary_input_hash,
     call_hf_summarizer,
     clean_summary_input,
@@ -159,6 +160,15 @@ def build_summary_cache_text_hash(text):
     return build_summary_input_hash(text)
 
 
+def build_document_summary_cache_key(text, summary_length='medium', keyword_limit=5):
+    return build_summary_cache_key(
+        text,
+        summary_length=summary_length,
+        summary_model=SUMMARIZER_MODEL_ID,
+        keyword_limit=keyword_limit,
+    )
+
+
 def mask_email_for_log(email):
     safe_email = normalize_email(email)
     if not safe_email or '@' not in safe_email:
@@ -215,6 +225,47 @@ def load_document_summary_cache(conn, document_id, content_hash, summary_length,
         return None
 
 
+def load_document_summary_fields_from_row(doc_data, expected_summary_cache_key, expected_input_hash=''):
+    doc = row_to_dict(doc_data)
+    if not isinstance(doc, dict):
+        return None
+    summary_text = str(doc.get('summary_text') or '').strip()
+    if not summary_text:
+        return None
+    cached_key = str(doc.get('summary_cache_key') or '').strip()
+    expected_key = str(expected_summary_cache_key or '').strip()
+    if not cached_key or (expected_key and cached_key != expected_key):
+        return None
+    cached_input_hash = str(doc.get('summary_input_hash') or '').strip()
+    expected_hash = str(expected_input_hash or '').strip()
+    if expected_hash and cached_input_hash != expected_hash:
+        return None
+    try:
+        key_sentences = json.loads(doc.get('key_sentences_json') or '[]')
+    except Exception:
+        key_sentences = []
+    if not isinstance(key_sentences, list):
+        key_sentences = []
+    summary_source = str(doc.get('summary_source') or '').strip().lower()
+    return {
+        'summary': summary_text,
+        'summary_text': summary_text,
+        'keywords': [],
+        'key_sentences': [str(item).strip() for item in key_sentences if str(item).strip()],
+        'summary_source': summary_source,
+        'summary_model': str(doc.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+        'ai_summary': str(doc.get('ai_summary') or '').strip(),
+        'extractive_summary': str(doc.get('extractive_summary') or '').strip(),
+        'used_fallback': summary_source == 'textrank_fallback',
+        'summary_error': str(doc.get('summary_error') or '').strip(),
+        'summary_input_hash': cached_input_hash,
+        'summary_cache_key': cached_key,
+        'summary_note': '',
+        'options_used': {},
+        'cached_at': doc.get('summary_generated_at') or '',
+    }
+
+
 def save_document_summary_cache(
     conn,
     document_id,
@@ -246,6 +297,7 @@ def save_document_summary_cache(
         'used_fallback': bool(payload.get('used_fallback')),
         'summary_error': str(payload.get('summary_error') or payload.get('error') or '').strip(),
         'summary_input_hash': str(payload.get('summary_input_hash') or content_hash or '').strip(),
+        'summary_cache_key': str(payload.get('summary_cache_key') or content_hash or '').strip(),
         'summary_note': str(payload.get('summary_note') or '').strip(),
         'options_used': payload.get('options_used') if isinstance(payload.get('options_used'), dict) else {},
     }
@@ -301,12 +353,13 @@ def save_document_summary_cache(
         return False
 
 
-def save_document_summary_fields(conn, document_id, payload, input_hash=''):
+def save_document_summary_fields(conn, document_id, payload, input_hash='', summary_cache_key=''):
     safe_doc_id = parse_int(document_id, 0, 0)
     if safe_doc_id <= 0 or not isinstance(payload, dict):
         return False
     key_sentences = payload.get('key_sentences') if isinstance(payload.get('key_sentences'), list) else []
     safe_input_hash = str(input_hash or payload.get('summary_input_hash') or '').strip()
+    safe_cache_key = str(summary_cache_key or payload.get('summary_cache_key') or '').strip()
     now_iso = utcnow_iso()
     try:
         conn.execute(
@@ -320,7 +373,8 @@ def save_document_summary_fields(conn, document_id, payload, input_hash=''):
                 key_sentences_json = ?,
                 summary_generated_at = ?,
                 summary_error = ?,
-                summary_input_hash = ?
+                summary_input_hash = ?,
+                summary_cache_key = ?
             WHERE id = ?
             ''',
             (
@@ -333,6 +387,7 @@ def save_document_summary_fields(conn, document_id, payload, input_hash=''):
                 now_iso,
                 str(payload.get('summary_error') or payload.get('error') or '').strip(),
                 safe_input_hash,
+                safe_cache_key,
                 safe_doc_id,
             ),
         )
@@ -1852,6 +1907,7 @@ def analyze_text(document_id_override=0):
     doc_text_extraction_error = ''
     doc_processing_status = ''
     doc_processing_error = ''
+    doc_row_data = {}
 
     if requested_doc_id > 0:
         conn = get_db_connection()
@@ -1862,6 +1918,7 @@ def analyze_text(document_id_override=0):
             doc = cursor.fetchone()
             if not doc:
                 return jsonify({'error': 'Document not found'}), 404
+            doc_row_data = row_to_dict(doc) or {}
 
             allowed, reason = check_document_access(conn, doc, username, share_token)
             if not allowed:
@@ -2125,6 +2182,7 @@ def analyze_text(document_id_override=0):
 
     use_document_cache = requested_doc_id > 0 and text_source == 'document_content'
     text_hash = build_summary_cache_text_hash(text_content)
+    summary_cache_key = build_document_summary_cache_key(text_content, summary_length, keyword_limit)
     text_char_count = len(text_content)
     text_word_count = len(re.findall(r'\S+', text_content))
     base_options_used = {
@@ -2147,264 +2205,325 @@ def analyze_text(document_id_override=0):
         "text_word_count": text_word_count,
         "summarizer_model": SUMMARIZER_MODEL_ID,
     }
-    if use_document_cache and text_hash and not force_refresh:
+
+    def load_matching_cached_summary():
+        if not (use_document_cache and text_hash and not force_refresh):
+            return None
+        cached_payload = None
         conn = get_db_connection()
         if conn:
             try:
                 cached_payload = load_document_summary_cache(
                     conn,
                     requested_doc_id,
-                    text_hash,
+                    summary_cache_key,
                     summary_length,
                     keyword_limit
                 )
             finally:
                 conn.close()
-            if cached_payload:
-                cached_options_raw = cached_payload.get("options_used")
-                cached_options = cached_options_raw if isinstance(cached_options_raw, dict) else {}
-                options_used = dict(base_options_used)
-                if cached_options:
-                    options_used["summary_length"] = str(
-                        cached_options.get("summary_length") or summary_length
-                    ).strip().lower() or summary_length
-                    options_used["keyword_limit"] = parse_int(
-                        cached_options.get("keyword_limit"),
-                        keyword_limit,
-                        3,
-                        12
-                    )
-                    options_used["sentence_limit"] = parse_int(
-                        cached_options.get("sentence_limit"),
-                        length_options['sentence_limit'],
-                        1,
-                        20
-                    )
-                    options_used["target_max_words"] = parse_int(
-                        cached_options.get("target_max_words"),
-                        length_options['target_max_words'],
-                        40,
-                        320
-                    )
-                    options_used["textrank_sentence_count"] = parse_int(
-                        cached_options.get("textrank_sentence_count"),
-                        length_options['textrank_sentence_count'],
-                        1,
-                        20
-                    )
-                    options_used["max_new_tokens"] = parse_int(
-                        cached_options.get("max_new_tokens"),
-                        length_options['max_new_tokens'],
-                        1
-                    )
-                    options_used["min_new_tokens"] = parse_int(
-                        cached_options.get("min_new_tokens"),
-                        length_options['min_new_tokens'],
-                        1
-                    )
-                    options_used["chunk_count"] = parse_int(
-                        cached_options.get("chunk_count"),
-                        1,
-                        1
-                    )
-                    options_used["merge_rounds"] = parse_int(
-                        cached_options.get("merge_rounds"),
-                        0,
-                        0
-                    )
-                    options_used["refreshed_from_file"] = parse_bool(
-                        cached_options.get("refreshed_from_file"),
-                        refreshed_from_file
-                    )
-                    options_used["pdf_extractor"] = str(
-                        cached_options.get("pdf_extractor") or options_used["pdf_extractor"]
-                    ).strip()
-                    options_used["pdf_ocr_attempted"] = parse_bool(
-                        cached_options.get("pdf_ocr_attempted"),
-                        options_used["pdf_ocr_attempted"]
-                    )
-                    options_used["pdf_ocr_used"] = parse_bool(
-                        cached_options.get("pdf_ocr_used"),
-                        options_used["pdf_ocr_used"]
-                    )
-                    options_used["pdf_quality_score_before"] = parse_float(
-                        cached_options.get("pdf_quality_score_before"),
-                        options_used["pdf_quality_score_before"]
-                    )
-                    options_used["pdf_quality_score_after"] = parse_float(
-                        cached_options.get("pdf_quality_score_after"),
-                        options_used["pdf_quality_score_after"]
-                    )
-                    options_used["text_char_count"] = parse_int(
-                        cached_options.get("text_char_count"),
-                        text_char_count,
-                        0
-                    )
-                    options_used["text_word_count"] = parse_int(
-                        cached_options.get("text_word_count"),
-                        text_word_count,
-                        0
-                    )
-                    options_used["summarizer_model"] = str(
-                        cached_options.get("summarizer_model") or SUMMARIZER_MODEL_ID
-                    ).strip() or SUMMARIZER_MODEL_ID
-                return jsonify({
-                    "summary": str(cached_payload.get("summary") or '').strip(),
-                    "summary_text": str(cached_payload.get("summary_text") or cached_payload.get("summary") or '').strip(),
-                    "keywords": cached_payload.get("keywords") if isinstance(cached_payload.get("keywords"), list) else [],
-                    "key_sentences": (
-                        cached_payload.get("key_sentences")
-                        if isinstance(cached_payload.get("key_sentences"), list)
-                        else []
-                    ),
-                    "summary_source": str(
-                        cached_payload.get("summary_source") or "cache"
-                    ).strip().lower() or "cache",
-                    "ai_summary": str(cached_payload.get("ai_summary") or '').strip(),
-                    "extractive_summary": str(cached_payload.get("extractive_summary") or '').strip(),
-                    "summary_model": str(cached_payload.get("summary_model") or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
-                    "used_fallback": parse_bool(cached_payload.get("used_fallback"), False),
-                    "summary_error": str(cached_payload.get("summary_error") or '').strip(),
-                    "summary_note": str(cached_payload.get("summary_note") or '').strip(),
-                    "text_source": text_source,
-                    "document_id": requested_doc_id,
-                    "summary_input_hash": text_hash,
-                    "cache_hit": True,
-                    "cached_at": cached_payload.get("cached_at"),
-                    "options_used": options_used,
-                })
+        if not cached_payload:
+            cached_payload = load_document_summary_fields_from_row(
+                doc_row_data,
+                summary_cache_key,
+                text_hash,
+            )
+        return cached_payload
+
+    def build_cached_summary_response(cached_payload):
+        cached_options_raw = cached_payload.get("options_used")
+        cached_options = cached_options_raw if isinstance(cached_options_raw, dict) else {}
+        options_used = dict(base_options_used)
+        if cached_options:
+            options_used["summary_length"] = str(
+                cached_options.get("summary_length") or summary_length
+            ).strip().lower() or summary_length
+            options_used["keyword_limit"] = parse_int(
+                cached_options.get("keyword_limit"),
+                keyword_limit,
+                3,
+                12
+            )
+            options_used["sentence_limit"] = parse_int(
+                cached_options.get("sentence_limit"),
+                length_options['sentence_limit'],
+                1,
+                20
+            )
+            options_used["target_max_words"] = parse_int(
+                cached_options.get("target_max_words"),
+                length_options['target_max_words'],
+                40,
+                320
+            )
+            options_used["textrank_sentence_count"] = parse_int(
+                cached_options.get("textrank_sentence_count"),
+                length_options['textrank_sentence_count'],
+                1,
+                20
+            )
+            options_used["max_new_tokens"] = parse_int(
+                cached_options.get("max_new_tokens"),
+                length_options['max_new_tokens'],
+                1
+            )
+            options_used["min_new_tokens"] = parse_int(
+                cached_options.get("min_new_tokens"),
+                length_options['min_new_tokens'],
+                1
+            )
+            options_used["chunk_count"] = parse_int(
+                cached_options.get("chunk_count"),
+                1,
+                1
+            )
+            options_used["merge_rounds"] = parse_int(
+                cached_options.get("merge_rounds"),
+                0,
+                0
+            )
+            options_used["refreshed_from_file"] = parse_bool(
+                cached_options.get("refreshed_from_file"),
+                refreshed_from_file
+            )
+            options_used["pdf_extractor"] = str(
+                cached_options.get("pdf_extractor") or options_used["pdf_extractor"]
+            ).strip()
+            options_used["pdf_ocr_attempted"] = parse_bool(
+                cached_options.get("pdf_ocr_attempted"),
+                options_used["pdf_ocr_attempted"]
+            )
+            options_used["pdf_ocr_used"] = parse_bool(
+                cached_options.get("pdf_ocr_used"),
+                options_used["pdf_ocr_used"]
+            )
+            options_used["pdf_quality_score_before"] = parse_float(
+                cached_options.get("pdf_quality_score_before"),
+                options_used["pdf_quality_score_before"]
+            )
+            options_used["pdf_quality_score_after"] = parse_float(
+                cached_options.get("pdf_quality_score_after"),
+                options_used["pdf_quality_score_after"]
+            )
+            options_used["text_char_count"] = parse_int(
+                cached_options.get("text_char_count"),
+                text_char_count,
+                0
+            )
+            options_used["text_word_count"] = parse_int(
+                cached_options.get("text_word_count"),
+                text_word_count,
+                0
+            )
+            options_used["summarizer_model"] = str(
+                cached_options.get("summarizer_model") or SUMMARIZER_MODEL_ID
+            ).strip() or SUMMARIZER_MODEL_ID
+        return jsonify({
+            "summary": str(cached_payload.get("summary") or '').strip(),
+            "summary_text": str(cached_payload.get("summary_text") or cached_payload.get("summary") or '').strip(),
+            "keywords": cached_payload.get("keywords") if isinstance(cached_payload.get("keywords"), list) else [],
+            "key_sentences": (
+                cached_payload.get("key_sentences")
+                if isinstance(cached_payload.get("key_sentences"), list)
+                else []
+            ),
+            "summary_source": str(
+                cached_payload.get("summary_source") or "cache"
+            ).strip().lower() or "cache",
+            "ai_summary": str(cached_payload.get("ai_summary") or '').strip(),
+            "extractive_summary": str(cached_payload.get("extractive_summary") or '').strip(),
+            "summary_model": str(cached_payload.get("summary_model") or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+            "used_fallback": parse_bool(cached_payload.get("used_fallback"), False),
+            "summary_error": str(cached_payload.get("summary_error") or '').strip(),
+            "summary_note": str(cached_payload.get("summary_note") or '').strip(),
+            "text_source": text_source,
+            "document_id": requested_doc_id,
+            "summary_input_hash": text_hash,
+            "summary_cache_key": summary_cache_key,
+            "cache_hit": True,
+            "cached_at": cached_payload.get("cached_at"),
+            "options_used": options_used,
+        })
+
+    cached_payload = load_matching_cached_summary()
+    if cached_payload:
+        return build_cached_summary_response(cached_payload)
 
     summary_generation_started = False
-    if requested_doc_id > 0 and text_hash:
-        if not try_begin_summary_generation(requested_doc_id, text_hash):
+    summary_generation_lock_token = ''
+    if requested_doc_id > 0 and summary_cache_key:
+        lock_conn = get_db_connection()
+        try:
+            lock_result = try_begin_summary_generation(
+                lock_conn,
+                requested_doc_id,
+                summary_cache_key,
+            )
+        finally:
+            if lock_conn:
+                lock_conn.close()
+        if lock_result is None:
+            return jsonify({
+                "error": "Summary generation lock is unavailable. Please retry.",
+                "summary_input_hash": text_hash,
+                "summary_cache_key": summary_cache_key,
+                "document_id": requested_doc_id,
+                "cache_hit": False,
+            }), 503
+        if not lock_result:
             return jsonify({
                 "status": "in_progress",
                 "in_progress": True,
                 "summary_input_hash": text_hash,
+                "summary_cache_key": summary_cache_key,
                 "document_id": requested_doc_id,
                 "cache_hit": False,
                 "message": "Summary generation is already in progress for this document.",
             }), 202
         summary_generation_started = True
+        summary_generation_lock_token = str(lock_result or '').strip()
 
     try:
+        cached_payload = load_matching_cached_summary()
+        if cached_payload:
+            return build_cached_summary_response(cached_payload)
+
         summary_result = summarize_text_with_chunk_merge(text_content, length_options)
-    except Exception:
-        if summary_generation_started:
-            finish_summary_generation(requested_doc_id, text_hash)
-        raise
-
-    summary = str(summary_result.get('summary') or '').strip()
-    summary_source = str(summary_result.get('summary_source') or 'fallback').strip().lower() or 'fallback'
-    summary_note = str(summary_result.get('summary_note') or '').strip()
-    summary_meta = summary_result.get('meta') if isinstance(summary_result.get('meta'), dict) else {}
-    summary_bundle = (
-        summary_result.get('bundle')
-        if isinstance(summary_result.get('bundle'), dict)
-        else build_summary_bundle(
-            text_content,
-            summary_length=summary_length,
-            target_max_words=length_options['target_max_words'],
-            textrank_sentence_count=length_options['textrank_sentence_count'],
+        summary = str(summary_result.get('summary') or '').strip()
+        summary_source = str(summary_result.get('summary_source') or 'fallback').strip().lower() or 'fallback'
+        summary_note = str(summary_result.get('summary_note') or '').strip()
+        summary_meta = summary_result.get('meta') if isinstance(summary_result.get('meta'), dict) else {}
+        summary_bundle = (
+            summary_result.get('bundle')
+            if isinstance(summary_result.get('bundle'), dict)
+            else build_summary_bundle(
+                text_content,
+                summary_length=summary_length,
+                target_max_words=length_options['target_max_words'],
+                textrank_sentence_count=length_options['textrank_sentence_count'],
+            )
         )
-    )
-    pdf_refresh_note = str(pdf_refresh_meta.get('note') or '').strip()
+        pdf_refresh_note = str(pdf_refresh_meta.get('note') or '').strip()
 
-    if pdf_refresh_note and force_refresh and requested_doc_id > 0:
-        summary_note = f"{summary_note}; PDF refresh: {pdf_refresh_note}" if summary_note else f"PDF refresh: {pdf_refresh_note}"
+        if pdf_refresh_note and force_refresh and requested_doc_id > 0:
+            summary_note = f"{summary_note}; PDF refresh: {pdf_refresh_note}" if summary_note else f"PDF refresh: {pdf_refresh_note}"
 
-    if not summary:
-        summary = build_fallback_summary(text_content, sentence_limit=length_options['sentence_limit'], max_chars=560)
-        summary_source = 'fallback'
-        if not summary_note:
-            summary_note = "Summary service returned empty output."
+        if not summary:
+            summary = build_fallback_summary(text_content, sentence_limit=length_options['sentence_limit'], max_chars=560)
+            summary_source = 'fallback'
+            if not summary_note:
+                summary_note = "Summary service returned empty output."
 
-    keywords = []
-    try:
-        if len(text_content.split()) > 5:
-            vectorizer = TfidfVectorizer(stop_words='english', max_features=keyword_limit)
-            vectorizer.fit_transform([text_content])
-            keywords = vectorizer.get_feature_names_out().tolist()
-    except Exception:
-        keywords = ["Not enough text"]
+        keywords = []
+        try:
+            if len(text_content.split()) > 5:
+                vectorizer = TfidfVectorizer(stop_words='english', max_features=keyword_limit)
+                vectorizer.fit_transform([text_content])
+                keywords = vectorizer.get_feature_names_out().tolist()
+        except Exception:
+            keywords = ["Not enough text"]
 
-    key_sentences = (
-        summary_bundle.get('key_sentences')
-        if isinstance(summary_bundle.get('key_sentences'), list)
-        else extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
-    )
+        key_sentences = (
+            summary_bundle.get('key_sentences')
+            if isinstance(summary_bundle.get('key_sentences'), list)
+            else extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
+        )
 
-    response_payload = {
-        "summary": summary,
-        "summary_text": str(summary_bundle.get('summary_text') or summary).strip(),
-        "keywords": keywords,
-        "key_sentences": key_sentences,
-        "summary_source": summary_source,
-        "ai_summary": str(summary_bundle.get('ai_summary') or '').strip(),
-        "extractive_summary": str(summary_bundle.get('extractive_summary') or '').strip(),
-        "summary_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
-        "used_fallback": bool(summary_bundle.get('used_fallback')),
-        "summary_error": str(summary_bundle.get('error') or '').strip(),
-        "summary_note": summary_note,
-        "text_source": text_source,
-        "document_id": requested_doc_id if requested_doc_id > 0 else None,
-        "summary_input_hash": text_hash,
-        "cache_hit": False,
-        "options_used": {
-            **base_options_used,
-            "chunk_count": parse_int(summary_meta.get('chunk_count'), 1, 1),
-            "merge_rounds": parse_int(summary_meta.get('merge_rounds'), 0, 0),
-            "refreshed_from_file": refreshed_from_file,
-            "pdf_extractor": str(pdf_refresh_meta.get('extractor') or base_options_used.get('pdf_extractor') or ''),
-            "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')) or bool(base_options_used.get('pdf_ocr_attempted')),
-            "pdf_ocr_used": bool(pdf_refresh_meta.get('ocr_used')),
-            "pdf_quality_score_before": parse_float(
-                pdf_refresh_meta.get('quality_score_before'),
-                parse_float(base_options_used.get('pdf_quality_score_before'), 0.0)
-            ),
-            "pdf_quality_score_after": parse_float(
-                pdf_refresh_meta.get('quality_score_after'),
-                parse_float(base_options_used.get('pdf_quality_score_after'), 0.0)
-            ),
-        },
-    }
+        response_payload = {
+            "summary": summary,
+            "summary_text": str(summary_bundle.get('summary_text') or summary).strip(),
+            "keywords": keywords,
+            "key_sentences": key_sentences,
+            "summary_source": summary_source,
+            "ai_summary": str(summary_bundle.get('ai_summary') or '').strip(),
+            "extractive_summary": str(summary_bundle.get('extractive_summary') or '').strip(),
+            "summary_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+            "used_fallback": bool(summary_bundle.get('used_fallback')),
+            "summary_error": str(summary_bundle.get('error') or '').strip(),
+            "summary_note": summary_note,
+            "text_source": text_source,
+            "document_id": requested_doc_id if requested_doc_id > 0 else None,
+            "summary_input_hash": text_hash,
+            "summary_cache_key": summary_cache_key,
+            "cache_hit": False,
+            "options_used": {
+                **base_options_used,
+                "chunk_count": parse_int(summary_meta.get('chunk_count'), 1, 1),
+                "merge_rounds": parse_int(summary_meta.get('merge_rounds'), 0, 0),
+                "refreshed_from_file": refreshed_from_file,
+                "pdf_extractor": str(pdf_refresh_meta.get('extractor') or base_options_used.get('pdf_extractor') or ''),
+                "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')) or bool(base_options_used.get('pdf_ocr_attempted')),
+                "pdf_ocr_used": bool(pdf_refresh_meta.get('ocr_used')),
+                "pdf_quality_score_before": parse_float(
+                    pdf_refresh_meta.get('quality_score_before'),
+                    parse_float(base_options_used.get('pdf_quality_score_before'), 0.0)
+                ),
+                "pdf_quality_score_after": parse_float(
+                    pdf_refresh_meta.get('quality_score_after'),
+                    parse_float(base_options_used.get('pdf_quality_score_after'), 0.0)
+                ),
+            },
+        }
 
-    if use_document_cache and text_hash:
-        cache_conn = get_db_connection()
-        if cache_conn:
+        should_cache_generated_summary = (
+            use_document_cache
+            and text_hash
+            and not response_payload.get("used_fallback")
+            and str(response_payload.get("summary_source") or '').strip().lower() not in ('textrank_fallback', 'fallback')
+        )
+        if should_cache_generated_summary:
+            cache_conn = get_db_connection()
+            if cache_conn:
+                try:
+                    save_document_summary_cache(
+                        cache_conn,
+                        requested_doc_id,
+                        workspace_id,
+                        username or document_owner_username,
+                        summary_cache_key,
+                        summary_length,
+                        keyword_limit,
+                        {
+                            "summary": summary,
+                            "summary_text": response_payload.get("summary_text") or summary,
+                            "keywords": keywords,
+                            "key_sentences": key_sentences,
+                            "summary_source": summary_source,
+                            "summary_model": response_payload.get("summary_model") or SUMMARIZER_MODEL_ID,
+                            "ai_summary": response_payload.get("ai_summary") or '',
+                            "extractive_summary": response_payload.get("extractive_summary") or '',
+                            "used_fallback": response_payload.get("used_fallback"),
+                            "summary_error": response_payload.get("summary_error") or '',
+                            "summary_input_hash": text_hash,
+                            "summary_cache_key": summary_cache_key,
+                            "summary_note": summary_note,
+                            "options_used": response_payload.get("options_used") if isinstance(response_payload.get("options_used"), dict) else {},
+                        }
+                    )
+                    save_document_summary_fields(
+                        cache_conn,
+                        requested_doc_id,
+                        response_payload,
+                        text_hash,
+                        summary_cache_key,
+                    )
+                finally:
+                    cache_conn.close()
+
+        return jsonify(response_payload)
+    finally:
+        if summary_generation_started:
+            release_conn = get_db_connection()
             try:
-                save_document_summary_cache(
-                    cache_conn,
+                finish_summary_generation(
+                    release_conn,
                     requested_doc_id,
-                    workspace_id,
-                    username or document_owner_username,
-                    text_hash,
-                    summary_length,
-                    keyword_limit,
-                    {
-                        "summary": summary,
-                        "summary_text": response_payload.get("summary_text") or summary,
-                        "keywords": keywords,
-                        "key_sentences": key_sentences,
-                        "summary_source": summary_source,
-                        "summary_model": response_payload.get("summary_model") or SUMMARIZER_MODEL_ID,
-                        "ai_summary": response_payload.get("ai_summary") or '',
-                        "extractive_summary": response_payload.get("extractive_summary") or '',
-                        "used_fallback": response_payload.get("used_fallback"),
-                        "summary_error": response_payload.get("summary_error") or '',
-                        "summary_input_hash": text_hash,
-                        "summary_note": summary_note,
-                        "options_used": response_payload.get("options_used") if isinstance(response_payload.get("options_used"), dict) else {},
-                    }
+                    summary_cache_key,
+                    summary_generation_lock_token,
                 )
-                save_document_summary_fields(cache_conn, requested_doc_id, response_payload, text_hash)
             finally:
-                cache_conn.close()
-
-    if summary_generation_started:
-        finish_summary_generation(requested_doc_id, text_hash)
-
-    return jsonify(response_payload)
+                if release_conn:
+                    release_conn.close()
 
 # ================= 修改后的下载/访问接口 (支持 S3) =================
 def uploaded_file(filename):

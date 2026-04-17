@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import subprocess
 import sys
@@ -20,7 +21,12 @@ from backend import document_service
 from backend.document_domain import extract_text_from_pdf_bytes
 from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
-from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input, build_summary_cache_text_hash
+from backend.shared import (
+    assess_ocr_text_quality,
+    build_document_summary_cache_key,
+    build_hf_summarizer_input,
+    build_summary_cache_text_hash,
+)
 from backend.summary_service import (
     build_summary_bundle,
     finish_summary_generation,
@@ -1862,6 +1868,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload.get('ai_summary'), 'AI summary of graph traversal notes.')
         self.assertFalse(payload.get('used_fallback'))
         self.assertTrue(payload.get('summary_input_hash'))
+        self.assertTrue(payload.get('summary_cache_key'))
 
         doc_response = self.client.get(
             f'/api/documents/{document_id}',
@@ -1880,6 +1887,260 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(cached_response.status_code, 200)
         self.assertTrue(cached_response.get_json().get('cache_hit'))
         self.assertEqual(mock_post.call_count, 1)
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_lock_is_released_after_post_generation_exception(self, mock_post):
+        mock_post.side_effect = [
+            self._fake_http_response(200, [{'summary_text': 'First generated summary.'}]),
+            self._fake_http_response(200, [{'summary_text': 'Second generated summary.'}]),
+        ]
+        content = ' '.join(
+            ['Lock release notes describe robust cleanup after summary generation succeeds.'] * 18
+        )
+        document_id = self._insert_document('Lock Release Notes', content)
+
+        with patch('backend.shared.save_document_summary_cache', side_effect=RuntimeError('cache write boom')):
+            with patch.object(self.app.logger, 'error'):
+                failed_response = self.client.post(
+                    f'/api/documents/{document_id}/summarize',
+                    headers=self._auth_headers(),
+                    json={},
+                )
+
+        self.assertEqual(failed_response.status_code, 500)
+
+        retry_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(retry_response.status_code, 200)
+        self.assertEqual(retry_response.get_json().get('ai_summary'), 'Second generated summary.')
+        self.assertEqual(mock_post.call_count, 2)
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_length_cache_keys_do_not_cross_reuse(self, mock_post):
+        mock_post.side_effect = [
+            self._fake_http_response(200, [{'summary_text': 'Short cached summary.'}]),
+            self._fake_http_response(200, [{'summary_text': 'Medium cached summary.'}]),
+            self._fake_http_response(200, [{'summary_text': 'Long cached summary.'}]),
+        ]
+        content = ' '.join(
+            ['Length cache notes require each preset to retain its own generated output.'] * 18
+        )
+        document_id = self._insert_document('Length Cache Notes', content)
+
+        short_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'short'},
+        )
+        medium_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'medium'},
+        )
+        long_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'long'},
+        )
+
+        self.assertEqual(short_response.get_json().get('ai_summary'), 'Short cached summary.')
+        self.assertEqual(medium_response.get_json().get('ai_summary'), 'Medium cached summary.')
+        self.assertEqual(long_response.get_json().get('ai_summary'), 'Long cached summary.')
+        self.assertNotEqual(short_response.get_json().get('summary_cache_key'), medium_response.get_json().get('summary_cache_key'))
+        self.assertNotEqual(medium_response.get_json().get('summary_cache_key'), long_response.get_json().get('summary_cache_key'))
+
+        cached_short_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'short'},
+        )
+
+        self.assertEqual(cached_short_response.status_code, 200)
+        self.assertTrue(cached_short_response.get_json().get('cache_hit'))
+        self.assertEqual(cached_short_response.get_json().get('ai_summary'), 'Short cached summary.')
+        self.assertEqual(mock_post.call_count, 3)
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_document_summary_fields_are_used_when_cache_table_misses(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'Document field summary.'}])
+        content = ' '.join(
+            ['Document field cache notes should avoid another external summarizer call.'] * 18
+        )
+        document_id = self._insert_document('Document Field Cache Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(response.status_code, 200)
+
+        conn = self._connection()
+        try:
+            conn.execute('DELETE FROM document_summary_cache WHERE document_id = ?', (document_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        cached_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(cached_response.status_code, 200)
+        self.assertTrue(cached_response.get_json().get('cache_hit'))
+        self.assertEqual(cached_response.get_json().get('ai_summary'), 'Document field summary.')
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_document_detail_ignores_cached_summary_for_different_summary_key(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'Short detail summary.'}])
+        content = ' '.join(
+            ['Detail cache notes keep summary length settings from showing the wrong cached output.'] * 18
+        )
+        document_id = self._insert_document('Detail Cache Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'short'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json().get('ai_summary'), 'Short detail summary.')
+
+        next_settings = {
+            **DEFAULT_WORKSPACE_SETTINGS,
+            'summary_length': 'long',
+        }
+        conn = self._connection()
+        try:
+            conn.execute(
+                'UPDATE workspaces SET settings_json = ? WHERE id = ?',
+                (workspace_settings_to_json(next_settings), self.workspace_id),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        doc_response = self.client.get(
+            f'/api/documents/{document_id}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(doc_response.status_code, 200)
+        self.assertEqual(doc_response.get_json().get('summary_length'), 'long')
+        self.assertNotIn('cached_summary', doc_response.get_json())
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_rechecks_cache_after_lock_before_hf_call(self, mock_post):
+        content = ' '.join(
+            ['Lock window notes avoid duplicate model calls when another worker has just cached output.'] * 18
+        )
+        document_id = self._insert_document('Lock Window Notes', content)
+        input_hash = build_summary_cache_text_hash(content)
+        summary_cache_key = build_document_summary_cache_key(content, 'medium', 5)
+
+        def acquire_lock_and_seed_cache(conn, requested_doc_id, requested_cache_key, lease_seconds=None):
+            acquired = try_begin_summary_generation(
+                conn,
+                requested_doc_id,
+                requested_cache_key,
+                lease_seconds=lease_seconds,
+            )
+            if acquired:
+                now_iso = utcnow_iso()
+                payload = {
+                    'summary': 'Cached after lock summary.',
+                    'summary_text': 'Cached after lock summary.',
+                    'keywords': [],
+                    'key_sentences': ['Cached after lock summary.'],
+                    'summary_source': 'bart_hf',
+                    'summary_model': 'facebook/bart-large-cnn',
+                    'ai_summary': 'Cached after lock summary.',
+                    'extractive_summary': 'Cached key sentence.',
+                    'used_fallback': False,
+                    'summary_error': '',
+                    'summary_input_hash': input_hash,
+                    'summary_cache_key': summary_cache_key,
+                    'summary_note': '',
+                    'options_used': {
+                        'summary_length': 'medium',
+                        'keyword_limit': 5,
+                    },
+                }
+                conn.execute(
+                    '''
+                    INSERT INTO document_summary_cache (
+                        document_id,
+                        workspace_id,
+                        username,
+                        content_hash,
+                        summary_length,
+                        keyword_limit,
+                        summary_json,
+                        summary_source,
+                        summary_note,
+                        created_at,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''',
+                    (
+                        document_id,
+                        self.workspace_id,
+                        self.username,
+                        summary_cache_key,
+                        'medium',
+                        5,
+                        json.dumps(payload),
+                        'bart_hf',
+                        '',
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+            return acquired
+
+        with patch('backend.shared.try_begin_summary_generation', side_effect=acquire_lock_and_seed_cache):
+            response = self.client.post(
+                f'/api/documents/{document_id}/summarize',
+                headers=self._auth_headers(),
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get('cache_hit'))
+        self.assertEqual(payload.get('summary_text'), 'Cached after lock summary.')
+        mock_post.assert_not_called()
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_summary_lock_failure_returns_retryable_error(self, mock_post):
+        content = ' '.join(
+            ['Lock failure notes should not look like normal in-progress dedupe.'] * 18
+        )
+        document_id = self._insert_document('Lock Failure Notes', content)
+
+        with patch('backend.shared.try_begin_summary_generation', return_value=None):
+            response = self.client.post(
+                f'/api/documents/{document_id}/summarize',
+                headers=self._auth_headers(),
+                json={},
+            )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertIn('lock', response.get_json().get('error', '').lower())
+        mock_post.assert_not_called()
 
     @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
     @patch('backend.summary_service.requests.post')
@@ -1902,6 +2163,56 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertTrue(payload.get('used_fallback'))
         self.assertIn('Neural networks', payload.get('summary') or '')
         self.assertIn('hf offline', payload.get('summary_error') or '')
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_transient_textrank_fallback_is_not_cached_over_later_hf_success(self, mock_post):
+        mock_post.side_effect = [
+            Exception('hf temporarily offline'),
+            self._fake_http_response(200, [{'summary_text': 'Recovered AI summary.'}]),
+        ]
+        content = ' '.join(
+            ['Transient fallback notes should retry the primary AI model after a temporary outage.'] * 18
+        )
+        document_id = self._insert_document('Transient Fallback Notes', content)
+
+        first_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(first_response.status_code, 200)
+        self.assertEqual(first_response.get_json().get('summary_source'), 'textrank_fallback')
+
+        conn = self._connection()
+        try:
+            cache_count = row_to_dict(
+                conn.execute(
+                    'SELECT COUNT(*) AS count FROM document_summary_cache WHERE document_id = ?',
+                    (document_id,),
+                ).fetchone()
+            )
+            doc = row_to_dict(
+                conn.execute(
+                    'SELECT summary_text, summary_cache_key FROM documents WHERE id = ?',
+                    (document_id,),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+        self.assertEqual(parse_int(cache_count.get('count'), 0, 0), 0)
+        self.assertFalse(str(doc.get('summary_text') or '').strip())
+        self.assertFalse(str(doc.get('summary_cache_key') or '').strip())
+
+        second_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(second_response.status_code, 200)
+        self.assertEqual(second_response.get_json().get('summary_source'), 'bart_hf')
+        self.assertEqual(second_response.get_json().get('ai_summary'), 'Recovered AI summary.')
+        self.assertEqual(mock_post.call_count, 2)
 
     @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
     @patch('backend.summary_service.requests.post')
@@ -1956,7 +2267,11 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         document_id = self._insert_document('Duplicate Summary Notes', content)
         input_hash = build_summary_cache_text_hash(content)
-        self.assertTrue(try_begin_summary_generation(document_id, input_hash))
+        summary_cache_key = build_document_summary_cache_key(content, 'medium', 5)
+        conn = self._connection()
+        lock_token = try_begin_summary_generation(conn, document_id, summary_cache_key)
+        self.assertTrue(lock_token)
+        conn.close()
         try:
             response = self.client.post(
                 f'/api/documents/{document_id}/summarize',
@@ -1964,13 +2279,147 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 json={},
             )
         finally:
-            finish_summary_generation(document_id, input_hash)
+            release_conn = self._connection()
+            try:
+                finish_summary_generation(release_conn, document_id, summary_cache_key, lock_token)
+            finally:
+                release_conn.close()
 
         self.assertEqual(response.status_code, 202)
         payload = response.get_json()
         self.assertTrue(payload.get('in_progress'))
         self.assertEqual(payload.get('summary_input_hash'), input_hash)
+        self.assertEqual(payload.get('summary_cache_key'), summary_cache_key)
         mock_post.assert_not_called()
+
+    def test_summary_generation_lock_recovers_stale_lease(self):
+        document_id = self._insert_document(
+            'Stale Lock Notes',
+            'Stale lock recovery notes keep retries from getting stuck forever.',
+        )
+        summary_cache_key = build_document_summary_cache_key(
+            'Stale lock recovery notes keep retries from getting stuck forever.',
+            'medium',
+            5,
+        )
+        conn = self._connection()
+        lock_token = ''
+        try:
+            conn.execute(
+                '''
+                INSERT INTO summary_generation_locks (
+                    document_id,
+                    summary_cache_key,
+                    lease_expires_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ''',
+                (document_id, summary_cache_key, '2000-01-01T00:00:00', utcnow_iso(), utcnow_iso()),
+            )
+            conn.commit()
+            lock_token = try_begin_summary_generation(conn, document_id, summary_cache_key)
+            self.assertTrue(lock_token)
+        finally:
+            finish_summary_generation(conn, document_id, summary_cache_key, lock_token)
+            conn.close()
+
+    def test_summary_generation_lock_release_requires_matching_token(self):
+        document_id = self._insert_document(
+            'Lock Owner Notes',
+            'Lock owner notes prevent stale workers from clearing replacement locks.',
+        )
+        summary_cache_key = build_document_summary_cache_key(
+            'Lock owner notes prevent stale workers from clearing replacement locks.',
+            'medium',
+            5,
+        )
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO summary_generation_locks (
+                    document_id,
+                    summary_cache_key,
+                    lock_token,
+                    lease_expires_at,
+                    created_at,
+                    updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    document_id,
+                    summary_cache_key,
+                    'old-lock-token',
+                    '2000-01-01T00:00:00',
+                    utcnow_iso(),
+                    utcnow_iso(),
+                ),
+            )
+            conn.commit()
+            replacement_token = try_begin_summary_generation(conn, document_id, summary_cache_key)
+            self.assertTrue(replacement_token)
+            self.assertNotEqual(replacement_token, 'old-lock-token')
+
+            finish_summary_generation(conn, document_id, summary_cache_key, 'old-lock-token')
+            row = row_to_dict(
+                conn.execute(
+                    '''
+                    SELECT lock_token
+                    FROM summary_generation_locks
+                    WHERE document_id = ?
+                      AND summary_cache_key = ?
+                    ''',
+                    (document_id, summary_cache_key),
+                ).fetchone()
+            )
+            self.assertEqual(row.get('lock_token'), replacement_token)
+
+            finish_summary_generation(conn, document_id, summary_cache_key, replacement_token)
+            missing = conn.execute(
+                '''
+                SELECT lock_token
+                FROM summary_generation_locks
+                WHERE document_id = ?
+                  AND summary_cache_key = ?
+                ''',
+                (document_id, summary_cache_key),
+            ).fetchone()
+            self.assertIsNone(missing)
+        finally:
+            conn.close()
+
+    def test_summary_generation_lock_uses_long_default_lease(self):
+        document_id = self._insert_document(
+            'Long Lease Notes',
+            'Long lease notes protect chunked summaries from duplicate generation.',
+        )
+        summary_cache_key = build_document_summary_cache_key(
+            'Long lease notes protect chunked summaries from duplicate generation.',
+            'medium',
+            5,
+        )
+        conn = self._connection()
+        lock_token = ''
+        try:
+            started_at = datetime.utcnow()
+            lock_token = try_begin_summary_generation(conn, document_id, summary_cache_key)
+            self.assertTrue(lock_token)
+            cursor = conn.execute(
+                '''
+                SELECT lease_expires_at
+                FROM summary_generation_locks
+                WHERE document_id = ?
+                  AND summary_cache_key = ?
+                ''',
+                (document_id, summary_cache_key),
+            )
+            row = row_to_dict(cursor.fetchone()) or {}
+            lease_expires_at = datetime.fromisoformat(row.get('lease_expires_at'))
+            self.assertGreater((lease_expires_at - started_at).total_seconds(), 800)
+        finally:
+            finish_summary_generation(conn, document_id, summary_cache_key, lock_token)
+            conn.close()
 
     @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
     @patch('backend.summary_service.requests.post')

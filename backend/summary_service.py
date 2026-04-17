@@ -1,6 +1,8 @@
 import hashlib
 import re
+import secrets
 import threading
+from datetime import datetime, timedelta
 
 import requests
 
@@ -8,8 +10,10 @@ from .config import (
     HF_MODEL_BASE_URL,
     HF_SUMMARIZER_TIMEOUT_SECONDS,
     HF_TOKEN,
+    SUMMARY_GENERATION_LOCK_LEASE_SECONDS,
     SUMMARY_CHUNK_OVERLAP,
     SUMMARY_CHUNK_WORDS,
+    SUMMARY_CACHE_VERSION,
     SUMMARY_FALLBACK_ENABLED,
     SUMMARY_MIN_WORDS_FOR_BART,
     SUMMARY_PRIMARY_STRATEGY,
@@ -17,8 +21,9 @@ from .config import (
     SUMMARIZER_MODEL_ID,
     TEXTRANK_SENTENCE_COUNT,
 )
+from .db import table_column_exists
 from .document_domain import normalize_newlines
-from .utils import parse_int
+from .utils import parse_int, utcnow_iso
 
 
 SUMMARY_LENGTH_PRESETS = {
@@ -34,7 +39,7 @@ SUMMARY_STOPWORDS = {
     'might', 'must', 'should', 'would', 'not', 'but', 'if', 'then', 'than', 'into', 'about',
 }
 
-_SUMMARY_IN_PROGRESS = set()
+_SUMMARY_IN_PROGRESS = {}
 _SUMMARY_IN_PROGRESS_LOCK = threading.Lock()
 
 
@@ -80,31 +85,224 @@ def build_summary_input_hash(text):
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
-def summary_generation_key(document_id, input_hash):
+def build_summary_cache_key(
+    text,
+    summary_length='medium',
+    summary_model=None,
+    config_version=None,
+    keyword_limit=None,
+):
+    text_hash = build_summary_input_hash(text)
+    if not text_hash:
+        return ''
+    targets = get_summary_length_targets(summary_length)
+    safe_model = str(summary_model or SUMMARIZER_MODEL_ID or '').strip() or SUMMARIZER_MODEL_ID
+    safe_version = str(config_version or SUMMARY_CACHE_VERSION or '').strip() or 'v1'
+    safe_keyword_limit = parse_int(keyword_limit, 5, 1, 50)
+    raw_key = '|'.join([
+        safe_version,
+        targets['summary_length'],
+        f"target:{targets['target_max_words']}",
+        f"sentences:{targets['textrank_sentence_count']}",
+        safe_model,
+        text_hash,
+        f'keywords:{safe_keyword_limit}',
+        f"hf:{1 if str(HF_TOKEN or '').strip() else 0}",
+        f'chunk:{SUMMARY_CHUNK_WORDS}',
+        f'overlap:{SUMMARY_CHUNK_OVERLAP}',
+        f'min_bart:{SUMMARY_MIN_WORDS_FOR_BART}',
+        f'strategy:{SUMMARY_PRIMARY_STRATEGY}',
+        f"fallback:{1 if SUMMARY_FALLBACK_ENABLED else 0}",
+    ])
+    return hashlib.sha256(raw_key.encode('utf-8')).hexdigest()
+
+
+def summary_generation_key(document_id, summary_cache_key):
     safe_doc_id = parse_int(document_id, 0, 0)
-    safe_hash = str(input_hash or '').strip()
-    if safe_doc_id <= 0 or not safe_hash:
+    safe_key = str(summary_cache_key or '').strip()
+    if safe_doc_id <= 0 or not safe_key:
         return None
-    return safe_doc_id, safe_hash
+    return safe_doc_id, safe_key
 
 
-def try_begin_summary_generation(document_id, input_hash):
-    key = summary_generation_key(document_id, input_hash)
+def ensure_summary_generation_locks_table(conn):
+    if conn is None:
+        return
+    conn.execute(
+        '''
+        CREATE TABLE IF NOT EXISTS summary_generation_locks (
+            document_id INTEGER NOT NULL,
+            summary_cache_key TEXT NOT NULL,
+            lock_token TEXT,
+            lease_expires_at TEXT NOT NULL,
+            created_at TEXT,
+            updated_at TEXT,
+            PRIMARY KEY (document_id, summary_cache_key)
+        )
+        '''
+    )
+    if not table_column_exists(conn, 'summary_generation_locks', 'lock_token'):
+        conn.execute('ALTER TABLE summary_generation_locks ADD COLUMN lock_token TEXT')
+    conn.execute(
+        '''
+        CREATE INDEX IF NOT EXISTS idx_summary_generation_locks_expires
+        ON summary_generation_locks(lease_expires_at)
+        '''
+    )
+
+
+def _summary_lock_lease_seconds(lease_seconds=None):
+    return parse_int(
+        lease_seconds,
+        max(SUMMARY_GENERATION_LOCK_LEASE_SECONDS, HF_SUMMARIZER_TIMEOUT_SECONDS * 3),
+        30,
+        3600,
+    )
+
+
+def _is_lock_conflict_error(exc):
+    message = str(exc or '').lower()
+    return (
+        'unique constraint' in message
+        or 'duplicate key' in message
+        or 'already exists' in message
+    )
+
+
+def _new_summary_lock_token():
+    return secrets.token_urlsafe(24)
+
+
+def _fallback_begin_summary_generation(document_id, summary_cache_key, lock_token=None):
+    key = summary_generation_key(document_id, summary_cache_key)
     if not key:
-        return True
+        return str(lock_token or _new_summary_lock_token())
+    safe_token = str(lock_token or _new_summary_lock_token()).strip() or _new_summary_lock_token()
     with _SUMMARY_IN_PROGRESS_LOCK:
         if key in _SUMMARY_IN_PROGRESS:
             return False
-        _SUMMARY_IN_PROGRESS.add(key)
-        return True
+        _SUMMARY_IN_PROGRESS[key] = safe_token
+        return safe_token
 
 
-def finish_summary_generation(document_id, input_hash):
-    key = summary_generation_key(document_id, input_hash)
+def _fallback_finish_summary_generation(document_id, summary_cache_key, lock_token=None):
+    key = summary_generation_key(document_id, summary_cache_key)
     if not key:
         return
     with _SUMMARY_IN_PROGRESS_LOCK:
-        _SUMMARY_IN_PROGRESS.discard(key)
+        if lock_token:
+            if _SUMMARY_IN_PROGRESS.get(key) == str(lock_token):
+                _SUMMARY_IN_PROGRESS.pop(key, None)
+            return
+        _SUMMARY_IN_PROGRESS.pop(key, None)
+
+
+def try_begin_summary_generation(conn, document_id, summary_cache_key, lease_seconds=None, lock_token=None):
+    key = summary_generation_key(document_id, summary_cache_key)
+    if not key:
+        return str(lock_token or _new_summary_lock_token())
+    safe_token = str(lock_token or _new_summary_lock_token()).strip() or _new_summary_lock_token()
+    if conn is None:
+        return _fallback_begin_summary_generation(document_id, summary_cache_key, safe_token)
+
+    safe_doc_id, safe_key = key
+    now_iso = utcnow_iso()
+    expires_at = (datetime.utcnow() + timedelta(seconds=_summary_lock_lease_seconds(lease_seconds))).isoformat()
+    try:
+        ensure_summary_generation_locks_table(conn)
+        cursor = conn.execute(
+            '''
+            UPDATE summary_generation_locks
+            SET lease_expires_at = ?,
+                lock_token = ?,
+                updated_at = ?
+            WHERE document_id = ?
+              AND summary_cache_key = ?
+              AND lease_expires_at <= ?
+            ''',
+            (expires_at, safe_token, now_iso, safe_doc_id, safe_key, now_iso),
+        )
+        if getattr(cursor, 'rowcount', 0) > 0:
+            conn.commit()
+            return safe_token
+        existing_cursor = conn.execute(
+            '''
+            SELECT lease_expires_at
+            FROM summary_generation_locks
+            WHERE document_id = ?
+              AND summary_cache_key = ?
+            LIMIT 1
+            ''',
+            (safe_doc_id, safe_key),
+        )
+        if existing_cursor.fetchone():
+            conn.commit()
+            return False
+        conn.execute(
+            '''
+            INSERT INTO summary_generation_locks (
+                document_id,
+                summary_cache_key,
+                lock_token,
+                lease_expires_at,
+                created_at,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ''',
+            (safe_doc_id, safe_key, safe_token, expires_at, now_iso, now_iso),
+        )
+        conn.commit()
+        return safe_token
+    except Exception as exc:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        if _is_lock_conflict_error(exc):
+            return False
+        print(f"Summary generation lock failed: {exc}")
+        return None
+
+
+def finish_summary_generation(conn, document_id, summary_cache_key, lock_token=None):
+    key = summary_generation_key(document_id, summary_cache_key)
+    if not key:
+        return
+    if conn is None:
+        _fallback_finish_summary_generation(document_id, summary_cache_key, lock_token)
+        return
+
+    safe_doc_id, safe_key = key
+    safe_token = str(lock_token or '').strip()
+    try:
+        ensure_summary_generation_locks_table(conn)
+        if safe_token:
+            conn.execute(
+                '''
+                DELETE FROM summary_generation_locks
+                WHERE document_id = ?
+                  AND summary_cache_key = ?
+                  AND lock_token = ?
+                ''',
+                (safe_doc_id, safe_key, safe_token),
+            )
+        else:
+            conn.execute(
+                '''
+                DELETE FROM summary_generation_locks
+                WHERE document_id = ?
+                  AND summary_cache_key = ?
+                ''',
+                (safe_doc_id, safe_key),
+            )
+        conn.commit()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    finally:
+        _fallback_finish_summary_generation(document_id, summary_cache_key, safe_token or None)
 
 
 def clear_document_summary_cache(conn, document_id):
@@ -123,7 +321,8 @@ def clear_document_summary_cache(conn, document_id):
             key_sentences_json = NULL,
             summary_generated_at = NULL,
             summary_error = NULL,
-            summary_input_hash = NULL
+            summary_input_hash = NULL,
+            summary_cache_key = NULL
         WHERE id = ?
         ''',
         (safe_doc_id,),

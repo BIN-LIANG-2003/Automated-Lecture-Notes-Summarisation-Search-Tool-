@@ -164,6 +164,13 @@ try:
     SUMMARY_TARGET_MAX_WORDS = max(40, int((os.environ.get('SUMMARY_TARGET_MAX_WORDS') or '140').strip()))
 except Exception:
     SUMMARY_TARGET_MAX_WORDS = 140
+try:
+    SUMMARY_GENERATION_LOCK_LEASE_SECONDS = max(
+        300,
+        int((os.environ.get('SUMMARY_GENERATION_LOCK_LEASE_SECONDS') or '900').strip()),
+    )
+except Exception:
+    SUMMARY_GENERATION_LOCK_LEASE_SECONDS = 900
 EXTERNAL_OCR_SERVICE_URL = (os.environ.get('EXTERNAL_OCR_SERVICE_URL') or '').strip()
 EXTERNAL_OCR_AUTH_TOKEN = (os.environ.get("EXTERNAL_OCR_AUTH_TOKEN") or "").strip()
 try:

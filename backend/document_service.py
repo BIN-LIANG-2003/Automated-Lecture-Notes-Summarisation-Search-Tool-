@@ -47,7 +47,7 @@ from .share_domain import (
 )
 from .security import get_authenticated_username
 from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, upload_local_file_to_storage, write_file_bytes_to_storage
-from .summary_service import build_summary_input_hash, clear_document_summary_cache
+from .summary_service import build_summary_cache_key, build_summary_input_hash, clear_document_summary_cache
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
 
@@ -77,6 +77,14 @@ def _cached_summary_from_document(doc_data):
     current_input_hash = build_summary_input_hash(doc_data.get('content') or '')
     if not summary_input_hash or summary_input_hash != current_input_hash:
         return None
+    summary_cache_key = str(doc_data.get('summary_cache_key') or '').strip()
+    expected_cache_key = build_summary_cache_key(
+        doc_data.get('content') or '',
+        summary_length=doc_data.get('summary_length') or DEFAULT_WORKSPACE_SETTINGS.get('summary_length', 'medium'),
+        keyword_limit=doc_data.get('keyword_limit') or DEFAULT_WORKSPACE_SETTINGS.get('keyword_limit', 5),
+    )
+    if not summary_cache_key or summary_cache_key != expected_cache_key:
+        return None
     try:
         key_sentences = json.loads(doc_data.get('key_sentences_json') or '[]')
     except Exception:
@@ -94,6 +102,7 @@ def _cached_summary_from_document(doc_data):
         'summary_generated_at': doc_data.get('summary_generated_at') or '',
         'summary_error': str(doc_data.get('summary_error') or '').strip(),
         'summary_input_hash': summary_input_hash,
+        'summary_cache_key': summary_cache_key,
     }
 
 
