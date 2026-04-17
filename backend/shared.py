@@ -27,6 +27,7 @@ from .config import (
     DEFAULT_WORKSPACE_SETTINGS,
     EMAIL_VERIFICATION_TTL_HOURS,
     ENABLE_PDF_OCR_FALLBACK,
+    EXTERNAL_OCR_AUTH_TOKEN,
     EXTERNAL_OCR_SERVICE_URL,
     EXTERNAL_OCR_TIMEOUT_SECONDS,
     AUTH_COOKIE_NAME,
@@ -950,6 +951,12 @@ def get_hf_headers(content_type=None):
     return result
 
 
+def get_external_ocr_auth_headers():
+    if not EXTERNAL_OCR_AUTH_TOKEN:
+        return {}
+    return {"Authorization": f"Bearer {EXTERNAL_OCR_AUTH_TOKEN}"}
+
+
 def hf_model_url(model_id):
     return f"{HF_MODEL_BASE_URL}/{model_id}"
 
@@ -1480,6 +1487,7 @@ def _probe_external_ocr_service():
         response = requests.request(
             'HEAD',
             endpoint,
+            headers=get_external_ocr_auth_headers(),
             timeout=min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS)),
             allow_redirects=True,
         )
@@ -1625,11 +1633,13 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
 
     safe_filename = str(source_filename or 'image.jpg').strip() or 'image.jpg'
     safe_mimetype = str(mimetype or 'application/octet-stream').strip() or 'application/octet-stream'
+    auth_headers = get_external_ocr_auth_headers()
     attempts = [
         (
             'raw-bytes',
             {
                 'headers': {
+                    **auth_headers,
                     'Content-Type': safe_mimetype,
                     'Accept': 'application/json, text/plain;q=0.9, */*;q=0.8',
                     'X-Source-Filename': safe_filename,
@@ -1640,6 +1650,7 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
         (
             'multipart:file',
             {
+                'headers': auth_headers,
                 'files': {
                     'file': (safe_filename, img_bytes, safe_mimetype),
                 },
@@ -1648,6 +1659,7 @@ def call_external_ocr_service(img_bytes, mimetype='application/octet-stream', so
         (
             'multipart:image',
             {
+                'headers': auth_headers,
                 'files': {
                     'image': (safe_filename, img_bytes, safe_mimetype),
                 },

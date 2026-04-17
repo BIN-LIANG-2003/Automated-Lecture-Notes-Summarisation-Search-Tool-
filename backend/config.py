@@ -137,6 +137,7 @@ HF_MODEL_BASE_URL = (os.environ.get('HF_MODEL_BASE_URL') or 'https://router.hugg
 OCR_MODEL_ID = os.environ.get('HF_OCR_MODEL') or 'lbin2021/my-lecture-ocr'
 SUMMARIZER_MODEL_ID = os.environ.get('HF_SUMMARIZER_MODEL') or 'facebook/bart-large-cnn'
 EXTERNAL_OCR_SERVICE_URL = (os.environ.get('EXTERNAL_OCR_SERVICE_URL') or '').strip()
+EXTERNAL_OCR_AUTH_TOKEN = (os.environ.get("EXTERNAL_OCR_AUTH_TOKEN") or "").strip()
 try:
     EXTERNAL_OCR_TIMEOUT_SECONDS = max(15, int((os.getenv('EXTERNAL_OCR_TIMEOUT_SECONDS') or '60').strip()))
 except Exception:

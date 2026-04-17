@@ -216,13 +216,6 @@ body{
   max-width:760px;
 }
 
-.notion-settings-header-badges{
-  display:flex;
-  gap:8px;
-  flex-wrap:wrap;
-  justify-content:flex-end;
-}
-
 .notion-settings-nav{
   position:sticky;
   top:0;
@@ -333,10 +326,6 @@ body{
 
   .notion-settings-header{
     flex-direction:column;
-  }
-
-  .notion-settings-header-badges{
-    justify-content:flex-start;
   }
 
   .notion-settings-color-grid{
@@ -3974,7 +3963,7 @@ body.notion-home-body .skip-link:focus-visible{
 .notion-doc-editor{
   display:grid;
   gap:10px;
-  scroll-margin-top:16px;
+  scroll-margin-top:60px;
 }
 
 .notion-pdf-conversion-choice{
@@ -4233,8 +4222,8 @@ body.notion-home-body .skip-link:focus-visible{
 
 .notion-rich-toolbar{
   position:sticky;
-  top:12px;
-  z-index:120;
+  top:0;
+  z-index:130;
   display:flex;
   align-items:flex-start;
   align-content:flex-start;
@@ -4245,6 +4234,10 @@ body.notion-home-body .skip-link:focus-visible{
   border-radius:10px;
   background:#f8fafc;
   box-shadow:0 8px 20px rgba(15,23,42,0.08);
+}
+
+.notion-doc-editor .notion-rich-toolbar{
+  top:60px;
 }
 
 .notion-rich-toolbar-row{

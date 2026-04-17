@@ -94,8 +94,6 @@ export default function WorkspaceInviteModal({
   onChangeWorkspaceInviteDraft,
   onInviteMembers,
   latestInviteDelivery = null,
-  blockedInviteDomains = [],
-  defaultInviteExpiryDays = 7,
   workspaceSettingsDraft = {},
   updateWorkspaceSettingsDraft,
   onSaveWorkspaceAccessSettings,
@@ -116,11 +114,6 @@ export default function WorkspaceInviteModal({
   const accessSettings = workspaceSettingsDraft || {};
   const ownerOnlyDisabled = workspaceActionLoading || (isLoggedIn && !canManageAccessSettings);
   const blockedDomainsFromDraft = formatDomains(accessSettings.blocked_email_domains);
-  const displayedBlockedDomains = blockedDomainsFromDraft.length
-    ? blockedDomainsFromDraft
-    : blockedInviteDomains;
-  const displayedInviteExpiryDays =
-    Number(accessSettings.default_invite_expiry_days) || defaultInviteExpiryDays || 7;
   const normalizedMembers = Array.isArray(memberItems)
     ? memberItems.map(normalizeMemberRecord).filter((member) => member.username)
     : [];
@@ -154,20 +147,6 @@ export default function WorkspaceInviteModal({
                 : 'Guest mode only saves local invite targets. Sign in to send real invitation emails.'}
             </p>
           </div>
-          {!invitationsBlocked && (
-            <div className="notion-settings-header-badges">
-              <span className="notion-summary-chip">{inviteOpenCount} pending</span>
-              <span className="notion-summary-chip">Expiry {displayedInviteExpiryDays}d</span>
-              <span className="notion-summary-chip">
-                {displayedBlockedDomains?.length
-                  ? `Blocked: ${displayedBlockedDomains.join(', ')}`
-                  : 'Any valid email'}
-              </span>
-              <span className="notion-summary-chip">
-                {isLoggedIn ? 'Email invitation' : 'Local targets only'}
-              </span>
-            </div>
-          )}
           <button
             type="button"
             className="notion-modal-close"

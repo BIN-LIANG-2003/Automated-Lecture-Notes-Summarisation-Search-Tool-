@@ -8626,8 +8626,6 @@ export default function HomePage() {
             onChangeWorkspaceInviteDraft={setWorkspaceInviteDraft}
             onInviteMembers={handleInviteMembers}
             latestInviteDelivery={latestInviteDelivery}
-            blockedInviteDomains={blockedInviteDomains}
-            defaultInviteExpiryDays={activeWorkspaceSettings.default_invite_expiry_days}
             workspaceSettingsDraft={workspaceSettingsDraft}
             updateWorkspaceSettingsDraft={updateWorkspaceSettingsDraft}
             onSaveWorkspaceAccessSettings={handleSaveWorkspaceAccessSettings}
