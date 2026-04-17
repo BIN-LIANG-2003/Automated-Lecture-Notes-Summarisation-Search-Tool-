@@ -1503,7 +1503,7 @@ def _probe_external_ocr_service():
             'error': 'External OCR service is not configured',
         }
     health_endpoint = external_ocr_health_url(endpoint)
-    timeout_seconds = min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS))
+    timeout_seconds = min(15, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS))
     probe_meta = {
         'method': 'GET',
         'path': urlparse(health_endpoint).path or '/',

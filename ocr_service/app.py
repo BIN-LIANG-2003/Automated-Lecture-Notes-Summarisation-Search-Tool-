@@ -46,6 +46,9 @@ def _safe_filename(value: Optional[str], fallback: str = "image") -> str:
 
 @app.middleware("http")
 async def require_bearer_token(request: Request, call_next):
+    if request.url.path == "/health":
+        return await call_next(request)
+
     token = _env("OCR_SERVICE_AUTH_TOKEN")
     if not token:
         return await call_next(request)
@@ -67,17 +70,7 @@ async def health():
     rec_model_dir = _env("OCR_REC_MODEL_DIR")
     rec_model_path = Path(rec_model_dir) if rec_model_dir else None
     rec_model_ready = bool(rec_model_path and rec_model_path.exists())
-    status = {
-        "ok": rec_model_ready,
-        "source": OCR_SOURCE,
-        "det_model_name": _env("OCR_DET_MODEL_NAME", DEFAULT_DET_MODEL_NAME),
-        "rec_model_name": _env("OCR_REC_MODEL_NAME", DEFAULT_REC_MODEL_NAME),
-        "rec_model_dir": rec_model_dir,
-        "rec_model_ready": rec_model_ready,
-        "device": _env("OCR_DEVICE", "cpu"),
-        "loaded": _ocr_instance is not None,
-    }
-    return JSONResponse(status, status_code=200 if rec_model_ready else 503)
+    return JSONResponse({"ok": rec_model_ready}, status_code=200 if rec_model_ready else 503)
 
 
 @app.post("/ocr")
