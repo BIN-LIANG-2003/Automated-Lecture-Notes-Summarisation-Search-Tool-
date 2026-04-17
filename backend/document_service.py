@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import re
 import uuid
@@ -65,6 +66,29 @@ def _document_value(doc, key, default=''):
         return doc[key]
     except Exception:
         return default
+
+
+def _cached_summary_from_document(doc_data):
+    summary_text = str(doc_data.get('summary_text') or '').strip()
+    if not summary_text:
+        return None
+    try:
+        key_sentences = json.loads(doc_data.get('key_sentences_json') or '[]')
+    except Exception:
+        key_sentences = []
+    if not isinstance(key_sentences, list):
+        key_sentences = []
+    return {
+        'summary_text': summary_text,
+        'summary': summary_text,
+        'summary_source': str(doc_data.get('summary_source') or '').strip(),
+        'summary_model': str(doc_data.get('summary_model') or '').strip(),
+        'ai_summary': str(doc_data.get('ai_summary') or '').strip(),
+        'extractive_summary': str(doc_data.get('extractive_summary') or '').strip(),
+        'key_sentences': [str(item).strip() for item in key_sentences if str(item).strip()],
+        'summary_generated_at': doc_data.get('summary_generated_at') or '',
+        'summary_error': str(doc_data.get('summary_error') or '').strip(),
+    }
 
 
 def _title_with_extension(title, file_ext, fallback='Edited document'):
@@ -897,6 +921,9 @@ def get_document(doc_id):
         ext = str(doc_data.get('file_type') or '').lower().strip('.')
         if ext in ('docx', 'txt') and not (doc_data.get('content_html') or '').strip():
             doc_data['content_html'] = plaintext_to_html(doc_data.get('content') or '')
+        cached_summary = _cached_summary_from_document(doc_data)
+        if cached_summary:
+            doc_data['cached_summary'] = cached_summary
         return jsonify(doc_data), 200
     finally:
         conn.close()

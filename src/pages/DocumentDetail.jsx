@@ -86,6 +86,30 @@ const buildOcrNoteTitle = (value) => {
   const base = stripFileExtension(value) || 'Image';
   return `${base} OCR Note`;
 };
+const normalizeSummaryPayload = (raw) => {
+  if (!raw || typeof raw !== 'object') return null;
+  const summary = String(raw.summary || raw.summary_text || '').trim();
+  if (!summary) return null;
+  return {
+    ...raw,
+    summary,
+    summary_text: String(raw.summary_text || summary).trim(),
+    summary_source: String(raw.summary_source || '').trim(),
+    summary_model: String(raw.summary_model || raw.summaryModel || '').trim(),
+    ai_summary: String(raw.ai_summary || raw.aiSummary || '').trim(),
+    extractive_summary: String(raw.extractive_summary || raw.extractiveSummary || '').trim(),
+    summary_error: String(raw.summary_error || raw.error || '').trim(),
+    used_fallback: Boolean(raw.used_fallback ?? raw.usedFallback),
+    key_sentences: Array.isArray(raw.key_sentences) ? raw.key_sentences : [],
+  };
+};
+const summarySourceLabel = (value, usedFallback = false) => {
+  const safeValue = String(value || '').trim().toLowerCase();
+  if (usedFallback || safeValue === 'textrank_fallback') return 'Extractive fallback';
+  if (safeValue === 'textrank_only') return 'TextRank';
+  if (safeValue === 'bart_hf') return 'AI summary';
+  return safeValue || 'Summary';
+};
 const getLinkSharingModeLabel = (mode) => {
   const safeMode = String(mode || '').trim().toLowerCase();
   if (safeMode === 'public') return 'Anyone With Link';
@@ -150,6 +174,7 @@ const normalizeDocument = (raw) => {
       : 'medium',
     keywordLimit: clamp(Number(raw.keyword_limit ?? raw.keywordLimit) || 5, 3, 12),
     defaultShareExpiryDays: clamp(Number(raw.default_share_expiry_days ?? raw.defaultShareExpiryDays) || 7, 1, 30),
+    cachedSummary: normalizeSummaryPayload(raw.cached_summary || raw.cachedSummary),
     share:
       raw.share && typeof raw.share === 'object'
         ? {
@@ -273,7 +298,7 @@ export default function DocumentDetail() {
         setOcrSourceDetail('');
         setOcrSaveFormat('txt');
         setOcrResultOpen(false);
-        setAnalysisResult(null);
+        setAnalysisResult(data?.cachedSummary || null);
         setSummaryResultOpen(false);
       } catch (err) {
         setError(err.message);
@@ -416,7 +441,7 @@ export default function DocumentDetail() {
   ];
   const primaryStudyActionLabel = isImage
     ? (isExtracting ? 'Scanning...' : 'Scan Image')
-    : (isAnalyzing ? 'Summarizing...' : 'Summarize');
+    : (isAnalyzing ? 'Generating...' : 'Generate summary');
   const primaryStudyActionDisabled = isSharedView
     ? true
     : isImage
@@ -434,7 +459,7 @@ export default function DocumentDetail() {
           ? 'AI tools are disabled in workspace settings.'
           : summarizeBlockedByProcessing
             ? processingMeta.summarizeTitle
-          : 'Generate a focused summary for this note.');
+          : 'Generate AI summary and key sentences for this note.');
   const readingSurfaceTitle = isImage
     ? 'Image Preview'
     : isPdf
@@ -643,7 +668,10 @@ export default function DocumentDetail() {
       if (safeDocId > 0) payload.doc_id = safeDocId;
       if (forceRefresh) payload.force_refresh = true;
 
-      const response = await authFetch('/api/analyze-text', {
+      const summaryEndpoint = safeDocId > 0 && !safeText
+        ? `/api/documents/${safeDocId}/summarize`
+        : '/api/analyze-text';
+      const response = await authFetch(summaryEndpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
@@ -652,7 +680,7 @@ export default function DocumentDetail() {
       if (!response.ok) {
         throw new Error(formatSummaryErrorMessage(data));
       }
-      setAnalysisResult(data);
+      setAnalysisResult(normalizeSummaryPayload(data) || data);
       if (data?.cache_hit) {
         showToast('Loaded summary from cache.', 'success');
       } else if (forceRefresh) {
@@ -1304,6 +1332,33 @@ export default function DocumentDetail() {
                         </button>
                       )}
                     </div>
+                    {!isImage && analysisResult && (
+                      <section className="document-detail-study-aids" aria-label="Study Aids">
+                        <div className="document-detail-sidebar-head">
+                          <span className="document-detail-sidebar-kicker">Study Aids</span>
+                          <strong>{summarySourceLabel(analysisResult.summary_source, analysisResult.used_fallback)}</strong>
+                        </div>
+                        <article className="notion-ai-output">
+                          <h4>AI Summary</h4>
+                          {analysisResult.used_fallback && (
+                            <span className="document-share-pill muted">Extractive fallback</span>
+                          )}
+                          <p>{analysisResult.summary || 'No summary available.'}</p>
+                        </article>
+                        <article className="notion-ai-output">
+                          <h4>Key Sentences</h4>
+                          <ul>
+                            {Array.isArray(analysisResult.key_sentences) && analysisResult.key_sentences.length ? (
+                              analysisResult.key_sentences.map((sentence, index) => (
+                                <li key={`detail-key-sentence-${index}`}>{sentence}</li>
+                              ))
+                            ) : (
+                              <li>No key sentences available.</li>
+                            )}
+                          </ul>
+                        </article>
+                      </section>
+                    )}
                   </>
                 )}
                 {summaryProgress.active && (

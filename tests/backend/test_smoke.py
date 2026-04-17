@@ -20,7 +20,7 @@ from backend import document_service
 from backend.document_domain import extract_text_from_pdf_bytes
 from backend.document_processing import process_queued_documents_once
 from backend.security import create_auth_token
-from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input
+from backend.shared import assess_ocr_text_quality, build_hf_summarizer_input, build_summary_bundle, split_summary_chunks
 from backend.utils import parse_int, row_to_dict, utcnow_iso
 from backend.workspace_domain import ensure_owner_membership, normalize_workspace_settings, workspace_settings_to_json
 
@@ -1787,6 +1787,94 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         summary_payload = summary_response.get_json()
         self.assertEqual(summary_payload.get('text_source'), 'document_content')
         self.assertIn('summary', summary_payload)
+
+    def test_hybrid_summary_short_text_uses_textrank_only(self):
+        bundle = build_summary_bundle(
+            'Graph traversal compares breadth first search. '
+            'Depth first search explores paths before siblings.'
+        )
+        self.assertEqual(bundle.get('summary_source'), 'textrank_only')
+        self.assertFalse(bundle.get('used_fallback'))
+        self.assertIn('Graph traversal', bundle.get('summary_text'))
+        self.assertGreaterEqual(len(bundle.get('key_sentences') or []), 1)
+
+    def test_hybrid_summary_long_text_chunking(self):
+        chunks = split_summary_chunks(' '.join(f'word{i}' for i in range(1500)), 650, 80)
+        self.assertEqual(len(chunks), 3)
+        self.assertGreater(len(chunks[0].split()), len(chunks[-1].split()))
+
+    @patch('backend.shared.HF_TOKEN', 'test-hf-token')
+    @patch('backend.shared.requests.post')
+    def test_document_summarize_endpoint_uses_hf_and_caches_bundle(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'AI summary of graph traversal notes.'}])
+        content = ' '.join(
+            ['Graph traversal lecture notes compare breadth first search and depth first search.'] * 18
+        )
+        document_id = self._insert_document('Graph Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('summary_source'), 'bart_hf')
+        self.assertEqual(payload.get('ai_summary'), 'AI summary of graph traversal notes.')
+        self.assertFalse(payload.get('used_fallback'))
+
+        doc_response = self.client.get(
+            f'/api/documents/{document_id}',
+            headers=self._auth_headers(),
+        )
+        self.assertEqual(doc_response.status_code, 200)
+        cached_summary = doc_response.get_json().get('cached_summary') or {}
+        self.assertEqual(cached_summary.get('summary_source'), 'bart_hf')
+        self.assertEqual(cached_summary.get('summary_text'), 'AI summary of graph traversal notes.')
+
+        cached_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(cached_response.status_code, 200)
+        self.assertTrue(cached_response.get_json().get('cache_hit'))
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch('backend.shared.HF_TOKEN', 'test-hf-token')
+    @patch('backend.shared.requests.post')
+    def test_document_summarize_endpoint_falls_back_when_hf_fails(self, mock_post):
+        mock_post.side_effect = Exception('hf offline')
+        content = ' '.join(
+            ['Neural networks learn representations from examples. Optimization changes weights during training.'] * 18
+        )
+        document_id = self._insert_document('Fallback Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('summary_source'), 'textrank_fallback')
+        self.assertTrue(payload.get('used_fallback'))
+        self.assertIn('Neural networks', payload.get('summary') or '')
+        self.assertIn('hf offline', payload.get('summary_error') or '')
+
+    def test_document_summarize_endpoint_enforces_document_access(self):
+        self._insert_user('bob', 'bob@example.com')
+        document_id = self._insert_document('Private Notes', 'Private document summary text.')
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers('bob'),
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 403)
 
     @patch('backend.document_processing.extract_document_content', return_value=('workerpdf searchable text', ''))
     def test_legacy_queued_pdf_is_processed_by_worker(self, mock_extract):

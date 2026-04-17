@@ -157,7 +157,9 @@ def normalize_workspace_settings(raw_settings):
     base['allow_uploads'] = parse_bool(source.get('allow_uploads', base['allow_uploads']), True)
     base['allow_note_editing'] = parse_bool(source.get('allow_note_editing', base['allow_note_editing']), True)
     base['allow_ai_tools'] = parse_bool(source.get('allow_ai_tools', base['allow_ai_tools']), True)
-    base['allow_ocr'] = parse_bool(source.get('allow_ocr', base['allow_ocr']), True)
+    # Image OCR no longer has a workspace-level toggle in the UI, so legacy saved
+    # false values should not keep Scan Image disabled.
+    base['allow_ocr'] = True
 
     summary_length = str(source.get('summary_length', base['summary_length']) or '').strip().lower()
     if summary_length not in WORKSPACE_SUMMARY_LENGTH_LEVELS:

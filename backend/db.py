@@ -175,6 +175,14 @@ def ensure_documents_columns(conn, timestamp_type='TEXT'):
     ensure_documents_column(conn, 'processing_error', 'TEXT')
     ensure_documents_column(conn, 'processing_started_at', timestamp_type)
     ensure_documents_column(conn, 'processed_at', timestamp_type)
+    ensure_documents_column(conn, 'summary_text', 'TEXT')
+    ensure_documents_column(conn, 'summary_source', 'TEXT')
+    ensure_documents_column(conn, 'summary_model', 'TEXT')
+    ensure_documents_column(conn, 'extractive_summary', 'TEXT')
+    ensure_documents_column(conn, 'ai_summary', 'TEXT')
+    ensure_documents_column(conn, 'key_sentences_json', 'TEXT')
+    ensure_documents_column(conn, 'summary_generated_at', timestamp_type)
+    ensure_documents_column(conn, 'summary_error', 'TEXT')
     conn.execute(
         '''
         UPDATE documents
@@ -340,7 +348,15 @@ def init_db():
             processing_status TEXT NOT NULL DEFAULT 'processed',
             processing_error TEXT,
             processing_started_at {optional_timestamp_type},
-            processed_at {timestamp_type}
+            processed_at {timestamp_type},
+            summary_text TEXT,
+            summary_source TEXT,
+            summary_model TEXT,
+            extractive_summary TEXT,
+            ai_summary TEXT,
+            key_sentences_json TEXT,
+            summary_generated_at {optional_timestamp_type},
+            summary_error TEXT
         );
     '''
 

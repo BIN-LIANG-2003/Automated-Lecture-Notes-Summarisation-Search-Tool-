@@ -1,6 +1,9 @@
 const SOURCE_LABEL_MAP = {
   huggingface: 'Hugging Face',
+  bart_hf: 'AI summary',
   fallback: 'Fallback',
+  textrank_fallback: 'Extractive fallback',
+  textrank_only: 'TextRank',
   cache: 'Cache',
 };
 
@@ -34,7 +37,7 @@ export const buildSummaryDiagnostics = (analysisResult) => {
     value: analysisResult.cache_hit ? `${summarySource} (cache hit)` : summarySource,
   });
 
-  const model = String(options.summarizer_model || '').trim();
+  const model = String(options.summarizer_model || analysisResult.summary_model || '').trim();
   if (model) {
     diagnostics.push({
       key: 'model',

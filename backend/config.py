@@ -136,6 +136,34 @@ HF_TOKEN = (os.environ.get('HF_API_TOKEN') or '').strip()
 HF_MODEL_BASE_URL = (os.environ.get('HF_MODEL_BASE_URL') or 'https://router.huggingface.co/hf-inference/models').rstrip('/')
 OCR_MODEL_ID = os.environ.get('HF_OCR_MODEL') or 'lbin2021/my-lecture-ocr'
 SUMMARIZER_MODEL_ID = os.environ.get('HF_SUMMARIZER_MODEL') or 'facebook/bart-large-cnn'
+HF_SUMMARIZER_MODEL = SUMMARIZER_MODEL_ID
+try:
+    HF_SUMMARIZER_TIMEOUT_SECONDS = max(15, int((os.environ.get('HF_SUMMARIZER_TIMEOUT_SECONDS') or '60').strip()))
+except Exception:
+    HF_SUMMARIZER_TIMEOUT_SECONDS = 60
+SUMMARY_PRIMARY_STRATEGY = (os.environ.get('SUMMARY_PRIMARY_STRATEGY') or 'auto').strip().lower() or 'auto'
+_summary_fallback_raw = str(os.environ.get('SUMMARY_FALLBACK_ENABLED') or '1').strip().lower()
+SUMMARY_FALLBACK_ENABLED = _summary_fallback_raw not in ('0', 'false', 'no', 'off')
+try:
+    SUMMARY_MIN_WORDS_FOR_BART = max(1, int((os.environ.get('SUMMARY_MIN_WORDS_FOR_BART') or '120').strip()))
+except Exception:
+    SUMMARY_MIN_WORDS_FOR_BART = 120
+try:
+    SUMMARY_CHUNK_WORDS = max(120, int((os.environ.get('SUMMARY_CHUNK_WORDS') or '650').strip()))
+except Exception:
+    SUMMARY_CHUNK_WORDS = 650
+try:
+    SUMMARY_CHUNK_OVERLAP = max(0, int((os.environ.get('SUMMARY_CHUNK_OVERLAP') or '80').strip()))
+except Exception:
+    SUMMARY_CHUNK_OVERLAP = 80
+try:
+    TEXTRANK_SENTENCE_COUNT = max(1, int((os.environ.get('TEXTRANK_SENTENCE_COUNT') or '3').strip()))
+except Exception:
+    TEXTRANK_SENTENCE_COUNT = 3
+try:
+    SUMMARY_TARGET_MAX_WORDS = max(40, int((os.environ.get('SUMMARY_TARGET_MAX_WORDS') or '140').strip()))
+except Exception:
+    SUMMARY_TARGET_MAX_WORDS = 140
 EXTERNAL_OCR_SERVICE_URL = (os.environ.get('EXTERNAL_OCR_SERVICE_URL') or '').strip()
 EXTERNAL_OCR_AUTH_TOKEN = (os.environ.get("EXTERNAL_OCR_AUTH_TOKEN") or "").strip()
 try:

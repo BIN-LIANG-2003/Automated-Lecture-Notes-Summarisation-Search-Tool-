@@ -21,6 +21,14 @@ export default function SummaryResultModal({
   const diagnostics = buildSummaryDiagnostics(analysisResult);
   const keywords = Array.isArray(analysisResult.keywords) ? analysisResult.keywords : [];
   const keySentences = Array.isArray(analysisResult.key_sentences) ? analysisResult.key_sentences : [];
+  const usedFallback = Boolean(analysisResult.used_fallback || analysisResult.summary_source === 'textrank_fallback');
+  const sourceLabel = usedFallback
+    ? 'Extractive fallback'
+    : analysisResult.summary_source === 'bart_hf'
+      ? 'AI summary'
+      : analysisResult.summary_source === 'textrank_only'
+        ? 'TextRank'
+        : 'Summary';
 
   return (
     <div className="notion-modal-backdrop" role="presentation" onClick={onClose}>
@@ -52,7 +60,19 @@ export default function SummaryResultModal({
 
         <section className="notion-ai-results">
           <article className="notion-ai-output">
-            <h3>Summary</h3>
+            <h3>AI Summary</h3>
+            <div className="notion-ai-diagnostics" aria-label="Summary source">
+              <div className="notion-ai-diagnostic-item">
+                <span>Source</span>
+                <strong>{sourceLabel}</strong>
+              </div>
+              {usedFallback && (
+                <div className="notion-ai-diagnostic-item">
+                  <span>Fallback</span>
+                  <strong>TextRank key sentences</strong>
+                </div>
+              )}
+            </div>
             <p>{analysisResult.summary || 'No summary available.'}</p>
             {!!diagnostics.length && (
               <div className="notion-ai-diagnostics" aria-label="Summary diagnostics">
@@ -67,16 +87,6 @@ export default function SummaryResultModal({
           </article>
 
           <article className="notion-ai-output">
-            <h4>Keywords</h4>
-            <ul>
-              {keywords.length ? (
-                keywords.map((keyword, index) => (
-                  <li key={`${keyword}-${index}`}>{keyword}</li>
-                ))
-              ) : (
-                <li>No keywords available.</li>
-              )}
-            </ul>
             <h4>Key Sentences</h4>
             <ul>
               {keySentences.length ? (
@@ -85,6 +95,16 @@ export default function SummaryResultModal({
                 ))
               ) : (
                 <li>No key sentences available.</li>
+              )}
+            </ul>
+            <h4>Keywords</h4>
+            <ul>
+              {keywords.length ? (
+                keywords.map((keyword, index) => (
+                  <li key={`${keyword}-${index}`}>{keyword}</li>
+                ))
+              ) : (
+                <li>No keywords available.</li>
               )}
             </ul>
             <div className="notion-ai-export-actions">

@@ -36,6 +36,7 @@ from .config import (
     AUTH_TOKEN_TTL_SECONDS,
     GOOGLE_CLIENT_ID,
     HF_MODEL_BASE_URL,
+    HF_SUMMARIZER_TIMEOUT_SECONDS,
     INVITE_BASE_URL,
     HF_TOKEN,
     OCR_MODEL_ID,
@@ -43,8 +44,15 @@ from .config import (
     OCRMYPDF_LANGUAGE,
     OCRMYPDF_TIMEOUT_SECONDS,
     S3_BUCKET,
+    SUMMARY_CHUNK_OVERLAP,
+    SUMMARY_CHUNK_WORDS,
     SUMMARY_CACHE_VERSION,
+    SUMMARY_FALLBACK_ENABLED,
+    SUMMARY_MIN_WORDS_FOR_BART,
+    SUMMARY_PRIMARY_STRATEGY,
+    SUMMARY_TARGET_MAX_WORDS,
     SUMMARIZER_MODEL_ID,
+    TEXTRANK_SENTENCE_COUNT,
     WORKSPACE_SUMMARY_LENGTH_LEVELS,
     s3_client,
 )
@@ -227,11 +235,18 @@ def save_document_summary_cache(
         return False
 
     safe_payload = {
-        'summary': str(payload.get('summary') or '').strip(),
+        'summary': str(payload.get('summary') or payload.get('summary_text') or '').strip(),
+        'summary_text': str(payload.get('summary_text') or payload.get('summary') or '').strip(),
         'keywords': payload.get('keywords') if isinstance(payload.get('keywords'), list) else [],
         'key_sentences': payload.get('key_sentences') if isinstance(payload.get('key_sentences'), list) else [],
         'summary_source': str(payload.get('summary_source') or '').strip().lower() or 'fallback',
+        'summary_model': str(payload.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+        'ai_summary': str(payload.get('ai_summary') or '').strip(),
+        'extractive_summary': str(payload.get('extractive_summary') or '').strip(),
+        'used_fallback': bool(payload.get('used_fallback')),
+        'summary_error': str(payload.get('summary_error') or payload.get('error') or '').strip(),
         'summary_note': str(payload.get('summary_note') or '').strip(),
+        'options_used': payload.get('options_used') if isinstance(payload.get('options_used'), dict) else {},
     }
     summary_json = json.dumps(safe_payload, ensure_ascii=False)
     now_iso = utcnow_iso()
@@ -282,6 +297,45 @@ def save_document_summary_cache(
         return True
     except Exception as e:
         print(f"⚠️ Summary cache write failed: {e}")
+        return False
+
+
+def save_document_summary_fields(conn, document_id, payload):
+    safe_doc_id = parse_int(document_id, 0, 0)
+    if safe_doc_id <= 0 or not isinstance(payload, dict):
+        return False
+    key_sentences = payload.get('key_sentences') if isinstance(payload.get('key_sentences'), list) else []
+    now_iso = utcnow_iso()
+    try:
+        conn.execute(
+            '''
+            UPDATE documents
+            SET summary_text = ?,
+                summary_source = ?,
+                summary_model = ?,
+                extractive_summary = ?,
+                ai_summary = ?,
+                key_sentences_json = ?,
+                summary_generated_at = ?,
+                summary_error = ?
+            WHERE id = ?
+            ''',
+            (
+                str(payload.get('summary_text') or payload.get('summary') or '').strip(),
+                str(payload.get('summary_source') or '').strip(),
+                str(payload.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+                str(payload.get('extractive_summary') or '').strip(),
+                str(payload.get('ai_summary') or '').strip(),
+                json.dumps(key_sentences, ensure_ascii=False),
+                now_iso,
+                str(payload.get('summary_error') or payload.get('error') or '').strip(),
+                safe_doc_id,
+            ),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"⚠️ Document summary field write failed: {e}")
         return False
 
 
@@ -907,7 +961,14 @@ def google_login():
         print(f"Google login error: {e}")
         return jsonify({'error': 'Internal server error'}), 500
 
-def extract_key_sentences(text_content, keywords=None, limit=3):
+def extract_key_sentences(text_content, keywords=None, limit=3, sentence_count=None):
+    if isinstance(keywords, int) and sentence_count is None:
+        sentence_count = keywords
+        keywords = None
+    safe_limit = max(1, int(sentence_count or limit or TEXTRANK_SENTENCE_COUNT))
+    if not keywords:
+        return _textrank_sentences(text_content, safe_limit)
+
     normalized = normalize_newlines(text_content or '')
     fragments = [part.strip() for part in re.split(r'(?<=[.!?。！？])\s+', normalized) if part.strip()]
     if not fragments:
@@ -935,11 +996,11 @@ def extract_key_sentences(text_content, keywords=None, limit=3):
         if sentence in top:
             continue
         top.append(sentence)
-        if len(top) >= max(1, int(limit or 3)):
+        if len(top) >= safe_limit:
             break
 
     if not top:
-        top = fragments[:max(1, int(limit or 3))]
+        top = fragments[:safe_limit]
     return top
 
 def get_hf_headers(content_type=None):
@@ -1071,6 +1132,131 @@ def split_text_for_summary(text_content, max_chars=3600, min_chars=1200, overlap
     return chunks
 
 
+SUMMARY_STOPWORDS = {
+    'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from', 'has', 'have', 'in', 'is',
+    'it', 'its', 'of', 'on', 'or', 'that', 'the', 'their', 'this', 'to', 'was', 'were', 'will',
+    'with', 'we', 'you', 'your', 'our', 'they', 'them', 'these', 'those', 'can', 'could', 'may',
+    'might', 'must', 'should', 'would', 'not', 'but', 'if', 'then', 'than', 'into', 'about',
+}
+
+
+def clean_summary_input(text):
+    normalized = normalize_newlines(text or '')
+    normalized = re.sub(r'(?im)^\s*part\s+\d+\s*:\s*', '', normalized)
+    normalized = re.sub(r'https?://\S+', ' ', normalized)
+    normalized = re.sub(r'[ \t]+', ' ', normalized)
+    normalized = re.sub(r'\n{3,}', '\n\n', normalized)
+    return normalized.strip()
+
+
+def _summary_word_tokens(text):
+    return re.findall(r"[A-Za-z0-9][A-Za-z0-9'-]*", str(text or '').lower())
+
+
+def _split_summary_sentences(text):
+    cleaned = clean_summary_input(text)
+    if not cleaned:
+        return []
+    fragments = [
+        re.sub(r'\s+', ' ', part).strip()
+        for part in re.split(r'(?<=[.!?。！？])\s+|\n+', cleaned)
+        if part and part.strip()
+    ]
+    return fragments or [cleaned]
+
+
+def split_summary_chunks(text, chunk_words=None, overlap_words=None):
+    cleaned = clean_summary_input(text)
+    words = re.findall(r'\S+', cleaned)
+    if not words:
+        return []
+    safe_chunk_words = max(80, int(chunk_words or SUMMARY_CHUNK_WORDS))
+    safe_overlap_words = max(0, min(int(overlap_words or SUMMARY_CHUNK_OVERLAP), safe_chunk_words // 2))
+    if len(words) <= safe_chunk_words:
+        return [' '.join(words)]
+
+    chunks = []
+    start = 0
+    while start < len(words):
+        end = min(len(words), start + safe_chunk_words)
+        chunk = ' '.join(words[start:end]).strip()
+        if chunk:
+            chunks.append(chunk)
+        if end >= len(words):
+            break
+        next_start = max(0, end - safe_overlap_words)
+        if next_start <= start:
+            next_start = end
+        start = next_start
+    return chunks
+
+
+def _sentence_terms(sentence):
+    return [
+        token
+        for token in _summary_word_tokens(sentence)
+        if len(token) > 2 and token not in SUMMARY_STOPWORDS
+    ]
+
+
+def _cosine_counter_similarity(left, right):
+    if not left or not right:
+        return 0.0
+    numerator = 0.0
+    for token, count in left.items():
+        numerator += count * right.get(token, 0)
+    if numerator <= 0:
+        return 0.0
+    left_norm = sum(count * count for count in left.values()) ** 0.5
+    right_norm = sum(count * count for count in right.values()) ** 0.5
+    if left_norm <= 0 or right_norm <= 0:
+        return 0.0
+    return numerator / (left_norm * right_norm)
+
+
+def _textrank_sentences(text, sentence_count=None):
+    sentences = _split_summary_sentences(text)
+    safe_count = max(1, int(sentence_count or TEXTRANK_SENTENCE_COUNT))
+    if len(sentences) <= safe_count:
+        return sentences
+
+    vectors = []
+    for sentence in sentences[:120]:
+        counts = {}
+        for token in _sentence_terms(sentence):
+            counts[token] = counts.get(token, 0) + 1
+        vectors.append(counts)
+
+    total = len(vectors)
+    graph = [[] for _ in range(total)]
+    for i in range(total):
+        for j in range(i + 1, total):
+            weight = _cosine_counter_similarity(vectors[i], vectors[j])
+            if weight > 0:
+                graph[i].append((j, weight))
+                graph[j].append((i, weight))
+
+    scores = [1.0 for _ in range(total)]
+    damping = 0.85
+    for _ in range(24):
+        next_scores = [(1.0 - damping) for _ in range(total)]
+        for i, edges in enumerate(graph):
+            edge_total = sum(weight for _, weight in edges)
+            if edge_total <= 0:
+                continue
+            for j, weight in edges:
+                next_scores[j] += damping * scores[i] * (weight / edge_total)
+        scores = next_scores
+
+    ranked_indexes = sorted(range(total), key=lambda idx: (scores[idx], -idx), reverse=True)[:safe_count]
+    ranked_indexes.sort()
+    return [sentences[idx] for idx in ranked_indexes]
+
+
+def generate_extractive_summary(text, sentence_count=3):
+    return ' '.join(_textrank_sentences(text, sentence_count)).strip()
+
+
 def build_fallback_summary(text_content, sentence_limit=3, max_chars=560):
     raw_text = normalize_newlines(text_content or '')
     raw_text = re.sub(r'(?im)^\s*part\s+\d+\s*:\s*', '', raw_text)
@@ -1163,7 +1349,7 @@ def call_hf_summarizer_once(text_content, length_options):
             hf_model_url(SUMMARIZER_MODEL_ID),
             headers=hf_headers,
             json=payload,
-            timeout=90
+            timeout=HF_SUMMARIZER_TIMEOUT_SECONDS
         )
     except Exception as e:
         return {'ok': False, 'summary': '', 'error': str(e) or 'AI service busy.'}
@@ -1199,109 +1385,193 @@ def call_hf_summarizer_once(text_content, length_options):
     return {'ok': False, 'summary': '', 'error': 'Summary service returned empty output.'}
 
 
-def summarize_text_with_chunk_merge(text_content, length_options):
-    safe_text = str(text_content or '').strip()
-    sentence_limit = max(1, int((length_options or {}).get('sentence_limit', 3) or 3))
-    hf_available = bool(get_hf_headers('application/json'))
-    chunks = split_text_for_summary(
-        safe_text,
-        max_chars=3600,
-        min_chars=1200,
-        overlap_chars=220
-    )
+def call_hf_summarizer(text, enforce_min_words=True):
+    safe_text = clean_summary_input(text)
+    if not safe_text:
+        return {'ok': False, 'summary': '', 'error': 'Empty input text'}
 
-    if not chunks:
+    word_count = len(re.findall(r'\S+', safe_text))
+    if enforce_min_words and word_count < SUMMARY_MIN_WORDS_FOR_BART:
         return {
+            'ok': False,
             'summary': '',
-            'summary_source': 'fallback',
-            'summary_note': 'No text provided.',
-            'meta': {'chunk_count': 0, 'merge_rounds': 0}
+            'error': f'Text has {word_count} words; BART requires at least {SUMMARY_MIN_WORDS_FOR_BART}.',
+            'skipped': True,
         }
 
-    hf_success_count = 0
-    fallback_count = 0
-    error_samples = []
+    hf_headers = get_hf_headers('application/json')
+    if not hf_headers:
+        return {'ok': False, 'summary': '', 'error': 'HF_API_TOKEN is not configured on server.', 'skipped': True}
 
-    def summarize_unit(unit_text):
-        nonlocal hf_success_count, fallback_count, error_samples
-        result = call_hf_summarizer_once(unit_text, length_options)
-        if result.get('ok'):
-            hf_success_count += 1
-            return str(result.get('summary') or '').strip()
+    max_tokens = max(60, min(220, int(SUMMARY_TARGET_MAX_WORDS * 1.35)))
+    min_tokens = max(18, min(max_tokens - 10, int(max_tokens * 0.25)))
+    payload = {
+        'inputs': build_hf_summarizer_input(safe_text, SUMMARIZER_MODEL_ID),
+        'parameters': {
+            'max_new_tokens': max_tokens,
+            'min_new_tokens': min_tokens,
+            'do_sample': False,
+        },
+        'options': {'wait_for_model': True},
+    }
 
-        fallback_count += 1
-        err = str(result.get('error') or '').strip()
-        if err and err not in error_samples and len(error_samples) < 2:
-            error_samples.append(err)
-        return build_fallback_summary(
-            unit_text,
-            sentence_limit=max(2, sentence_limit),
-            max_chars=560
+    try:
+        response = requests.post(
+            hf_model_url(SUMMARIZER_MODEL_ID),
+            headers=hf_headers,
+            json=payload,
+            timeout=HF_SUMMARIZER_TIMEOUT_SECONDS,
         )
+    except requests.exceptions.Timeout:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'HF summarizer timed out after {HF_SUMMARIZER_TIMEOUT_SECONDS}s',
+        }
+    except Exception as exc:
+        return {'ok': False, 'summary': '', 'error': str(exc) or 'AI summarizer request failed.'}
 
-    layer = [summarize_unit(chunk) for chunk in chunks]
-    merge_rounds = 0
-    if not hf_available and len(layer) > 1:
-        merge_rounds = 1
-        pick_idx = [0, len(layer) // 2, len(layer) - 1]
-        picked = []
-        for idx in pick_idx:
-            unit = str(layer[idx] or '').strip()
-            if unit and unit not in picked:
-                picked.append(unit)
-        combined = '\n'.join(picked).strip()
-        layer = [build_fallback_summary(combined or safe_text, sentence_limit=max(3, sentence_limit), max_chars=780)]
+    if response.status_code >= 400:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'HF summarizer failed ({response.status_code}): {hf_error_message(response)}',
+        }
+
+    try:
+        summary_res = response.json()
+    except Exception:
+        return {'ok': False, 'summary': '', 'error': f'HF summarizer returned non-JSON response: {hf_error_message(response)}'}
+
+    summary = ''
+    if isinstance(summary_res, list) and summary_res and isinstance(summary_res[0], dict):
+        summary = str(summary_res[0].get('summary_text') or summary_res[0].get('generated_text') or '').strip()
+    elif isinstance(summary_res, dict):
+        summary = str(summary_res.get('summary_text') or summary_res.get('generated_text') or '').strip()
+    if summary:
+        return {'ok': True, 'summary': summary, 'error': ''}
+    return {'ok': False, 'summary': '', 'error': 'HF summarizer returned empty output.'}
+
+
+def generate_abstractive_summary(text):
+    cleaned = clean_summary_input(text)
+    if not cleaned:
+        return {'ok': False, 'summary': '', 'error': 'Empty input text', 'chunk_count': 0, 'merge_rounds': 0}
+
+    if SUMMARY_PRIMARY_STRATEGY not in ('auto', 'bart_hf', 'hf', 'huggingface'):
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'SUMMARY_PRIMARY_STRATEGY={SUMMARY_PRIMARY_STRATEGY} disables Hugging Face summarization.',
+            'chunk_count': 0,
+            'merge_rounds': 0,
+            'skipped': True,
+        }
+
+    chunks = split_summary_chunks(cleaned, SUMMARY_CHUNK_WORDS, SUMMARY_CHUNK_OVERLAP)
+    if not chunks:
+        return {'ok': False, 'summary': '', 'error': 'Empty input text', 'chunk_count': 0, 'merge_rounds': 0}
+
+    if len(chunks) == 1:
+        result = call_hf_summarizer(chunks[0])
+        result['chunk_count'] = 1
+        result['merge_rounds'] = 0
+        return result
+
+    chunk_summaries = []
+    errors = []
+    for chunk in chunks:
+        result = call_hf_summarizer(chunk, enforce_min_words=False)
+        if not result.get('ok'):
+            error = str(result.get('error') or '').strip()
+            if error and error not in errors:
+                errors.append(error)
+            return {
+                'ok': False,
+                'summary': '',
+                'error': '; '.join(errors) or 'Chunk summarization failed.',
+                'chunk_count': len(chunks),
+                'merge_rounds': 0,
+            }
+        chunk_summaries.append(str(result.get('summary') or '').strip())
+
+    merged_input = clean_summary_input('\n\n'.join(chunk_summaries))
+    merged = call_hf_summarizer(merged_input, enforce_min_words=False)
+    merged['chunk_count'] = len(chunks)
+    merged['merge_rounds'] = 1
+    return merged
+
+
+def build_summary_bundle(text):
+    cleaned = clean_summary_input(text)
+    sentence_count = TEXTRANK_SENTENCE_COUNT
+    key_sentences = _textrank_sentences(cleaned, sentence_count)
+    extractive_summary = generate_extractive_summary(cleaned, sentence_count)
+    if not extractive_summary and cleaned:
+        extractive_summary = build_fallback_summary(cleaned, sentence_limit=sentence_count, max_chars=SUMMARY_TARGET_MAX_WORDS * 8)
+
+    ai_result = generate_abstractive_summary(cleaned)
+    ai_summary = str(ai_result.get('summary') or '').strip() if ai_result.get('ok') else ''
+    error = str(ai_result.get('error') or '').strip()
+
+    if ai_summary:
+        summary_text = ai_summary
+        summary_source = 'bart_hf'
+        used_fallback = False
+    elif SUMMARY_FALLBACK_ENABLED:
+        summary_text = extractive_summary
+        summary_source = 'textrank_only' if ai_result.get('skipped') else 'textrank_fallback'
+        used_fallback = summary_source == 'textrank_fallback'
     else:
-        while len(layer) > 1 and merge_rounds < 5:
-            merge_rounds += 1
-            combined_text = '\n\n'.join(
-                part
-                for part in layer
-                if str(part).strip()
-            ).strip()
-            if not combined_text:
-                break
-            merge_chunks = split_text_for_summary(
-                combined_text,
-                max_chars=3400,
-                min_chars=900,
-                overlap_chars=120
-            )
-            if not merge_chunks:
-                break
-            layer = [summarize_unit(chunk) for chunk in merge_chunks]
-
-    summary = str(layer[0] if layer else '').strip()
-    if not summary:
-        summary = build_fallback_summary(
-            safe_text,
-            sentence_limit=max(3, sentence_limit),
-            max_chars=560
-        )
-        fallback_count += 1
-
-    summary_source = 'huggingface' if hf_success_count > 0 else 'fallback'
-    note_parts = []
-    if len(chunks) > 1:
-        note_parts.append(f"Chunked summary used {len(chunks)} sections")
-    if merge_rounds > 0:
-        note_parts.append(f"{merge_rounds} merge round(s)")
-    if fallback_count > 0:
-        note_parts.append(f"{fallback_count} section(s) used fallback")
-    if error_samples:
-        note_parts.append("HF note: " + ' | '.join(error_samples))
-    summary_note = '; '.join(note_parts)
+        summary_text = ''
+        summary_source = 'bart_hf'
+        used_fallback = False
 
     return {
-        'summary': summary,
+        'summary_text': summary_text,
         'summary_source': summary_source,
+        'ai_summary': ai_summary,
+        'extractive_summary': extractive_summary,
+        'key_sentences': key_sentences,
+        'summary_model': SUMMARIZER_MODEL_ID,
+        'used_fallback': used_fallback,
+        'error': error if used_fallback else '',
+        'chunk_count': parse_int(ai_result.get('chunk_count'), 0, 0),
+        'merge_rounds': parse_int(ai_result.get('merge_rounds'), 0, 0),
+    }
+
+
+def summarize_text_with_chunk_merge(text_content, length_options):
+    safe_text = clean_summary_input(text_content)
+    if not safe_text:
+        return {
+            'summary': '',
+            'summary_source': 'textrank_only',
+            'summary_note': 'No text provided.',
+            'meta': {'chunk_count': 0, 'merge_rounds': 0},
+            'bundle': build_summary_bundle(''),
+        }
+
+    bundle = build_summary_bundle(safe_text)
+    summary_note = ''
+    if bundle.get('used_fallback'):
+        summary_note = 'Hugging Face summarizer was unavailable; TextRank fallback was used.'
+    elif bundle.get('summary_source') == 'textrank_only':
+        summary_note = 'TextRank summary used because the text was too short for BART or Hugging Face was not configured.'
+    if bundle.get('error'):
+        summary_note = f"{summary_note} {bundle.get('error')}".strip()
+
+    return {
+        'summary': str(bundle.get('summary_text') or '').strip(),
+        'summary_source': str(bundle.get('summary_source') or '').strip() or 'textrank_only',
         'summary_note': summary_note,
         'meta': {
-            'chunk_count': len(chunks),
-            'merge_rounds': merge_rounds,
-            'hf_success_count': hf_success_count,
-            'fallback_count': fallback_count,
-        }
+            'chunk_count': parse_int(bundle.get('chunk_count'), 1, 1),
+            'merge_rounds': parse_int(bundle.get('merge_rounds'), 0, 0),
+            'hf_success_count': 1 if bundle.get('ai_summary') else 0,
+            'fallback_count': 1 if bundle.get('used_fallback') else 0,
+        },
+        'bundle': bundle,
     }
 
 
@@ -1510,7 +1780,8 @@ def _probe_external_ocr_service():
         'timeout_seconds': timeout_seconds,
     }
     try:
-        response = requests.get(
+        response = requests.request(
+            'GET',
             health_endpoint,
             headers=get_external_ocr_auth_headers(),
             timeout=timeout_seconds,
@@ -1922,12 +2193,12 @@ def extract_text_from_image(doc_id=None):
 # 专家 2 号：语言专家 (负责摘要和提取关键词)
 # 对应前端的【按钮 2】
 # ==========================================
-def analyze_text():
+def analyze_text(document_id_override=0):
     data = request.get_json(silent=True) or {}
     username = get_authenticated_username()
     share_token = str(data.get('share_token') or '').strip()
     requested_workspace_id = str(data.get('workspace_id') or '').strip()
-    requested_doc_id = parse_int(data.get('doc_id', 0), 0, 0)
+    requested_doc_id = parse_int(document_id_override or data.get('doc_id', 0), 0, 0)
     force_refresh = parse_bool(data.get('force_refresh'), False)
     workspace_settings = dict(DEFAULT_WORKSPACE_SETTINGS)
     workspace_id = requested_workspace_id
@@ -2313,6 +2584,7 @@ def analyze_text():
                     ).strip() or SUMMARIZER_MODEL_ID
                 return jsonify({
                     "summary": str(cached_payload.get("summary") or '').strip(),
+                    "summary_text": str(cached_payload.get("summary_text") or cached_payload.get("summary") or '').strip(),
                     "keywords": cached_payload.get("keywords") if isinstance(cached_payload.get("keywords"), list) else [],
                     "key_sentences": (
                         cached_payload.get("key_sentences")
@@ -2322,6 +2594,11 @@ def analyze_text():
                     "summary_source": str(
                         cached_payload.get("summary_source") or "cache"
                     ).strip().lower() or "cache",
+                    "ai_summary": str(cached_payload.get("ai_summary") or '').strip(),
+                    "extractive_summary": str(cached_payload.get("extractive_summary") or '').strip(),
+                    "summary_model": str(cached_payload.get("summary_model") or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+                    "used_fallback": parse_bool(cached_payload.get("used_fallback"), False),
+                    "summary_error": str(cached_payload.get("summary_error") or '').strip(),
                     "summary_note": str(cached_payload.get("summary_note") or '').strip(),
                     "text_source": text_source,
                     "document_id": requested_doc_id,
@@ -2335,6 +2612,7 @@ def analyze_text():
     summary_source = str(summary_result.get('summary_source') or 'fallback').strip().lower() or 'fallback'
     summary_note = str(summary_result.get('summary_note') or '').strip()
     summary_meta = summary_result.get('meta') if isinstance(summary_result.get('meta'), dict) else {}
+    summary_bundle = summary_result.get('bundle') if isinstance(summary_result.get('bundle'), dict) else build_summary_bundle(text_content)
     pdf_refresh_note = str(pdf_refresh_meta.get('note') or '').strip()
 
     if pdf_refresh_note and force_refresh and requested_doc_id > 0:
@@ -2355,13 +2633,23 @@ def analyze_text():
     except Exception:
         keywords = ["Not enough text"]
 
-    key_sentences = extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
+    key_sentences = (
+        summary_bundle.get('key_sentences')
+        if isinstance(summary_bundle.get('key_sentences'), list)
+        else extract_key_sentences(text_content, keywords, limit=length_options['sentence_limit'])
+    )
 
     response_payload = {
         "summary": summary,
+        "summary_text": str(summary_bundle.get('summary_text') or summary).strip(),
         "keywords": keywords,
         "key_sentences": key_sentences,
         "summary_source": summary_source,
+        "ai_summary": str(summary_bundle.get('ai_summary') or '').strip(),
+        "extractive_summary": str(summary_bundle.get('extractive_summary') or '').strip(),
+        "summary_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+        "used_fallback": bool(summary_bundle.get('used_fallback')),
+        "summary_error": str(summary_bundle.get('error') or '').strip(),
         "summary_note": summary_note,
         "text_source": text_source,
         "document_id": requested_doc_id if requested_doc_id > 0 else None,
@@ -2399,13 +2687,20 @@ def analyze_text():
                     keyword_limit,
                     {
                         "summary": summary,
+                        "summary_text": response_payload.get("summary_text") or summary,
                         "keywords": keywords,
                         "key_sentences": key_sentences,
                         "summary_source": summary_source,
+                        "summary_model": response_payload.get("summary_model") or SUMMARIZER_MODEL_ID,
+                        "ai_summary": response_payload.get("ai_summary") or '',
+                        "extractive_summary": response_payload.get("extractive_summary") or '',
+                        "used_fallback": response_payload.get("used_fallback"),
+                        "summary_error": response_payload.get("summary_error") or '',
                         "summary_note": summary_note,
                         "options_used": response_payload.get("options_used") if isinstance(response_payload.get("options_used"), dict) else {},
                     }
                 )
+                save_document_summary_fields(cache_conn, requested_doc_id, response_payload)
             finally:
                 cache_conn.close()
 
