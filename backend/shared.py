@@ -1475,6 +1475,25 @@ def assess_ocr_text_quality(text):
     }
 
 
+def external_ocr_health_url(endpoint):
+    safe_endpoint = str(endpoint or '').strip()
+    if not safe_endpoint:
+        return ''
+    try:
+        parsed = urlparse(safe_endpoint)
+        path = parsed.path or '/'
+        normalized_path = path.rstrip('/')
+        if normalized_path.endswith('/ocr'):
+            health_path = f'{normalized_path[:-len("/ocr")]}/health'
+        elif normalized_path.endswith('/health'):
+            health_path = normalized_path
+        else:
+            health_path = f'{normalized_path}/health' if normalized_path else '/health'
+        return parsed._replace(path=health_path, params='', query='', fragment='').geturl()
+    except Exception:
+        return safe_endpoint
+
+
 def _probe_external_ocr_service():
     endpoint = str(EXTERNAL_OCR_SERVICE_URL or '').strip()
     if not endpoint:
@@ -1483,10 +1502,10 @@ def _probe_external_ocr_service():
             'ok': False,
             'error': 'External OCR service is not configured',
         }
+    health_endpoint = external_ocr_health_url(endpoint)
     try:
-        response = requests.request(
-            'HEAD',
-            endpoint,
+        response = requests.get(
+            health_endpoint,
             headers=get_external_ocr_auth_headers(),
             timeout=min(5, max(2, EXTERNAL_OCR_TIMEOUT_SECONDS)),
             allow_redirects=True,
