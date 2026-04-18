@@ -11,9 +11,11 @@ from PIL import Image, UnidentifiedImageError
 from starlette.concurrency import run_in_threadpool
 
 
-OCR_SOURCE = "custom_ppocrv5"
+OCR_SOURCE = "custom_ppocrv5_mobile_rec_v2"
 DEFAULT_DET_MODEL_NAME = "PP-OCRv5_mobile_det"
 DEFAULT_REC_MODEL_NAME = "PP-OCRv5_mobile_rec"
+DEFAULT_REC_MODEL_VERSION = "ppocrv5_mobile_rec_infer_v2"
+REQUIRED_REC_MODEL_FILES = ("inference.json", "inference.pdiparams", "inference.yml")
 
 app = FastAPI(title="StudyHub OCR Service")
 
@@ -68,9 +70,21 @@ async def require_bearer_token(request: Request, call_next):
 @app.get("/health")
 async def health():
     rec_model_dir = _env("OCR_REC_MODEL_DIR")
-    rec_model_path = Path(rec_model_dir) if rec_model_dir else None
-    rec_model_ready = bool(rec_model_path and rec_model_path.exists())
-    return JSONResponse({"ok": rec_model_ready}, status_code=200 if rec_model_ready else 503)
+    model_files = _rec_model_file_status(rec_model_dir)
+    rec_model_ready = bool(rec_model_dir and model_files and all(model_files.values()))
+    return JSONResponse(
+        {
+            "ok": rec_model_ready,
+            "service": "studyhub-ocr-service",
+            "source": OCR_SOURCE,
+            "det_model_name": _env("OCR_DET_MODEL_NAME", DEFAULT_DET_MODEL_NAME),
+            "rec_model_name": _env("OCR_REC_MODEL_NAME", DEFAULT_REC_MODEL_NAME),
+            "rec_model_version": _env("OCR_REC_MODEL_VERSION", Path(rec_model_dir).name if rec_model_dir else DEFAULT_REC_MODEL_VERSION),
+            "rec_model_dir": rec_model_dir,
+            "model_files": model_files,
+        },
+        status_code=200 if rec_model_ready else 503,
+    )
 
 
 @app.post("/ocr")
@@ -115,8 +129,7 @@ def _build_ocr():
     rec_model_dir = _env("OCR_REC_MODEL_DIR")
     if not rec_model_dir:
         raise RuntimeError("OCR_REC_MODEL_DIR must point to the exported recognition model directory")
-    if not Path(rec_model_dir).exists():
-        raise RuntimeError(f"OCR_REC_MODEL_DIR does not exist: {rec_model_dir}")
+    _ensure_rec_model_ready(rec_model_dir)
 
     kwargs: dict[str, Any] = {
         "text_detection_model_name": _env("OCR_DET_MODEL_NAME", DEFAULT_DET_MODEL_NAME),
@@ -126,7 +139,7 @@ def _build_ocr():
         "text_rec_score_thresh": _env_float("OCR_TEXT_SCORE_THRESH", 0.0),
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
-        "use_textline_orientation": True,
+        "use_textline_orientation": False,
     }
 
     det_model_dir = _env("OCR_DET_MODEL_DIR")
@@ -138,6 +151,29 @@ def _build_ocr():
         kwargs["device"] = device
 
     return PaddleOCR(**kwargs)
+
+
+def _rec_model_file_status(rec_model_dir: str) -> dict[str, bool]:
+    if not rec_model_dir:
+        return {filename: False for filename in REQUIRED_REC_MODEL_FILES}
+    rec_model_path = Path(rec_model_dir)
+    return {
+        filename: (rec_model_path / filename).is_file()
+        for filename in REQUIRED_REC_MODEL_FILES
+    }
+
+
+def _ensure_rec_model_ready(rec_model_dir: str) -> None:
+    rec_model_path = Path(rec_model_dir)
+    if not rec_model_path.exists():
+        raise RuntimeError(f"OCR_REC_MODEL_DIR does not exist: {rec_model_dir}")
+    model_files = _rec_model_file_status(rec_model_dir)
+    missing_files = [filename for filename, exists in model_files.items() if not exists]
+    if missing_files:
+        raise RuntimeError(
+            "Custom OCR v2 model is incomplete. "
+            f"Missing files in {rec_model_dir}: {', '.join(missing_files)}"
+        )
 
 
 def _get_ocr():
