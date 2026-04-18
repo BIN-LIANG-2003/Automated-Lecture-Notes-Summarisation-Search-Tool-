@@ -3,7 +3,8 @@ import modal
 
 MODEL_VOLUME_NAME = "studyhub-ocr-models"
 MODEL_MOUNT_PATH = "/models"
-REC_MODEL_DIR = f"{MODEL_MOUNT_PATH}/ppocrv5_mobile_rec_infer"
+OCR_REC_MODEL_VERSION = "ppocrv5_mobile_rec_infer_v2"
+REC_MODEL_DIR = f"{MODEL_MOUNT_PATH}/{OCR_REC_MODEL_VERSION}"
 SECRET_NAME = "studyhub-ocr-service"
 
 app = modal.App("studyhub-ocr-service")
@@ -32,7 +33,8 @@ image = (
 def ocr():
     import os
 
-    os.environ.setdefault("OCR_REC_MODEL_DIR", REC_MODEL_DIR)
+    os.environ["OCR_REC_MODEL_DIR"] = REC_MODEL_DIR
+    os.environ["OCR_REC_MODEL_VERSION"] = OCR_REC_MODEL_VERSION
     os.environ.setdefault("OCR_REC_MODEL_NAME", "PP-OCRv5_mobile_rec")
     os.environ.setdefault("OCR_DET_MODEL_NAME", "PP-OCRv5_mobile_det")
     os.environ.setdefault("OCR_DEVICE", "gpu:0")
