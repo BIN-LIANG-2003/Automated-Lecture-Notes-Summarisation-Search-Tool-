@@ -82,6 +82,7 @@ from .summary_service import (
     call_hf_summarizer,
     clean_summary_input,
     clear_document_summary_cache,
+    external_summary_service_configured,
     extract_key_sentences,
     finish_summary_generation,
     generate_abstractive_summary,
@@ -164,7 +165,6 @@ def build_document_summary_cache_key(text, summary_length='medium', keyword_limi
     return build_summary_cache_key(
         text,
         summary_length=summary_length,
-        summary_model=SUMMARIZER_MODEL_ID,
         keyword_limit=keyword_limit,
     )
 
@@ -2448,6 +2448,7 @@ def analyze_text(document_id_override=0):
             "cache_hit": False,
             "options_used": {
                 **base_options_used,
+                "summarizer_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
                 "chunk_count": parse_int(summary_meta.get('chunk_count'), 1, 1),
                 "merge_rounds": parse_int(summary_meta.get('merge_rounds'), 0, 0),
                 "refreshed_from_file": refreshed_from_file,
@@ -2471,6 +2472,12 @@ def analyze_text(document_id_override=0):
             and not response_payload.get("used_fallback")
             and str(response_payload.get("summary_source") or '').strip().lower() not in ('textrank_fallback', 'fallback')
         )
+        if (
+            should_cache_generated_summary
+            and external_summary_service_configured()
+            and summary_source != 'custom_flan_t5_large'
+        ):
+            should_cache_generated_summary = False
         if should_cache_generated_summary:
             cache_conn = get_db_connection()
             if cache_conn:
