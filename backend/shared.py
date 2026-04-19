@@ -2587,6 +2587,15 @@ def uploaded_file(filename):
     finally:
         conn.close()
 
+    def add_query_token_safety_headers(response):
+        if (request.args.get('auth_token') or '').strip():
+            response.headers['Cache-Control'] = 'no-store, private, max-age=0'
+            response.headers['Pragma'] = 'no-cache'
+            response.headers['Expires'] = '0'
+            response.headers['Referrer-Policy'] = 'no-referrer'
+            response.headers['X-Robots-Tag'] = 'noindex, nofollow'
+        return response
+
     # 如果配置了 S3，直接生成一个 S3 的链接跳转过去
     if S3_BUCKET and s3_client:
         try:
@@ -2597,7 +2606,7 @@ def uploaded_file(filename):
                 ExpiresIn=3600
             )
             # 让浏览器直接跳转到 AWS S3 下载
-            return redirect(presigned_url, code=302)
+            return add_query_token_safety_headers(redirect(presigned_url, code=302))
         except Exception as e:
             print(f"S3 Link Generation Error: {e}")
             return jsonify({'error': 'Could not generate file link'}), 500
@@ -2606,7 +2615,7 @@ def uploaded_file(filename):
         upload_dir = app.config['UPLOAD_FOLDER']
         if not os.path.isabs(upload_dir):
             upload_dir = os.path.abspath(upload_dir)
-        return send_from_directory(upload_dir, safe_filename)
+        return add_query_token_safety_headers(send_from_directory(upload_dir, safe_filename))
 
 # ================= 前端路由 =================
 def serve_index():

@@ -45,6 +45,11 @@ const SEEDED_SUMMARY_STORE = {
 async function loginAsAlice(page) {
   await page.goto('/#/login');
   const loginField = page.locator('#login-username');
+  const appShell = page.locator('.notion-shell');
+  await Promise.race([
+    loginField.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
+    appShell.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
+  ]);
   if (await loginField.isVisible().catch(() => false)) {
     await loginField.fill('alice');
     await page.locator('#login-password').fill('password123');
@@ -64,7 +69,7 @@ async function loginAsAlice(page) {
       timeout: 15_000,
     });
   }
-  await expect(page.locator('.notion-shell')).toBeVisible({ timeout: 15_000 });
+  await expect(appShell).toBeVisible({ timeout: 15_000 });
   await expect(page.locator('#main')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('button', { name: /Summaries \(\d+\)/ })).toBeVisible({
     timeout: 15_000,

@@ -106,7 +106,9 @@ See [.env.example](.env.example) for the documented template. The main variables
 - `AUTH_TOKEN_SECRET`: required strong token secret outside explicit development mode
 - `AUTH_TOKEN_TTL_SECONDS`: token lifetime
 - `DATABASE_URL`: enables PostgreSQL; if unset, the app uses local SQLite `database.db`
-- `APP_BASE_URL`: public app origin used in invite/share link generation and email-verification links
+- `APP_BASE_URL`: public app origin used in invite/share link generation and email-verification links. It must be configured in Render; production has no hard-coded fallback domain.
+- `CORS_ALLOWED_ORIGINS`: optional comma-separated frontend origins. If unset, production allows only `https://studies-hub.com` and `https://www.studies-hub.com`; development allows localhost Vite/Flask origins.
+- `RATE_LIMIT_ENABLED`, `RATE_LIMIT_WINDOW_SECONDS`: lightweight in-process abuse guard for login, registration, verification resend, upload, OCR, and summary endpoints. If unset, it is enabled in production and disabled in development/test.
 - `EMAIL_VERIFICATION_TTL_HOURS`: verification-link lifetime for newly registered accounts
 - `S3_BUCKET_NAME`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION`: optional object storage
 - `HF_API_TOKEN`, `HF_MODEL_BASE_URL`, `HF_OCR_MODEL`, `HF_SUMMARIZER_MODEL`: optional Hugging Face OCR/summarisation
@@ -201,8 +203,22 @@ python scripts/rebuild_document_search.py
 - Protected routes derive the authenticated user from the token instead of trusting request usernames.
 - If `username` is still supplied by older callers, it is treated as a compatibility claim and must match the authenticated user.
 - Query-string auth is retained only for `/api/documents/:id/file?auth_token=...` as transitional compatibility for inline preview.
-- That compatibility response is returned with `Cache-Control: no-store` headers.
+- That compatibility response is returned with `Cache-Control: no-store`, `Referrer-Policy: no-referrer`, and `X-Robots-Tag: noindex, nofollow` headers.
+- Uploads are validated by extension and lightweight content sniffing. PDF, DOCX, TXT, PNG, JPG/JPEG, GIF, and WEBP remain supported; extension/content mismatches are rejected before extraction.
+- External OCR and external summary services are optional. When unavailable, the app returns clear OCR errors and uses the existing BART/TextRank summary fallback path where possible.
 - Outside explicit development mode, startup fails closed if `AUTH_TOKEN_SECRET` is empty, default, or weak. `FLASK_SECRET_KEY` remains a compatibility fallback only when it is at least 32 characters long.
+
+## Final Submission Checks
+
+Run these before packaging or deploying a final submission:
+
+```bash
+npm run build
+npm run test:backend
+npm run test:e2e
+```
+
+Manual evidence still needed for the report: OCR accuracy screenshots or samples, ROUGE-1 or equivalent summary-quality evaluation for representative notes, search-task accuracy examples, and SUS/user-testing evidence.
 
 ## Generated Assets and Repository Hygiene
 

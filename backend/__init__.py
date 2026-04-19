@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 
-from flask import Flask
+from flask import Flask, jsonify
 from flask_cors import CORS
 
 from . import config, db, document_service, security, shared
@@ -20,7 +20,12 @@ def create_app():
     project_root = Path(__file__).resolve().parents[1]
     static_folder = project_root / 'dist'
     app = Flask(__name__, static_folder=str(static_folder), static_url_path='')
-    CORS(app)
+    CORS(
+        app,
+        origins=config.CORS_ALLOWED_ORIGINS,
+        supports_credentials=True,
+        resources={r"/api/*": {"origins": config.CORS_ALLOWED_ORIGINS}},
+    )
 
     os.makedirs(config.UPLOAD_FOLDER, exist_ok=True)
     app.config['UPLOAD_FOLDER'] = config.UPLOAD_FOLDER
@@ -29,7 +34,37 @@ def create_app():
     shared.app = app
     db.init_db()
     document_service.recover_queued_pdf_uploads()
+    app.before_request(security.rate_limit_middleware)
     app.before_request(security.enforce_auth_token_middleware)
+
+    @app.route('/api/health', methods=['GET'])
+    def health():
+        from .storage import storage_uses_s3
+
+        database_mode = ''
+        conn = db.get_db_connection()
+        try:
+            database_mode = str(getattr(conn, 'db_type', '') or '').strip()
+        finally:
+            if conn:
+                conn.close()
+
+        build_sha = (
+            os.environ.get('RENDER_GIT_COMMIT')
+            or os.environ.get('GIT_COMMIT')
+            or os.environ.get('BUILD_SHA')
+            or ''
+        ).strip()
+        return jsonify({
+            'ok': True,
+            'app': 'StudyHub',
+            'environment': 'production' if config.IS_PRODUCTION_ENV else 'development',
+            'storage_mode': 's3' if storage_uses_s3() else 'local',
+            'database_mode': database_mode or 'unknown',
+            'ocr_external_configured': bool(config.EXTERNAL_OCR_SERVICE_URL),
+            'summary_external_configured': bool(config.EXTERNAL_SUMMARY_SERVICE_URL),
+            'build_sha': build_sha[:40],
+        })
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(workspaces_bp)

@@ -35,12 +35,17 @@ async function expectWithinViewport(page, locator, label) {
 async function loginAsAlice(page) {
   await page.goto('/#/login');
   const loginField = page.locator('#login-username');
+  const notesButton = page.getByRole('button', { name: 'Notes', exact: true });
+  await Promise.race([
+    loginField.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
+    notesButton.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => null),
+  ]);
   if (await loginField.isVisible().catch(() => false)) {
     await loginField.fill('alice');
     await page.locator('#login-password').fill('password123');
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
   }
-  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeVisible();
+  await expect(notesButton).toBeVisible();
 }
 
 async function goToMyFiles(page) {

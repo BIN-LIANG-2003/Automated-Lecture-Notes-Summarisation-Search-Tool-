@@ -19,8 +19,9 @@ from backend import create_app
 from backend.config import AUTH_COOKIE_NAME, DEFAULT_WORKSPACE_SETTINGS
 from backend.db import get_db_connection
 from backend import document_service
-from backend.document_domain import extract_text_from_pdf_bytes
+from backend.document_domain import extract_text_from_pdf_bytes, sanitize_editor_html
 from backend.document_processing import process_queued_documents_once
+from backend import security
 from backend.security import create_auth_token
 from backend.shared import (
     assess_ocr_text_quality,
@@ -353,6 +354,24 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             pdf.drawString(72, y, str(line))
             y -= 18
         pdf.save()
+        buffer.seek(0)
+        return buffer
+
+    def _build_png_header(self, width=1, height=1):
+        return io.BytesIO(
+            b'\x89PNG\r\n\x1a\n'
+            + b'\x00\x00\x00\rIHDR'
+            + int(width).to_bytes(4, 'big')
+            + int(height).to_bytes(4, 'big')
+            + b'\x08\x02\x00\x00\x00'
+            + b'\x00\x00\x00\x00'
+        )
+
+    def _build_valid_png_upload(self):
+        from PIL import Image
+
+        buffer = io.BytesIO()
+        Image.new('RGB', (1, 1), color=(255, 255, 255)).save(buffer, format='PNG')
         buffer.seek(0)
         return buffer
 
@@ -1273,6 +1292,138 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertIn('SECRET_LEN=32', strong_legacy.stdout)
         self.assertIn('SECRET_SOURCE=flask_secret_key', strong_legacy.stdout)
 
+    def test_app_base_url_has_no_production_hardcoded_fallback(self):
+        env = os.environ.copy()
+        for key in ('APP_ENV', 'FLASK_ENV', 'APP_BASE_URL', 'AUTH_TOKEN_SECRET', 'FLASK_SECRET_KEY'):
+            env.pop(key, None)
+        env['PYTHONPATH'] = self.original_cwd
+        env['PYTHON_DOTENV_DISABLED'] = '1'
+        env['APP_ENV'] = 'production'
+        env['AUTH_TOKEN_SECRET'] = 's' * 32
+        result = subprocess.run(
+            [sys.executable, '-c', 'import backend.config'],
+            cwd=self.original_cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('APP_BASE_URL', f'{result.stdout}\n{result.stderr}')
+
+        env['APP_BASE_URL'] = 'https://configured.example'
+        configured = subprocess.run(
+            [
+                sys.executable,
+                '-c',
+                'import backend.config as config; print(config.APP_BASE_URL)',
+            ],
+            cwd=self.original_cwd,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(configured.returncode, 0, configured.stderr)
+        self.assertIn('https://configured.example', configured.stdout)
+
+    def test_generated_links_use_configured_app_base_url(self):
+        from backend import feedback_service, share_domain, shared, workspace_domain
+
+        configured_base = 'https://configured.example'
+        with patch('backend.shared.INVITE_BASE_URL', configured_base), \
+                patch('backend.shared.APP_BASE_URL', configured_base), \
+                patch('backend.workspace_domain.INVITE_BASE_URL', configured_base), \
+                patch('backend.share_domain.INVITE_BASE_URL', configured_base), \
+                patch('backend.feedback_service.APP_BASE_URL', configured_base):
+            verification_url = shared.build_email_verification_url('verify-token')
+            auth_page_html, _, _ = shared._render_auth_message_page('Done', 'Verified', success=True)
+            invite_url = workspace_domain.build_invite_url('invite-token')
+            share_url = share_domain.build_document_share_url('share-token')
+            feedback_url = feedback_service._feedback_admin_link(42)
+
+        self.assertEqual(verification_url, f'{configured_base}/api/auth/verify-email?token=verify-token')
+        self.assertIn(f'{configured_base}/#/login', auth_page_html)
+        self.assertEqual(invite_url, f'{configured_base}/#/invite/invite-token')
+        self.assertEqual(share_url, f'{configured_base}/#/shared/share-token')
+        self.assertEqual(feedback_url, f'{configured_base}/#/admin/feedback?feedback=42')
+
+    def test_old_render_app_base_url_not_in_executable_code(self):
+        old_domain = ''.join([
+            'automated-',
+            'lecture-',
+            'notes-',
+            'summarisation',
+            '.',
+            'on',
+            'render',
+            '.',
+            'com',
+        ])
+        executable_roots = ['app.py', 'backend', 'src', 'summary_service']
+        offenders = []
+        for root in executable_roots:
+            root_path = os.path.join(self.original_cwd, root)
+            if os.path.isfile(root_path):
+                candidates = [root_path]
+            else:
+                candidates = [
+                    os.path.join(dirpath, filename)
+                    for dirpath, _dirnames, filenames in os.walk(root_path)
+                    for filename in filenames
+                    if filename.endswith(('.py', '.js', '.jsx', '.ts', '.tsx'))
+                ]
+            for path in candidates:
+                with open(path, 'r', encoding='utf-8') as handle:
+                    if old_domain in handle.read():
+                        offenders.append(os.path.relpath(path, self.original_cwd))
+        self.assertEqual(offenders, [])
+
+    def test_cors_allows_configured_localhost_and_rejects_unknown_origin(self):
+        allowed = self.client.get('/api/health', headers={'Origin': 'http://localhost:5173'})
+        self.assertEqual(allowed.status_code, 200)
+        self.assertEqual(allowed.headers.get('Access-Control-Allow-Origin'), 'http://localhost:5173')
+
+        blocked = self.client.get('/api/health', headers={'Origin': 'https://evil.example'})
+        self.assertEqual(blocked.status_code, 200)
+        self.assertIsNone(blocked.headers.get('Access-Control-Allow-Origin'))
+
+    def test_health_endpoint_exposes_safe_build_metadata_only(self):
+        response = self.client.get('/api/health')
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertTrue(payload.get('ok'))
+        self.assertEqual(payload.get('app'), 'StudyHub')
+        self.assertIn(payload.get('storage_mode'), ('local', 's3'))
+        self.assertIn('database_mode', payload)
+        self.assertNotIn('token', json.dumps(payload).lower())
+        self.assertNotIn('secret', json.dumps(payload).lower())
+        self.assertNotIn('database_url', json.dumps(payload).lower())
+
+    def test_debug_mode_defaults_to_false_outside_explicit_debug_flag(self):
+        import backend.config as config
+
+        self.assertFalse(config.DEBUG_ENABLED)
+
+    def test_rate_limit_guard_blocks_repeated_login_attempts(self):
+        security.clear_rate_limit_state()
+        original_rule = security.RATE_LIMIT_RULES.get('login')
+        original_enabled = security.RATE_LIMIT_ENABLED
+        security.RATE_LIMIT_ENABLED = True
+        security.RATE_LIMIT_RULES['login'] = (1, 60)
+        try:
+            first = self.client.post('/api/auth/login', json={'username': 'nobody', 'password': 'bad'})
+            second = self.client.post('/api/auth/login', json={'username': 'nobody', 'password': 'bad'})
+        finally:
+            security.RATE_LIMIT_ENABLED = original_enabled
+            if original_rule:
+                security.RATE_LIMIT_RULES['login'] = original_rule
+            security.clear_rate_limit_state()
+
+        self.assertNotEqual(first.status_code, 429)
+        self.assertEqual(second.status_code, 429)
+        self.assertIn('Retry-After', second.headers)
+
     @patch('backend.share_link_service.send_document_share_email', return_value=(True, ''))
     def test_send_note_by_email_creates_share_link_and_returns_share_payload(self, _mock_send_share_email):
         document_id = self._insert_document(
@@ -1485,6 +1636,26 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(empty_response.status_code, 400)
 
+    def test_rich_text_sanitizer_strips_script_javascript_and_unsafe_attributes(self):
+        sanitized = sanitize_editor_html(
+            '<p style="color: #123456; position:absolute">Safe <strong>bold</strong></p>'
+            '<script>alert(1)</script>'
+            '<img src=x onerror=alert(1)>'
+            '<a href="javascript:alert(1)" onclick="alert(2)">bad link</a>'
+            '<span style="background-image:url(javascript:alert(3)); font-weight: 700">text</span>'
+        )
+
+        lowered = sanitized.lower()
+        self.assertIn('<strong>bold</strong>', lowered)
+        self.assertIn('color:', lowered)
+        self.assertIn('font-weight:', lowered)
+        self.assertNotIn('<script', lowered)
+        self.assertNotIn('onerror', lowered)
+        self.assertNotIn('onclick', lowered)
+        self.assertNotIn('javascript:', lowered)
+        self.assertNotIn('position:', lowered)
+        self.assertNotIn('background-image', lowered)
+
     def test_pdf_conversion_draft_can_replace_or_copy_document(self):
         filename = 'convert-source.pdf'
         self._save_pdf_upload_file(filename, 'First line for conversion', 'Second line for conversion')
@@ -1589,6 +1760,74 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(payload['title'], 'Shared Revision Sheet')
         self.assertEqual(payload['share']['token'], share_token)
 
+    def test_public_share_link_does_not_expose_or_mutate_other_private_documents(self):
+        shared_id = self._insert_document(
+            'Shared Public Note',
+            'shared public note content',
+            workspace_id='',
+            filename='shared-public-note.txt',
+        )
+        private_id = self._insert_document(
+            'Other Private Note',
+            'other private note content',
+            workspace_id='',
+            filename='other-private-note.txt',
+        )
+        share_token = self._insert_share_link(shared_id)
+
+        other_response = self.client.get(f'/api/documents/{private_id}?share_token={share_token}')
+        self.assertEqual(other_response.status_code, 403)
+
+        mutate_response = self.client.put(
+            f'/api/documents/{shared_id}/title',
+            json={'title': 'Mutation via share token'},
+        )
+        self.assertEqual(mutate_response.status_code, 401)
+
+    def test_wrong_user_cannot_access_mutate_download_summarize_or_ocr_private_document(self):
+        self._insert_user('bob', 'bob@example.com')
+        document_id = self._insert_document(
+            'Alice Private Note',
+            'alice private access control content',
+            workspace_id='',
+            filename='alice-private-note.txt',
+        )
+        os.makedirs('uploads', exist_ok=True)
+        with open(os.path.join('uploads', 'alice-private-note.txt'), 'wb') as handle:
+            handle.write(b'alice private access control content')
+        bob_headers = self._auth_headers('bob')
+
+        self.assertEqual(self.client.get(f'/api/documents/{document_id}', headers=bob_headers).status_code, 403)
+        self.assertEqual(
+            self.client.put(
+                f'/api/documents/{document_id}/title',
+                headers=bob_headers,
+                json={'title': 'Stolen title'},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(self.client.delete(f'/api/documents/{document_id}', headers=bob_headers).status_code, 403)
+        file_response = self.client.get(f'/api/documents/{document_id}/file', headers=bob_headers)
+        self.assertEqual(file_response.status_code, 403)
+        file_response.close()
+        self.assertEqual(
+            self.client.post(
+                f'/api/documents/{document_id}/summarize',
+                headers=bob_headers,
+                json={},
+            ).status_code,
+            403,
+        )
+        self.assertEqual(
+            self.client.post(
+                f'/api/extract-text/{document_id}',
+                headers=bob_headers,
+                data=b'not an image',
+                content_type='application/octet-stream',
+            ).status_code,
+            403,
+        )
+
     def test_legacy_uploads_route_rejects_anonymous_document_file_access(self):
         filename = 'legacy-private-route.txt'
         self._insert_document(
@@ -1619,6 +1858,41 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(cookie_response.status_code, 200)
         self.assertEqual(cookie_response.get_data(), b'private route smoke content')
         cookie_response.close()
+
+    def test_document_file_query_token_requires_valid_token_and_uses_no_store_headers(self):
+        document_id = self._insert_document(
+            'Preview Token Note',
+            'preview token content',
+            workspace_id='',
+            filename='preview-token-note.txt',
+        )
+        os.makedirs('uploads', exist_ok=True)
+        with open(os.path.join('uploads', 'preview-token-note.txt'), 'wb') as handle:
+            handle.write(b'preview token content')
+
+        missing_response = self.client.get(f'/api/documents/{document_id}/file')
+        self.assertEqual(missing_response.status_code, 401)
+        missing_response.close()
+
+        invalid_response = self.client.get(f'/api/documents/{document_id}/file?auth_token=bad-token')
+        self.assertEqual(invalid_response.status_code, 401)
+        invalid_response.close()
+
+        with patch('backend.security.AUTH_TOKEN_TTL_SECONDS', -1):
+            expired_response = self.client.get(
+                f'/api/documents/{document_id}/file?auth_token={create_auth_token(self.username)}'
+            )
+        self.assertEqual(expired_response.status_code, 401)
+        expired_response.close()
+
+        valid_response = self.client.get(
+            f'/api/documents/{document_id}/file?auth_token={create_auth_token(self.username)}'
+        )
+        self.assertEqual(valid_response.status_code, 200)
+        self.assertEqual(valid_response.headers.get('Cache-Control'), 'no-store, private, max-age=0')
+        self.assertEqual(valid_response.headers.get('Referrer-Policy'), 'no-referrer')
+        self.assertEqual(valid_response.headers.get('X-Robots-Tag'), 'noindex, nofollow')
+        valid_response.close()
 
     def test_expired_and_revoked_share_links_are_rejected(self):
         expired_doc_id = self._insert_document(
@@ -1677,6 +1951,99 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 401)
         self.assertIn('auth token', str(response.get_json().get('error', '')).lower())
+
+    def test_upload_rejects_unsupported_extension(self):
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (io.BytesIO(b'not allowed'), 'malware.exe'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('File type not allowed', response.get_json().get('error', ''))
+
+    def test_upload_rejects_renamed_invalid_pdf(self):
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (io.BytesIO(b'this is not a pdf'), 'renamed.pdf'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('does not match', response.get_json().get('error', ''))
+
+    def test_upload_rejects_extension_content_mismatch(self):
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (self._build_pdf_upload('pdf bytes with wrong image extension'), 'wrong.png'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('does not match', response.get_json().get('error', ''))
+
+    def test_upload_rejects_invalid_docx_structure(self):
+        fake_docx = io.BytesIO()
+        import zipfile
+        with zipfile.ZipFile(fake_docx, 'w') as archive:
+            archive.writestr('not-word/document.txt', 'renamed zip')
+        fake_docx.seek(0)
+
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (fake_docx, 'fake.docx'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Office document', response.get_json().get('error', ''))
+
+    def test_upload_rejects_oversized_image_dimensions(self):
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (self._build_png_header(100000, 100000), 'huge.png'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('too large', response.get_json().get('error', ''))
+
+    def test_upload_valid_png_file_creates_document(self):
+        upload_response = self.client.post(
+            '/api/documents/upload',
+            data={
+                'file': (self._build_valid_png_upload(), 'upload-image-smoke.png'),
+                'category': 'Computer Science',
+                'workspace_id': self.workspace_id,
+            },
+            headers=self._auth_headers(),
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(upload_response.status_code, 201)
+        upload_payload = upload_response.get_json()
+        document_id = parse_int(upload_payload.get('document_id'), 0, 0)
+        self.assertGreater(document_id, 0)
+
+        detail_response = self.client.get(f'/api/documents/{document_id}', headers=self._auth_headers())
+        self.assertEqual(detail_response.status_code, 200)
+        detail_payload = detail_response.get_json()
+        self.assertEqual(detail_payload.get('title'), 'upload-image-smoke.png')
+        self.assertEqual(str(detail_payload.get('file_type')).lower(), 'png')
 
     def test_upload_text_file_creates_document_visible_in_listing(self):
         upload_response = self.client.post(

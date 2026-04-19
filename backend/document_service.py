@@ -46,7 +46,7 @@ from .share_domain import (
     user_can_manage_document_share_links,
 )
 from .security import get_authenticated_username
-from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, upload_local_file_to_storage, write_file_bytes_to_storage
+from .storage import allowed_file, detect_mimetype, read_file_bytes_from_storage, remove_document_file_from_storage, upload_local_file_to_storage, validate_upload_file_content, write_file_bytes_to_storage
 from .summary_service import build_summary_cache_key, build_summary_input_hash, clear_document_summary_cache
 from .utils import normalize_document_category, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .workspace_domain import get_or_create_default_workspace_id, get_workspace_record, get_workspace_settings, normalize_workspace_settings, workspace_belongs_to_user
@@ -704,6 +704,13 @@ def upload_file():
     unique_filename = f"{uuid.uuid4().hex}.{ext}"
     local_filepath = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
     file.save(local_filepath)
+    content_ok, content_error = validate_upload_file_content(local_filepath, original_filename, ext)
+    if not content_ok:
+        try:
+            os.remove(local_filepath)
+        except Exception:
+            pass
+        return jsonify({'error': content_error or 'Uploaded file type could not be verified'}), 400
 
     storage_written = False
     document_saved = False
@@ -1685,4 +1692,6 @@ def get_document_file(doc_id):
         response.headers['Cache-Control'] = 'no-store, private, max-age=0'
         response.headers['Pragma'] = 'no-cache'
         response.headers['Expires'] = '0'
+        response.headers['Referrer-Policy'] = 'no-referrer'
+        response.headers['X-Robots-Tag'] = 'noindex, nofollow'
     return response

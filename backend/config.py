@@ -7,7 +7,8 @@ from docx.enum.text import WD_COLOR_INDEX
 try:
     from dotenv import load_dotenv
 
-    load_dotenv()
+    if str(os.environ.get('PYTHON_DOTENV_DISABLED') or '').strip().lower() not in ('1', 'true', 'yes', 'on'):
+        load_dotenv()
 except Exception:
     # Keep running even when python-dotenv is not installed.
     pass
@@ -113,6 +114,9 @@ AUTH_COOKIE_SAMESITE = (os.environ.get('AUTH_COOKIE_SAMESITE') or 'Lax').strip()
 AUTH_COOKIE_SECURE = str(
     os.environ.get('AUTH_COOKIE_SECURE') or ('1' if IS_PRODUCTION_ENV else '0')
 ).strip().lower() in ('1', 'true', 'yes', 'on')
+DEBUG_ENABLED = _is_explicit_development_environment() and str(
+    os.environ.get('FLASK_DEBUG') or os.environ.get('APP_DEBUG') or '0'
+).strip().lower() in ('1', 'true', 'yes', 'on')
 AUTH_BYPASS_ENDPOINTS = {
     'register',
     'login',
@@ -122,6 +126,7 @@ AUTH_BYPASS_ENDPOINTS = {
     'get_document_by_share_token',
     'get_invitation_by_token',
     'ocr_health',
+    'health',
 }
 
 try:
@@ -350,9 +355,59 @@ S3_KEY = os.environ.get('AWS_ACCESS_KEY_ID')
 S3_SECRET = os.environ.get('AWS_SECRET_ACCESS_KEY')
 S3_REGION = os.environ.get('AWS_REGION', 'us-west-2')
 
-DEFAULT_INVITE_BASE_URL = 'https://automated-lecture-notes-summarisation.onrender.com'
-APP_BASE_URL = (os.environ.get('APP_BASE_URL') or DEFAULT_INVITE_BASE_URL).rstrip('/')
+def _normalize_origin(value):
+    safe_value = str(value or '').strip().rstrip('/')
+    if not safe_value:
+        return ''
+    if safe_value.startswith('http://') or safe_value.startswith('https://'):
+        return safe_value
+    return ''
+
+
+def _resolve_app_base_url():
+    configured = _normalize_origin(os.environ.get('APP_BASE_URL'))
+    if configured:
+        return configured
+    if IS_PRODUCTION_ENV:
+        raise RuntimeError(
+            'APP_BASE_URL must be configured in production before generating absolute links.'
+        )
+    return 'http://127.0.0.1:5001'
+
+
+def _split_origins(raw_value):
+    return [
+        origin
+        for origin in (_normalize_origin(item) for item in str(raw_value or '').split(','))
+        if origin
+    ]
+
+
+APP_BASE_URL = _resolve_app_base_url()
 INVITE_BASE_URL = APP_BASE_URL
+CORS_ALLOWED_ORIGINS = _split_origins(os.environ.get('CORS_ALLOWED_ORIGINS'))
+if not CORS_ALLOWED_ORIGINS:
+    if IS_PRODUCTION_ENV:
+        CORS_ALLOWED_ORIGINS = [
+            'https://studies-hub.com',
+            'https://www.studies-hub.com',
+        ]
+    else:
+        CORS_ALLOWED_ORIGINS = [
+            'http://localhost:5173',
+            'http://127.0.0.1:5173',
+            'http://localhost:5001',
+            'http://127.0.0.1:5001',
+        ]
+_rate_limit_enabled_raw = os.environ.get('RATE_LIMIT_ENABLED')
+if _rate_limit_enabled_raw is None:
+    RATE_LIMIT_ENABLED = IS_PRODUCTION_ENV
+else:
+    RATE_LIMIT_ENABLED = str(_rate_limit_enabled_raw).strip().lower() not in ('0', 'false', 'no', 'off')
+try:
+    RATE_LIMIT_WINDOW_SECONDS = max(1, int((os.environ.get('RATE_LIMIT_WINDOW_SECONDS') or '60').strip()))
+except Exception:
+    RATE_LIMIT_WINDOW_SECONDS = 60
 RESEND_API_KEY = (os.environ.get('RESEND_API_KEY') or '').strip()
 RESEND_FROM_EMAIL = (os.environ.get('RESEND_FROM_EMAIL') or 'StudyHub <onboarding@resend.dev>').strip()
 SUPPORT_EMAIL = (os.environ.get('SUPPORT_EMAIL') or 'hello@studies-hub.com').strip()

@@ -1,4 +1,6 @@
 import re
+import threading
+import time
 
 from flask import g, jsonify, request
 from itsdangerous import URLSafeTimedSerializer, BadSignature, BadTimeSignature, SignatureExpired
@@ -9,12 +11,25 @@ from .config import (
     AUTH_TOKEN_SALT,
     AUTH_TOKEN_SECRET,
     AUTH_TOKEN_TTL_SECONDS,
+    RATE_LIMIT_ENABLED,
+    RATE_LIMIT_WINDOW_SECONDS,
 )
 from .utils import utcnow_iso
 
 
 _auth_token_serializer = URLSafeTimedSerializer(AUTH_TOKEN_SECRET)
 _FILE_AUTH_TOKEN_PATH_RE = re.compile(r'^/api/documents/\d+/file$')
+_RATE_LIMIT_LOCK = threading.Lock()
+_RATE_LIMIT_BUCKETS = {}
+RATE_LIMIT_RULES = {
+    'login': (20, RATE_LIMIT_WINDOW_SECONDS),
+    'register': (10, RATE_LIMIT_WINDOW_SECONDS),
+    'resend_verification': (10, RATE_LIMIT_WINDOW_SECONDS),
+    'upload_file': (60, RATE_LIMIT_WINDOW_SECONDS),
+    'extract_text_from_image': (30, RATE_LIMIT_WINDOW_SECONDS),
+    'analyze_text': (30, RATE_LIMIT_WINDOW_SECONDS),
+    'summarize_document': (30, RATE_LIMIT_WINDOW_SECONDS),
+}
 
 
 def create_auth_token(username):
@@ -162,6 +177,55 @@ def _request_allows_anonymous_access(endpoint_leaf):
 
 def get_authenticated_username():
     return str(getattr(g, 'authenticated_username', '') or '').strip()
+
+
+def clear_rate_limit_state():
+    with _RATE_LIMIT_LOCK:
+        _RATE_LIMIT_BUCKETS.clear()
+
+
+def _rate_limit_identity():
+    forwarded_for = str(request.headers.get('X-Forwarded-For') or '').split(',', 1)[0].strip()
+    remote_addr = str(request.remote_addr or '').strip()
+    return forwarded_for or remote_addr or 'unknown'
+
+
+def rate_limit_middleware():
+    if not RATE_LIMIT_ENABLED:
+        return None
+    if request.method == 'OPTIONS':
+        return None
+    endpoint_leaf = str(request.endpoint or '').rsplit('.', 1)[-1]
+    rule = RATE_LIMIT_RULES.get(endpoint_leaf)
+    if not rule:
+        return None
+
+    limit, window_seconds = rule
+    try:
+        safe_limit = max(1, int(limit))
+        safe_window = max(1, int(window_seconds))
+    except Exception:
+        return None
+
+    now = time.monotonic()
+    key = (endpoint_leaf, _rate_limit_identity())
+    with _RATE_LIMIT_LOCK:
+        timestamps = [
+            ts for ts in _RATE_LIMIT_BUCKETS.get(key, [])
+            if now - ts < safe_window
+        ]
+        if len(timestamps) >= safe_limit:
+            retry_after = max(1, int(safe_window - (now - timestamps[0])))
+            response = jsonify({
+                'error': 'Too many requests. Please wait and try again.',
+                'retry_after_seconds': retry_after,
+            })
+            response.status_code = 429
+            response.headers['Retry-After'] = str(retry_after)
+            return response
+        timestamps.append(now)
+        _RATE_LIMIT_BUCKETS[key] = timestamps
+    return None
 
 
 def enforce_auth_token_middleware():
