@@ -6055,6 +6055,77 @@ body.notion-home-body .skip-link:focus-visible{
   padding:6px 10px;
 }
 
+.studyhub-category-combobox{
+  position:relative;
+  display:flex;
+  align-items:stretch;
+  min-width:180px;
+  max-width:100%;
+}
+
+.studyhub-category-combobox input{
+  flex:1 1 auto;
+  min-width:0;
+  padding-right:38px !important;
+}
+
+.studyhub-category-combobox-toggle{
+  position:absolute;
+  top:1px;
+  right:1px;
+  bottom:1px;
+  width:34px;
+  min-width:34px !important;
+  border:0 !important;
+  border-left:1px solid #e1e7f4 !important;
+  border-radius:0 9px 9px 0 !important;
+  background:#fff !important;
+  box-shadow:none !important;
+  color:#2d3f5f !important;
+  cursor:pointer;
+  padding:0 !important;
+}
+
+.studyhub-category-combobox-toggle:hover,
+.studyhub-category-combobox.is-open .studyhub-category-combobox-toggle{
+  background:#f2f6ff !important;
+}
+
+.studyhub-category-combobox-list{
+  position:absolute;
+  z-index:80;
+  top:calc(100% + 4px);
+  left:0;
+  width:max(100%, 180px);
+  max-height:260px;
+  margin:0;
+  padding:6px;
+  list-style:none;
+  overflow:auto;
+  border:1px solid #dfe7f5;
+  border-radius:8px;
+  background:#fff;
+  box-shadow:0 14px 32px rgba(28,44,74,0.16);
+}
+
+.studyhub-category-combobox-list button{
+  width:100%;
+  min-height:34px;
+  border:0 !important;
+  border-radius:6px !important;
+  background:transparent !important;
+  box-shadow:none !important;
+  color:#25344d !important;
+  text-align:left;
+  padding:7px 9px !important;
+  cursor:pointer;
+}
+
+.studyhub-category-combobox-list button:hover,
+.studyhub-category-combobox-list button[aria-selected="true"]{
+  background:#eef4ff !important;
+}
+
 .notion-bulk-panel{
   border:1px solid #dde7f8;
   border-radius:12px;

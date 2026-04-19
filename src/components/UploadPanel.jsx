@@ -1,3 +1,5 @@
+import CategoryCombobox from './CategoryCombobox.jsx';
+
 const formatFileSize = (size) => {
   const bytes = Number(size) || 0;
   if (bytes <= 0) return '0 KB';
@@ -74,20 +76,14 @@ export default function UploadPanel({
       >
         <form id="upload-form" className={embedded ? 'notion-upload-form-embedded' : ''} onSubmit={onSubmit} noValidate>
           <label htmlFor="upload-category-input">Category (optional)</label>
-          <input
+          <CategoryCombobox
             id="upload-category-input"
-            type="text"
-            list="upload-category-options"
             placeholder="e.g. Computer Science"
             value={uploadCategory}
-            onChange={(event) => onUploadCategoryChange(event.target.value)}
+            onChange={onUploadCategoryChange}
+            suggestions={categorySuggestions}
             disabled={!allowUploads}
           />
-          <datalist id="upload-category-options">
-            {categorySuggestions.map((category) => (
-              <option key={category} value={category} />
-            ))}
-          </datalist>
           <div className={`uploader-actions${embedded ? ' is-embedded' : ''}`}>
             <label
               htmlFor="file-input"

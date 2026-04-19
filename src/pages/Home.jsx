@@ -8,6 +8,7 @@ import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import SummaryCenterModal from '../components/SummaryCenterModal.jsx';
 import TrashModal from '../components/TrashModal.jsx';
 import UploadPanel from '../components/UploadPanel.jsx';
+import CategoryCombobox from '../components/CategoryCombobox.jsx';
 import WorkspaceIcon, { isWorkspaceImageIcon } from '../components/WorkspaceIcon.jsx';
 import WorkspaceSidebar from '../components/WorkspaceSidebar.jsx';
 import useDocumentsList from '../hooks/useDocumentsList.js';
@@ -7944,21 +7945,15 @@ export default function HomePage() {
                       <div className="notion-bulk-controls">
                         <label className="notion-results-control" htmlFor="bulk-category-input">
                           <span>Set category</span>
-                          <input
+                          <CategoryCombobox
                             id="bulk-category-input"
-                            type="text"
-                            list="bulk-category-options"
                             placeholder="Leave empty for Uncategorized"
                             value={bulkCategoryDraft}
-                            onChange={(event) => setBulkCategoryDraft(event.target.value)}
+                            onChange={setBulkCategoryDraft}
+                            suggestions={categorySuggestions}
                             disabled={bulkActionLoading || documentsLoading || selectAllMatchedLoading}
                           />
                         </label>
-                        <datalist id="bulk-category-options">
-                          {categorySuggestions.map((category) => (
-                            <option key={`bulk-category-${category}`} value={category} />
-                          ))}
-                        </datalist>
                         <button
                           type="button"
                           className="btn"
