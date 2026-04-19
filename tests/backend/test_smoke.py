@@ -1170,6 +1170,140 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             copied_text = extract_text_from_pdf_bytes(f.read())
         self.assertIn('fallback copy text from database', copied_text)
 
+    @patch('backend.share_link_service.send_document_share_email', return_value=(True, ''))
+    def test_email_share_to_friend_creates_acceptance_notification(self, _mock_send_share_email):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            conn.execute(
+                'INSERT INTO friendships (user_a, user_b, created_at) VALUES (?, ?, ?)',
+                ('alice', 'bob', utcnow_iso()),
+            )
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    'ws-bob-email-share',
+                    'Bob Email Share Files',
+                    'Free',
+                    'bob',
+                    workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            ensure_owner_membership(conn, 'ws-bob-email-share', 'bob')
+            conn.commit()
+        finally:
+            conn.close()
+
+        self.client.patch(
+            '/api/auth/preferences',
+            headers=self._auth_headers('bob'),
+            json={'email_notifications_enabled': False},
+        )
+
+        os.makedirs('uploads', exist_ok=True)
+        source_filename = 'email-friend-share.txt'
+        with open(os.path.join('uploads', source_filename), 'wb') as f:
+            f.write(b'email friend share source text')
+        document_id = self._insert_document(
+            'Email Friend Share',
+            'email friend share source text',
+            file_type='txt',
+            filename=source_filename,
+        )
+
+        share_response = self.client.post(
+            f'/api/documents/{document_id}/email-share',
+            headers=self._auth_headers(),
+            json={
+                'recipient_email': 'bob@example.com',
+                'message': 'Please add this to your workspace.',
+                'expiry_days': 7,
+            },
+        )
+        self.assertEqual(share_response.status_code, 200)
+
+        bob_summary = self.client.get('/api/friends/summary', headers=self._auth_headers('bob')).get_json()
+        pending = next(
+            item for item in bob_summary['notifications']
+            if item.get('type') == 'friend_file_share'
+        )
+        self.assertEqual(pending['metadata']['status'], 'pending')
+        self.assertEqual(pending['metadata']['source_document_id'], document_id)
+        self.assertEqual(pending['metadata']['document_title'], 'Email Friend Share')
+        self.assertTrue(str(pending['metadata'].get('share_token') or '').strip())
+
+        accept_response = self.client.post(
+            f"/api/friends/file-shares/{pending['id']}/respond",
+            headers=self._auth_headers('bob'),
+            json={'action': 'accept', 'target_workspace_id': 'ws-bob-email-share'},
+        )
+        self.assertEqual(accept_response.status_code, 200)
+        payload = accept_response.get_json()
+        self.assertEqual(payload['status'], 'accepted')
+        self.assertEqual(payload['workspace_id'], 'ws-bob-email-share')
+        self.assertEqual(payload['document']['username'], 'bob')
+        self.assertEqual(payload['document']['title'], 'Email Friend Share')
+
+    def test_authenticated_share_link_can_be_saved_to_workspace(self):
+        self._insert_user('bob', 'bob@example.com')
+        conn = self._connection()
+        try:
+            now_iso = utcnow_iso()
+            conn.execute(
+                '''
+                INSERT INTO workspaces (id, name, plan, owner_username, settings_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ''',
+                (
+                    'ws-bob-public-share',
+                    'Bob Public Share Files',
+                    'Free',
+                    'bob',
+                    workspace_settings_to_json(DEFAULT_WORKSPACE_SETTINGS),
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            ensure_owner_membership(conn, 'ws-bob-public-share', 'bob')
+            conn.commit()
+        finally:
+            conn.close()
+
+        os.makedirs('uploads', exist_ok=True)
+        source_filename = 'public-share-source.txt'
+        with open(os.path.join('uploads', source_filename), 'wb') as f:
+            f.write(b'public share source text')
+        document_id = self._insert_document(
+            'Public Share Save',
+            'public share source text',
+            file_type='txt',
+            filename=source_filename,
+        )
+        token = self._insert_share_link(document_id, token='save-public-share-token', workspace_id=self.workspace_id)
+
+        response = self.client.post(
+            f'/api/share-links/{token}/save',
+            headers=self._auth_headers('bob'),
+            json={'workspace_id': 'ws-bob-public-share'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload['status'], 'saved')
+        self.assertEqual(payload['workspace_id'], 'ws-bob-public-share')
+        self.assertEqual(payload['document']['username'], 'bob')
+        self.assertEqual(payload['document']['title'], 'Public Share Save')
+
+        copied_filename = payload['document']['filename']
+        self.assertNotEqual(copied_filename, source_filename)
+        with open(os.path.join('uploads', copied_filename), 'rb') as f:
+            self.assertEqual(f.read(), b'public share source text')
+
     @patch('backend.shared.EXTERNAL_OCR_SERVICE_URL', 'https://private.example.invalid/ocr')
     @patch('backend.shared.HF_TOKEN', 'hf-test-token')
     @patch('backend.shared.requests.post')

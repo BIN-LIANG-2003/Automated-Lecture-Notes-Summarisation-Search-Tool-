@@ -20,6 +20,7 @@ import {
   listDocumentShareLinks,
   revokeAllDocumentShareLinks,
   revokeDocumentShareLink,
+  saveSharedDocumentToWorkspace,
   sendDocumentShareLinkEmail,
 } from '../lib/shareLinks.js';
 import {
@@ -210,6 +211,7 @@ export default function DocumentDetail() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isSavingOcr, setIsSavingOcr] = useState(false);
   const [isDownloadingFile, setIsDownloadingFile] = useState(false);
+  const [isSavingSharedCopy, setIsSavingSharedCopy] = useState(false);
   const [shareAccessState, setShareAccessState] = useState(null);
   const [summaryProgress, setSummaryProgress] = useState(DEFAULT_SUMMARY_PROGRESS);
   const [shareLinks, setShareLinks] = useState([]);
@@ -801,6 +803,27 @@ export default function DocumentDetail() {
     }
   };
 
+  const handleSaveSharedFile = async () => {
+    if (!safeShareToken) return;
+    if (!username) {
+      navigate('/login', { state: { from: `/shared/${safeShareToken}` } });
+      return;
+    }
+    setIsSavingSharedCopy(true);
+    try {
+      const payload = await saveSharedDocumentToWorkspace(safeShareToken);
+      showToast(payload?.message || 'Shared file added to your workspace.', 'success');
+      const savedDocId = Number(payload?.document_id);
+      if (Number.isFinite(savedDocId) && savedDocId > 0) {
+        navigate(`/document/${savedDocId}`, { state: { showFiles: true } });
+      }
+    } catch (err) {
+      showToast(err?.message || 'Shared file could not be added.', 'error');
+    } finally {
+      setIsSavingSharedCopy(false);
+    }
+  };
+
   const handleCopyShareLink = async () => {
     if (shareLinkDisabledReason) {
       showToast(shareLinkDisabledReason, 'warning');
@@ -1118,6 +1141,16 @@ export default function DocumentDetail() {
                 disabled={isDownloadingFile}
               >
                 {isDownloadingFile ? 'Downloading...' : 'Download Shared File'}
+              </button>
+              <button
+                type="button"
+                className="btn document-share-download-btn"
+                onClick={handleSaveSharedFile}
+                disabled={isSavingSharedCopy || document?.share?.isExpired}
+              >
+                {isSavingSharedCopy
+                  ? 'Adding...'
+                  : (username ? 'Add to Workspace' : 'Sign in to Add')}
               </button>
             </div>
           ) : (

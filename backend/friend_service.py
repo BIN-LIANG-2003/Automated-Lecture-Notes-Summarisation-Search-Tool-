@@ -322,6 +322,14 @@ def _copy_document_to_user_workspace(conn, source_doc, recipient_username, works
         raise
 
 
+def resolve_file_share_target_workspace(conn, recipient_username, requested_workspace_id=''):
+    return _resolve_file_share_target_workspace(conn, recipient_username, requested_workspace_id)
+
+
+def copy_document_to_user_workspace(conn, source_doc, recipient_username, workspace_id):
+    return _copy_document_to_user_workspace(conn, source_doc, recipient_username, workspace_id)
+
+
 def _load_user_by_username(conn, username):
     cursor = conn.execute(
         '''

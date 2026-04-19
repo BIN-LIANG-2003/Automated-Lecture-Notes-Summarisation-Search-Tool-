@@ -6,7 +6,14 @@ from .config import DEFAULT_WORKSPACE_SETTINGS
 from .db import get_db_connection
 from .document_domain import plaintext_to_html
 from .email_service import send_resend_email
-from .friend_service import are_friends, create_system_notification
+from .friend_service import (
+    DIRECT_FILE_SHARE_TYPE,
+    FileShareWorkspaceError,
+    are_friends,
+    copy_document_to_user_workspace,
+    create_system_notification,
+    resolve_file_share_target_workspace,
+)
 from .security import get_authenticated_username
 from .utils import normalize_email, parse_bool, parse_int, row_to_dict, utcnow_iso
 from .share_domain import (
@@ -25,6 +32,24 @@ from .share_domain import (
     validate_document_share_token,
 )
 from .workspace_domain import expires_at_for_days, get_workspace_settings, is_valid_email
+
+
+def _document_title(doc):
+    return (
+        str((doc or {}).get('title') or '').strip()
+        or str((doc or {}).get('filename') or '').strip()
+        or 'Untitled Note'
+    )
+
+
+def _document_file_type(doc):
+    file_type = str((doc or {}).get('file_type') or '').strip().lower().lstrip('.')
+    if file_type:
+        return file_type
+    filename = str((doc or {}).get('filename') or '').strip()
+    if '.' in filename:
+        return filename.rsplit('.', 1)[-1].strip().lower()
+    return 'txt'
 
 
 def _load_share_creation_context(conn, doc_id, username):
@@ -352,17 +377,31 @@ def send_document_share_link_email(doc_id):
         )
         recipient_user = row_to_dict(recipient_cursor.fetchone()) or {}
         recipient_username = str(recipient_user.get('username') or '').strip()
-        doc_title = context['doc_data'].get('title') or context['doc_data'].get('filename') or 'Untitled Note'
+        doc_title = _document_title(context.get('doc_data') or {})
         if recipient_username and recipient_username != username and are_friends(conn, username, recipient_username):
+            notification_body = f'{username} shared {doc_title} with you. Accept it to add a copy to your files.'
+            if personal_message:
+                notification_body = f'{notification_body} Note: {personal_message}'
             create_system_notification(
                 conn,
                 recipient_username,
-                'Shared note from a friend',
-                f'{username} shared {doc_title} with you.',
-                notification_type='share',
+                'File shared with you',
+                notification_body,
+                notification_type=DIRECT_FILE_SHARE_TYPE,
                 actor_username=username,
-                link_url=share_url,
-                metadata={'document_id': doc_id, 'share_token': payload.get('token') or ''},
+                link_url='',
+                metadata={
+                    'status': 'pending',
+                    'sender_username': username,
+                    'source_document_id': doc_id,
+                    'source_workspace_id': str(context['doc_data'].get('workspace_id') or '').strip(),
+                    'document_id': doc_id,
+                    'document_title': doc_title,
+                    'document_file_type': _document_file_type(context.get('doc_data') or {}),
+                    'note': personal_message,
+                    'share_token': payload.get('token') or '',
+                    'share_url': share_url,
+                },
             )
 
         conn.commit()
@@ -734,6 +773,112 @@ def delete_inactive_document_share_links(doc_id):
             'deleted_count': len(delete_ids),
             'items': list_document_share_link_payloads(conn, doc_id, limit=30),
         }), 200
+    finally:
+        conn.close()
+
+
+def save_document_share_link_to_workspace(token):
+    username = get_authenticated_username()
+    if not username:
+        return jsonify({'error': 'Sign in before adding this shared file to your workspace'}), 401
+
+    safe_token = str(token or '').strip()
+    if not safe_token:
+        return jsonify({'error': 'Share link is required'}), 400
+
+    data = request.get_json(silent=True) or {}
+    target_workspace_id = str(
+        data.get('target_workspace_id') or
+        data.get('targetWorkspaceId') or
+        data.get('workspace_id') or
+        data.get('workspaceId') or
+        ''
+    ).strip()
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+
+    try:
+        share_cursor = conn.execute(
+            '''
+            SELECT *
+            FROM document_share_links
+            WHERE token = ?
+            ORDER BY id DESC
+            LIMIT 1
+            ''',
+            (safe_token,),
+        )
+        share_row = row_to_dict(share_cursor.fetchone()) or {}
+        if not share_row:
+            return jsonify({'error': 'Share link not found'}), 404
+
+        source_doc_id = parse_int(share_row.get('document_id'), 0, 1)
+        if source_doc_id <= 0:
+            return jsonify({'error': 'Share link is invalid'}), 404
+
+        token_ok, _, token_reason = validate_document_share_token(
+            conn,
+            source_doc_id,
+            safe_token,
+            mark_access=True,
+        )
+        if not token_ok:
+            return jsonify({'error': token_reason or 'Share link is invalid'}), 403
+
+        doc_cursor = conn.execute('SELECT * FROM documents WHERE id = ? LIMIT 1', (source_doc_id,))
+        source_doc = row_to_dict(doc_cursor.fetchone()) or {}
+        if not source_doc:
+            return jsonify({'error': 'Document not found'}), 404
+
+        allowed, reason = check_document_access(conn, source_doc, username, safe_token)
+        if not allowed:
+            return jsonify({'error': reason or 'You do not have access to this shared file'}), 403
+
+        try:
+            workspace_id = resolve_file_share_target_workspace(conn, username, target_workspace_id)
+        except FileShareWorkspaceError as exc:
+            return jsonify({'error': str(exc)}), exc.status_code
+
+        try:
+            new_document_id, copied_doc, workspace_id, copy_warning = copy_document_to_user_workspace(
+                conn,
+                source_doc,
+                username,
+                workspace_id,
+            )
+        except RuntimeError as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            return jsonify({'error': str(exc)}), 409
+        except Exception as exc:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            print(f'Share link save failed: {exc}')
+            return jsonify({'error': 'Shared file could not be added. Ask the sender to share it again.'}), 500
+
+        conn.commit()
+        payload = {
+            'message': 'Shared file added to your workspace.',
+            'status': 'saved',
+            'document_id': new_document_id,
+            'workspace_id': workspace_id,
+            'document': copied_doc,
+        }
+        if copy_warning:
+            payload['warning'] = copy_warning
+        return jsonify(payload), 200
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
     finally:
         conn.close()
 

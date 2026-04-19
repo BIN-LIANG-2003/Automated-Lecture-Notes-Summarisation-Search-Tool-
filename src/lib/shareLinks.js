@@ -116,6 +116,30 @@ export async function sendDocumentShareLinkEmail(
   return result;
 }
 
+export async function saveSharedDocumentToWorkspace(
+  shareToken,
+  {
+    workspaceId = '',
+  } = {},
+) {
+  const safeToken = String(shareToken || '').trim();
+  if (!safeToken) throw new Error('Share link is missing');
+  const body = {};
+  const safeWorkspaceId = String(workspaceId || '').trim();
+  if (safeWorkspaceId) body.workspace_id = safeWorkspaceId;
+
+  const response = await authFetch(`/api/share-links/${encodeURIComponent(safeToken)}/save`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await readJsonSafely(response);
+  if (!response.ok) {
+    throw new Error(payload.error || 'Failed to add shared file to workspace');
+  }
+  return payload;
+}
+
 export async function revokeDocumentShareLink(docId, shareLinkId, { username = '' } = {}) {
   const safeDocId = toPositiveDocId(docId);
   const safeShareLinkId = toPositiveDocId(shareLinkId);

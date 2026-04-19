@@ -59,3 +59,8 @@ def delete_inactive_document_share_links(doc_id):
 @share_links_bp.route('/api/share-links/<token>', methods=['GET'])
 def get_document_by_share_token(token):
     return share_link_service.get_document_by_share_token(token)
+
+
+@share_links_bp.route('/api/share-links/<token>/save', methods=['POST'])
+def save_document_share_link_to_workspace(token):
+    return share_link_service.save_document_share_link_to_workspace(token)
