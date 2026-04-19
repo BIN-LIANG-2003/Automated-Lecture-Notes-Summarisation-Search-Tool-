@@ -25,7 +25,6 @@ import {
 import {
   clearStoredAuthSession,
   getRememberAuthPreference,
-  isCookieAuthToken,
   logoutCurrentSession,
   readStoredAuthSession,
   storeAuthSession,
@@ -3046,9 +3045,8 @@ export default function HomePage() {
 
   const handleSignOut = ({ forgetCurrent = false } = {}) => {
     const currentUsername = sessionStorage.getItem('username') || '';
-    const currentAuthToken = sessionStorage.getItem('auth_token') || '';
     clearStoredAuthSession();
-    void logoutCurrentSession(currentAuthToken);
+    void logoutCurrentSession();
     setIsLoggedIn(false);
     resetDocumentsData();
     setSidebarRecentIds([]);
@@ -6181,10 +6179,9 @@ export default function HomePage() {
     const params = new URLSearchParams();
     if (activeDocFileVersion) params.set('v', String(activeDocFileVersion));
     if (username) params.set('username', username);
-    if (authToken && !isCookieAuthToken(authToken)) params.set('auth_token', authToken);
     const qs = params.toString();
     return `/api/documents/${activeDoc.id}/file${qs ? `?${qs}` : ''}`;
-  }, [activeDoc, activeDocFileVersion, authToken, username]);
+  }, [activeDoc, activeDocFileVersion, username]);
   const handleDownloadDocumentFile = async (doc, { trackSidebar = false } = {}) => {
     const targetDocId = toPositiveDocId(doc?.id);
     if (!targetDocId) return;

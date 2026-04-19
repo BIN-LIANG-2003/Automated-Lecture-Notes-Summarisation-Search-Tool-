@@ -173,6 +173,16 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         after_logout_response = self.client.get('/api/auth/me')
         self.assertEqual(after_logout_response.status_code, 401)
 
+    def test_auth_me_refreshes_cookie_for_legacy_bearer_session(self):
+        bearer_only_client = self.app.test_client()
+        response = bearer_only_client.get('/api/auth/me', headers=self._auth_headers())
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.get_json().get('username'), self.username)
+        cookie_header = response.headers.get('Set-Cookie', '')
+        self.assertIn(f'{AUTH_COOKIE_NAME}=', cookie_header)
+        self.assertIn('HttpOnly', cookie_header)
+
     @patch('backend.workspace_service.send_workspace_invite_email', return_value=(True, ''))
     def test_workspace_invite_respects_recipient_email_preference(self, mock_send_invite):
         self._insert_user('bob', 'bob@example.com')
@@ -1400,6 +1410,14 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertNotIn('secret', json.dumps(payload).lower())
         self.assertNotIn('database_url', json.dumps(payload).lower())
 
+    def test_default_security_headers_are_sent(self):
+        response = self.client.get('/api/health')
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.headers.get('X-Content-Type-Options'), 'nosniff')
+        self.assertEqual(response.headers.get('X-Frame-Options'), 'DENY')
+        self.assertIn("frame-ancestors 'none'", response.headers.get('Content-Security-Policy', ''))
+        self.assertIn('camera=()', response.headers.get('Permissions-Policy', ''))
+
     def test_debug_mode_defaults_to_false_outside_explicit_debug_flag(self):
         import backend.config as config
 
@@ -1828,6 +1846,29 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             403,
         )
 
+    def test_share_token_cannot_trigger_ai_or_ocr_work(self):
+        document_id = self._insert_document(
+            'Read Only Shared Note',
+            'public share should allow reading but not AI processing',
+            filename='readonly-share.txt',
+        )
+        share_token = self._insert_share_link(document_id, token='readonly-share-token')
+
+        read_response = self.client.get(f'/api/documents/{document_id}?share_token={share_token}')
+        self.assertEqual(read_response.status_code, 200)
+
+        summarize_response = self.client.post(
+            '/api/analyze-text',
+            json={'doc_id': document_id, 'share_token': share_token},
+        )
+        self.assertEqual(summarize_response.status_code, 401)
+
+        ocr_response = self.client.post(
+            f'/api/extract-text/{document_id}',
+            data={'share_token': share_token},
+        )
+        self.assertEqual(ocr_response.status_code, 401)
+
     def test_legacy_uploads_route_rejects_anonymous_document_file_access(self):
         filename = 'legacy-private-route.txt'
         self._insert_document(
@@ -1893,6 +1934,21 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(valid_response.headers.get('Referrer-Policy'), 'no-referrer')
         self.assertEqual(valid_response.headers.get('X-Robots-Tag'), 'noindex, nofollow')
         valid_response.close()
+
+    def test_frontend_file_preview_urls_do_not_embed_auth_token(self):
+        for relative_path in ('src/pages/Home.jsx', 'src/pages/DocumentDetail.jsx'):
+            with open(os.path.join(self.original_cwd, relative_path), encoding='utf-8') as handle:
+                source = handle.read()
+            self.assertNotIn("params.set('auth_token'", source)
+            self.assertNotIn("previewFileParams.set('auth_token'", source)
+
+    def test_frontend_auth_session_does_not_store_raw_bearer_token(self):
+        with open(os.path.join(self.original_cwd, 'src/lib/authSession.js'), encoding='utf-8') as handle:
+            source = handle.read()
+        self.assertNotIn("sessionStorage.setItem('auth_token', safeToken)", source)
+        self.assertNotIn("sessionStorage.setItem('auth_token'", source)
+        self.assertNotIn("sessionStorage.getItem('auth_token'", source)
+        self.assertIn('authToken: COOKIE_AUTH_TOKEN', source)
 
     def test_expired_and_revoked_share_links_are_rejected(self):
         expired_doc_id = self._insert_document(
@@ -2009,6 +2065,28 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 400)
         self.assertIn('Office document', response.get_json().get('error', ''))
+
+    def test_upload_rejects_docx_zip_with_too_many_entries(self):
+        fake_docx = io.BytesIO()
+        import zipfile
+        with zipfile.ZipFile(fake_docx, 'w') as archive:
+            archive.writestr('[Content_Types].xml', '<Types></Types>')
+            archive.writestr('word/document.xml', '<w:document></w:document>')
+            for index in range(1001):
+                archive.writestr(f'word/extra-{index}.xml', '')
+        fake_docx.seek(0)
+
+        response = self.client.post(
+            '/api/documents/upload',
+            headers=self._auth_headers(),
+            data={
+                'file': (fake_docx, 'too-complex.docx'),
+                'workspace_id': self.workspace_id,
+            },
+            content_type='multipart/form-data',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('too complex', response.get_json().get('error', ''))
 
     def test_upload_rejects_oversized_image_dimensions(self):
         response = self.client.post(
@@ -2222,6 +2300,39 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                 modal_summary_app._auth_dependency()
             self.assertEqual(raised.exception.status_code, 401)
             modal_summary_app._auth_dependency('Bearer summary-secret')
+
+    def test_modal_ocr_service_fails_closed_without_token_in_production(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal OCR service')
+        from fastapi.testclient import TestClient
+        from ocr_service import app as modal_ocr_app
+
+        with patch.dict(os.environ, {
+            'APP_ENV': 'production',
+            'FLASK_ENV': 'production',
+            'ENV': 'production',
+            'OCR_SERVICE_AUTH_TOKEN': '',
+            'ALLOW_UNAUTHENTICATED_OCR_SERVICE': '0',
+        }):
+            response = TestClient(modal_ocr_app.app).post('/ocr', content=b'not an image')
+        self.assertEqual(response.status_code, 503)
+
+    def test_modal_ocr_service_requires_bearer_token_when_configured(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal OCR service')
+        from fastapi.testclient import TestClient
+        from ocr_service import app as modal_ocr_app
+
+        with patch.dict(os.environ, {
+            'APP_ENV': 'development',
+            'OCR_SERVICE_AUTH_TOKEN': 'ocr-secret',
+            'ALLOW_UNAUTHENTICATED_OCR_SERVICE': '0',
+        }):
+            client = TestClient(modal_ocr_app.app)
+            missing = client.post('/ocr', content=b'not an image')
+            invalid = client.post('/ocr', content=b'not an image', headers={'Authorization': 'Bearer wrong'})
+        self.assertEqual(missing.status_code, 401)
+        self.assertEqual(invalid.status_code, 401)
 
     def test_modal_summary_service_reports_truncated_long_input_metadata(self):
         if importlib.util.find_spec('fastapi') is None:

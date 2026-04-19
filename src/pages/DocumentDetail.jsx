@@ -7,7 +7,7 @@ import SummaryResultModal from '../components/SummaryResultModal.jsx';
 import UiFeedbackLayer from '../components/UiFeedbackLayer.jsx';
 import { useUiFeedback } from '../hooks/useUiFeedback.js';
 import { authFetch } from '../lib/authFetch.js';
-import { isCookieAuthToken, readStoredAuthSession } from '../lib/authSession.js';
+import { readStoredAuthSession } from '../lib/authSession.js';
 import { copyTextToClipboard } from '../lib/clipboard.js';
 import { formatDateTimeLabel } from '../lib/dates.js';
 import { downloadFileWithAuth } from '../lib/fileDownload.js';
@@ -395,8 +395,6 @@ export default function DocumentDetail() {
   if (username) previewFileParams.set('username', username);
   if (shareToken) {
     previewFileParams.set('share_token', shareToken);
-  } else if (authToken && !isCookieAuthToken(authToken)) {
-    previewFileParams.set('auth_token', authToken);
   }
   const fileUrl = `/api/documents/${document.id}/file${previewFileParams.toString() ? `?${previewFileParams.toString()}` : ''}`;
   const downloadFileParams = new URLSearchParams();

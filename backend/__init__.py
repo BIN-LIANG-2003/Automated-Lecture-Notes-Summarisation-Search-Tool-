@@ -37,6 +37,34 @@ def create_app():
     app.before_request(security.rate_limit_middleware)
     app.before_request(security.enforce_auth_token_middleware)
 
+    @app.after_request
+    def add_security_headers(response):
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'strict-origin-when-cross-origin')
+        response.headers.setdefault(
+            'Permissions-Policy',
+            'camera=(), microphone=(), geolocation=(), payment=()',
+        )
+        response.headers.setdefault(
+            'Content-Security-Policy',
+            "default-src 'self'; "
+            "base-uri 'self'; "
+            "object-src 'none'; "
+            "frame-ancestors 'none'; "
+            "form-action 'self'; "
+            "script-src 'self' https://accounts.google.com https://apis.google.com; "
+            "style-src 'self' 'unsafe-inline' https://accounts.google.com; "
+            "img-src 'self' data: blob: https:; "
+            "font-src 'self' data:; "
+            "connect-src 'self' https://accounts.google.com; "
+            "frame-src 'self' https://accounts.google.com; "
+            "worker-src 'self' blob:",
+        )
+        if config.IS_PRODUCTION_ENV:
+            response.headers.setdefault('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+        return response
+
     @app.route('/api/health', methods=['GET'])
     def health():
         from .storage import storage_uses_s3

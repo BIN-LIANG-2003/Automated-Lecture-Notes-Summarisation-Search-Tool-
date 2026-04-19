@@ -41,6 +41,18 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = _env(name, "1" if default else "0").lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def _is_explicit_development() -> bool:
+    return any(
+        _env(name).lower() == "development"
+        for name in ("APP_ENV", "FLASK_ENV", "ENV")
+    )
+
+
 def _safe_filename(value: Optional[str], fallback: str = "image") -> str:
     cleaned = str(value or fallback).replace("\x00", "").replace("\\", "/").strip()
     return Path(cleaned).name or fallback
@@ -53,7 +65,17 @@ async def require_bearer_token(request: Request, call_next):
 
     token = _env("OCR_SERVICE_AUTH_TOKEN")
     if not token:
-        return await call_next(request)
+        if _is_explicit_development() and _env_flag("ALLOW_UNAUTHENTICATED_OCR_SERVICE", False):
+            return await call_next(request)
+        return JSONResponse(
+            {"detail": "OCR_SERVICE_AUTH_TOKEN is required for /ocr"},
+            status_code=503,
+        )
+    if token.lower() == "replace-me":
+        return JSONResponse(
+            {"detail": "OCR_SERVICE_AUTH_TOKEN must be set to a non-placeholder value"},
+            status_code=503,
+        )
 
     auth_header = str(request.headers.get("authorization") or "").strip()
     scheme, _, credential = auth_header.partition(" ")

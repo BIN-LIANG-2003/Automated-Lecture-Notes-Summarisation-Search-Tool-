@@ -168,10 +168,6 @@ def _request_allows_anonymous_access(endpoint_leaf):
 
     if endpoint_leaf in {'get_document', 'get_document_file'}:
         return True
-    if endpoint_leaf == 'extract_text_from_image' and _request_doc_id() > 0:
-        return True
-    if endpoint_leaf == 'analyze_text' and _request_doc_id() > 0:
-        return True
     return False
 
 

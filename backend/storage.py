@@ -12,6 +12,10 @@ from werkzeug.utils import secure_filename
 
 from .config import ALLOWED_EXTENSIONS, MIME_BY_EXT, S3_BUCKET, UPLOAD_FOLDER, s3_client
 
+MAX_DOCX_ZIP_ENTRIES = 1000
+MAX_DOCX_UNCOMPRESSED_BYTES = 50 * 1024 * 1024
+MAX_DOCX_COMPRESSION_RATIO = 250
+
 
 def _upload_folder():
     if has_app_context():
@@ -74,6 +78,29 @@ def detect_mimetype(filename, file_ext=''):
 def _read_file_prefix(path, size=4096):
     with open(path, 'rb') as handle:
         return handle.read(size)
+
+
+def _validate_docx_zip_structure(archive):
+    infos = archive.infolist()
+    if len(infos) > MAX_DOCX_ZIP_ENTRIES:
+        return False, 'Uploaded DOCX file is too complex'
+
+    names = {info.filename for info in infos}
+    required = {'[Content_Types].xml', 'word/document.xml'}
+    if not required.issubset(names):
+        return False, 'Uploaded DOCX file is missing required Office document parts'
+
+    total_uncompressed = 0
+    total_compressed = 0
+    for info in infos:
+        total_uncompressed += max(0, int(info.file_size or 0))
+        total_compressed += max(0, int(info.compress_size or 0))
+        if total_uncompressed > MAX_DOCX_UNCOMPRESSED_BYTES:
+            return False, 'Uploaded DOCX file is too large after decompression'
+
+    if total_compressed > 0 and total_uncompressed / total_compressed > MAX_DOCX_COMPRESSION_RATIO:
+        return False, 'Uploaded DOCX file compression ratio is unsafe'
+    return True, ''
 
 
 def _image_dimensions_from_bytes(prefix):
@@ -142,13 +169,9 @@ def validate_upload_file_content(path, original_filename='', file_ext='', max_im
             return False, 'Uploaded file content does not match its .docx extension'
         try:
             with zipfile.ZipFile(path) as archive:
-                names = set(archive.namelist())
-                required = {'[Content_Types].xml', 'word/document.xml'}
-                if required.issubset(names):
-                    return True, ''
+                return _validate_docx_zip_structure(archive)
         except Exception:
             return False, 'Uploaded DOCX file is not readable'
-        return False, 'Uploaded DOCX file is missing required Office document parts'
 
     if ext == 'txt':
         if b'\x00' in prefix:

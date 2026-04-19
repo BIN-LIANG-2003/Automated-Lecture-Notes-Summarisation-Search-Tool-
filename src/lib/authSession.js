@@ -1,4 +1,5 @@
-const SESSION_STORAGE_KEYS = ['username', 'email', 'auth_token', 'loginAt', 'preferences_json'];
+const SESSION_STORAGE_KEYS = ['username', 'email', 'loginAt', 'preferences_json'];
+const LEGACY_SESSION_STORAGE_KEYS = ['auth_token'];
 const PERSISTED_AUTH_SESSION_KEY = 'studyhub-auth-session';
 const REMEMBER_AUTH_PREF_KEY = 'studyhub-remember-auth';
 const PERSISTED_AUTH_SESSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -17,17 +18,16 @@ const readJsonSafely = (value) => {
 const readSessionOnly = () => {
   const username = String(sessionStorage.getItem('username') || '').trim();
   const email = String(sessionStorage.getItem('email') || '').trim();
-  const authToken = String(sessionStorage.getItem('auth_token') || '').trim();
   const loginAt = String(sessionStorage.getItem('loginAt') || '').trim();
   const preferences = readJsonSafely(sessionStorage.getItem('preferences_json') || '') || {};
   return {
     username,
     email,
-    authToken,
+    authToken: username ? COOKIE_AUTH_TOKEN : '',
     loginAt,
     preferences,
-    cookieBacked: false,
-    isAuthenticated: Boolean(username && authToken),
+    cookieBacked: Boolean(username),
+    isAuthenticated: Boolean(username),
   };
 };
 
@@ -55,14 +55,12 @@ const persistedSessionExpired = (expiresAt) => {
   return Number.isFinite(expiresTime) && expiresTime <= Date.now();
 };
 
-const writeSessionStorage = ({ username = '', email = '', authToken = '', loginAt = '', preferences = {} } = {}) => {
+const writeSessionStorage = ({ username = '', email = '', loginAt = '', preferences = {} } = {}) => {
   const safeUsername = String(username || '').trim();
   const safeEmail = String(email || '').trim();
-  const safeToken = String(authToken || '').trim();
   const safeLoginAt = String(loginAt || '').trim() || new Date().toISOString();
   sessionStorage.setItem('username', safeUsername);
   sessionStorage.setItem('email', safeEmail);
-  sessionStorage.setItem('auth_token', safeToken);
   sessionStorage.setItem('loginAt', safeLoginAt);
   sessionStorage.setItem('preferences_json', JSON.stringify(preferences && typeof preferences === 'object' ? preferences : {}));
 };
@@ -75,7 +73,6 @@ export function readPersistedAuthSession() {
   }
   const username = String(parsed.username || '').trim();
   const email = String(parsed.email || '').trim();
-  const legacyAuthToken = String(parsed.authToken || parsed.auth_token || '').trim();
   const loginAt = String(parsed.loginAt || parsed.login_at || '').trim();
   const expiresAt = resolvePersistedExpiry(parsed, loginAt);
   if (persistedSessionExpired(expiresAt)) {
@@ -83,16 +80,15 @@ export function readPersistedAuthSession() {
     return emptyAuthSession();
   }
   const preferences = parsed.preferences && typeof parsed.preferences === 'object' ? parsed.preferences : {};
-  const cookieBacked = !legacyAuthToken;
   return {
     username,
     email,
-    authToken: legacyAuthToken || COOKIE_AUTH_TOKEN,
+    authToken: COOKIE_AUTH_TOKEN,
     loginAt,
     preferences,
     expiresAt,
-    cookieBacked,
-    isAuthenticated: Boolean(username && (legacyAuthToken || cookieBacked)),
+    cookieBacked: true,
+    isAuthenticated: Boolean(username),
   };
 }
 
@@ -122,12 +118,11 @@ export function setRememberAuthPreference(remember) {
   localStorage.setItem(REMEMBER_AUTH_PREF_KEY, remember ? '1' : '0');
 }
 
-export function storeAuthSession({ username = '', email = '', authToken = '', remember = false, preferences = {} } = {}) {
+export function storeAuthSession({ username = '', email = '', remember = false, preferences = {} } = {}) {
   const safeUsername = String(username || '').trim();
   const safeEmail = String(email || '').trim();
-  const safeToken = String(authToken || '').trim();
 
-  if (!safeUsername || !safeToken) {
+  if (!safeUsername) {
     clearStoredAuthSession();
     return readStoredAuthSession();
   }
@@ -137,7 +132,6 @@ export function storeAuthSession({ username = '', email = '', authToken = '', re
   writeSessionStorage({
     username: safeUsername,
     email: safeEmail,
-    authToken: safeToken,
     loginAt,
     preferences,
   });
@@ -162,6 +156,7 @@ export function storeAuthSession({ username = '', email = '', authToken = '', re
 
 export function clearStoredAuthSession() {
   SESSION_STORAGE_KEYS.forEach((key) => sessionStorage.removeItem(key));
+  LEGACY_SESSION_STORAGE_KEYS.forEach((key) => sessionStorage.removeItem(key));
   localStorage.removeItem(PERSISTED_AUTH_SESSION_KEY);
 }
 
@@ -192,7 +187,7 @@ export async function fetchCurrentSession(authToken = '') {
       user: {
         username: String(payload?.username || '').trim(),
         email: String(payload?.email || '').trim(),
-        authToken: String(payload?.auth_token || (useCookieSession ? '' : safeToken)).trim(),
+        authToken: COOKIE_AUTH_TOKEN,
         preferences: payload?.preferences && typeof payload.preferences === 'object' ? payload.preferences : {},
       },
     };

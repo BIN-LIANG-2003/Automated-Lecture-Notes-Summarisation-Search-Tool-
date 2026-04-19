@@ -858,14 +858,25 @@ def me():
             return jsonify({'error': 'User account not found for this session'}), 404
         friend_code = ensure_user_friend_code(conn, token_username)
         conn.commit()
-        return jsonify({
+        fresh_auth_token = create_auth_token(token_username)
+        response = make_response(jsonify({
             'username': user['username'],
             'email': user.get('email') if hasattr(user, 'get') else user['email'],
             'friend_code': friend_code or (user.get('friend_code') if hasattr(user, 'get') else user['friend_code']),
-            'auth_token': create_auth_token(token_username),
+            'auth_token': fresh_auth_token,
             'preferences': normalize_user_preferences(user),
             'authenticated': True,
-        }), 200
+        }), 200)
+        if get_bearer_token() and not str(request.cookies.get(AUTH_COOKIE_NAME) or '').strip():
+            response.set_cookie(
+                AUTH_COOKIE_NAME,
+                fresh_auth_token,
+                httponly=True,
+                secure=AUTH_COOKIE_SECURE,
+                samesite=AUTH_COOKIE_SAMESITE,
+                path='/',
+            )
+        return response
     finally:
         conn.close()
 
