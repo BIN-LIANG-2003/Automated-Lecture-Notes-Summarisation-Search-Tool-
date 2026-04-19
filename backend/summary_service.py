@@ -27,7 +27,7 @@ from .config import (
 )
 from .db import table_column_exists
 from .document_domain import normalize_newlines
-from .utils import parse_int, utcnow_iso
+from .utils import parse_bool, parse_int, utcnow_iso
 
 
 SUMMARY_LENGTH_PRESETS = {
@@ -727,6 +727,9 @@ def call_external_summary_service(text, summary_length='medium'):
         'summary_length': str(payload.get('summary_length') or targets['summary_length']).strip().lower() or targets['summary_length'],
         'chunk_count': parse_int(payload.get('chunk_count'), 1, 1),
         'merge_rounds': parse_int(payload.get('merge_rounds'), 0, 0),
+        'input_word_count': parse_int(payload.get('input_word_count'), 0, 0),
+        'processed_word_count': parse_int(payload.get('processed_word_count'), 0, 0),
+        'truncated': parse_bool(payload.get('truncated'), False),
     }
 
 
@@ -913,6 +916,9 @@ def build_summary_bundle(text, summary_length='medium', target_max_words=None, t
         'error': error if used_fallback else '',
         'chunk_count': parse_int(ai_result.get('chunk_count'), 0, 0),
         'merge_rounds': parse_int(ai_result.get('merge_rounds'), 0, 0),
+        'input_word_count': parse_int(ai_result.get('input_word_count'), 0, 0),
+        'processed_word_count': parse_int(ai_result.get('processed_word_count'), 0, 0),
+        'truncated': parse_bool(ai_result.get('truncated'), False),
         'target_max_words': safe_target_words,
         'textrank_sentence_count': sentence_count,
     }

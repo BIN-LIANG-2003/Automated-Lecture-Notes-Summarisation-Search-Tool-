@@ -47,6 +47,18 @@ def _env_int(name: str, default: int, minimum: int = 1) -> int:
         return default
 
 
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw_value = _env(name, "1" if default else "0").lower()
+    return raw_value in {"1", "true", "yes", "on"}
+
+
+def _is_explicit_development() -> bool:
+    return any(
+        _env(name).lower() == "development"
+        for name in ("APP_ENV", "FLASK_ENV", "ENV")
+    )
+
+
 def _clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", str(text or "")).strip()
 
@@ -56,10 +68,15 @@ def _summary_length(value: str | None) -> str:
     return requested if requested in LENGTH_PRESETS else "medium"
 
 
-def _split_chunks(text: str) -> list[str]:
+def _split_chunks_with_metadata(text: str) -> tuple[list[str], dict[str, Any]]:
     words = _clean_text(text).split()
     if not words:
-        return []
+        return [], {
+            "input_word_count": 0,
+            "processed_word_count": 0,
+            "truncated": False,
+            "chunk_count": 0,
+        }
 
     chunk_words = _env_int("SUMMARY_CHUNK_WORDS", 350, minimum=80)
     overlap = min(_env_int("SUMMARY_CHUNK_OVERLAP", 50, minimum=0), max(0, chunk_words - 1))
@@ -68,20 +85,43 @@ def _split_chunks(text: str) -> list[str]:
 
     chunks = []
     start = 0
+    processed_word_count = 0
     while start < len(words) and len(chunks) < max_chunks:
-        chunk = " ".join(words[start:start + chunk_words]).strip()
+        end = min(start + chunk_words, len(words))
+        chunk = " ".join(words[start:end]).strip()
         if chunk:
             chunks.append(chunk)
-        if start + chunk_words >= len(words):
+            processed_word_count = max(processed_word_count, end)
+        if end >= len(words):
             break
         start += step
-    return chunks
+    metadata = {
+        "input_word_count": len(words),
+        "processed_word_count": processed_word_count,
+        "truncated": processed_word_count < len(words),
+        "chunk_count": len(chunks),
+    }
+    return chunks, metadata
+
+
+def _split_chunks(text: str) -> list[str]:
+    return _split_chunks_with_metadata(text)[0]
 
 
 def _auth_dependency(authorization: str | None = Header(default=None)):
     token = _env("SUMMARY_SERVICE_AUTH_TOKEN")
     if not token:
-        return
+        if _is_explicit_development() and _env_flag("ALLOW_UNAUTHENTICATED_SUMMARY_SERVICE", False):
+            return
+        raise HTTPException(
+            status_code=503,
+            detail="SUMMARY_SERVICE_AUTH_TOKEN is required for /summarize",
+        )
+    if token.lower() == "replace-me":
+        raise HTTPException(
+            status_code=503,
+            detail="SUMMARY_SERVICE_AUTH_TOKEN must be set to a non-placeholder value",
+        )
     auth_header = str(authorization or "").strip()
     scheme, _, credential = auth_header.partition(" ")
     if scheme.lower() != "bearer" or credential.strip() != token:
@@ -175,7 +215,7 @@ def _summarize_sync(text: str, summary_length: str) -> dict[str, Any]:
     if not cleaned:
         raise HTTPException(status_code=400, detail="Text is required")
 
-    chunks = _split_chunks(cleaned)
+    chunks, chunk_metadata = _split_chunks_with_metadata(cleaned)
     if not chunks:
         raise HTTPException(status_code=400, detail="Text is required")
 
@@ -197,12 +237,15 @@ def _summarize_sync(text: str, summary_length: str) -> dict[str, Any]:
         "summary_source": SUMMARY_SOURCE,
         "summary_model": SUMMARY_MODEL_LABEL,
         "summary_length": summary_length,
-        "chunk_count": len(chunks),
+        "chunk_count": chunk_metadata["chunk_count"],
+        "input_word_count": chunk_metadata["input_word_count"],
+        "processed_word_count": chunk_metadata["processed_word_count"],
+        "truncated": chunk_metadata["truncated"],
     }
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title=SERVICE_NAME, dependencies=[Depends(_auth_dependency)])
+    app = FastAPI(title=SERVICE_NAME)
 
     @app.on_event("startup")
     async def startup_load_model():
@@ -225,7 +268,7 @@ def create_app() -> FastAPI:
             "model_loaded": bool(_model_state.get("loaded")),
         }
 
-    @app.post("/summarize")
+    @app.post("/summarize", dependencies=[Depends(_auth_dependency)])
     async def summarize(payload: SummaryRequest):
         summary_length = _summary_length(payload.summary_length)
         return await run_in_threadpool(_summarize_sync, payload.text, summary_length)

@@ -34,6 +34,8 @@ Required secret key:
 SUMMARY_SERVICE_AUTH_TOKEN
 ```
 
+`POST /summarize` requires `Authorization: Bearer <SUMMARY_SERVICE_AUTH_TOKEN>`. In production-like environments, the service fails closed if this token is missing or left as the placeholder value.
+
 Optional secret key:
 
 ```bash
