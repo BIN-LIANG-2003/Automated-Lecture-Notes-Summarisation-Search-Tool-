@@ -1,4 +1,5 @@
 import io
+import importlib.util
 import json
 import os
 import subprocess
@@ -43,6 +44,10 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.original_cwd = os.getcwd()
         self.tempdir = tempfile.TemporaryDirectory(prefix='studyhub-backend-smoke-')
         os.chdir(self.tempdir.name)
+        self.external_summary_url_patcher = patch('backend.summary_service.EXTERNAL_SUMMARY_SERVICE_URL', '')
+        self.external_summary_auth_patcher = patch('backend.summary_service.EXTERNAL_SUMMARY_AUTH_TOKEN', '')
+        self.external_summary_url_patcher.start()
+        self.external_summary_auth_patcher.start()
         self.app = create_app()
         self.client = self.app.test_client()
         self.username = 'alice'
@@ -53,6 +58,8 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self._seed_workspace()
 
     def tearDown(self):
+        self.external_summary_auth_patcher.stop()
+        self.external_summary_url_patcher.stop()
         os.chdir(self.original_cwd)
         self.tempdir.cleanup()
 
@@ -1816,6 +1823,58 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(len(chunks), 3)
         self.assertGreater(len(chunks[0].split()), len(chunks[-1].split()))
 
+    def test_modal_summary_service_fails_closed_without_token_in_production(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from fastapi import HTTPException
+        from summary_service import app as modal_summary_app
+
+        with patch.dict(os.environ, {
+            'APP_ENV': 'production',
+            'FLASK_ENV': 'production',
+            'ENV': 'production',
+            'SUMMARY_SERVICE_AUTH_TOKEN': '',
+            'ALLOW_UNAUTHENTICATED_SUMMARY_SERVICE': '0',
+        }):
+            with self.assertRaises(HTTPException) as raised:
+                modal_summary_app._auth_dependency()
+        self.assertEqual(raised.exception.status_code, 503)
+
+    def test_modal_summary_service_requires_bearer_token_when_configured(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from fastapi import HTTPException
+        from summary_service import app as modal_summary_app
+
+        with patch.dict(os.environ, {
+            'APP_ENV': 'development',
+            'SUMMARY_SERVICE_AUTH_TOKEN': 'summary-secret',
+            'ALLOW_UNAUTHENTICATED_SUMMARY_SERVICE': '0',
+        }):
+            with self.assertRaises(HTTPException) as raised:
+                modal_summary_app._auth_dependency()
+            self.assertEqual(raised.exception.status_code, 401)
+            modal_summary_app._auth_dependency('Bearer summary-secret')
+
+    def test_modal_summary_service_reports_truncated_long_input_metadata(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from summary_service import app as modal_summary_app
+
+        content = ' '.join(f'word{i}' for i in range(1000))
+        with patch.dict(os.environ, {
+            'SUMMARY_CHUNK_WORDS': '100',
+            'SUMMARY_CHUNK_OVERLAP': '10',
+            'SUMMARY_MAX_CHUNKS': '2',
+        }):
+            with patch.object(modal_summary_app, '_generate_one', return_value='Generated revision summary.'):
+                result = modal_summary_app._summarize_sync(content, 'short')
+
+        self.assertEqual(result.get('chunk_count'), 2)
+        self.assertEqual(result.get('input_word_count'), 1000)
+        self.assertEqual(result.get('processed_word_count'), 190)
+        self.assertTrue(result.get('truncated'))
+
     @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
     @patch('backend.summary_service.requests.post')
     def test_summary_length_preset_mapping_controls_generation_targets(self, mock_post):
@@ -1887,6 +1946,166 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(cached_response.status_code, 200)
         self.assertTrue(cached_response.get_json().get('cache_hit'))
         self.assertEqual(mock_post.call_count, 1)
+
+    @patch('backend.summary_service.EXTERNAL_SUMMARY_AUTH_TOKEN', 'summary-token')
+    @patch('backend.summary_service.EXTERNAL_SUMMARY_SERVICE_URL', 'https://summary.example.test/summarize')
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_external_summary_success_uses_modal_and_skips_bart(self, mock_post):
+        mock_post.return_value = self._fake_http_response(
+            200,
+            {
+                'summary': 'Custom FLAN-T5 summary for graph traversal notes.',
+                'summary_source': 'custom_flan_t5_large',
+                'summary_model': 'google/flan-t5-large+lora',
+                'summary_length': 'long',
+                'chunk_count': 2,
+                'input_word_count': 300,
+                'processed_word_count': 300,
+                'truncated': False,
+            },
+        )
+        content = ' '.join(
+            ['Graph traversal notes compare queues, stacks, complexity, and revision examples.'] * 18
+        )
+        document_id = self._insert_document('External Summary Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={'summary_length': 'long'},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('summary_source'), 'custom_flan_t5_large')
+        self.assertEqual(payload.get('summary_model'), 'google/flan-t5-large+lora')
+        self.assertEqual(payload.get('summary_length'), 'long')
+        self.assertEqual(payload.get('ai_summary'), 'Custom FLAN-T5 summary for graph traversal notes.')
+        self.assertFalse(payload.get('used_fallback'))
+        self.assertIn('summary', payload)
+        self.assertIn('summary_text', payload)
+        self.assertIsInstance(payload.get('keywords'), list)
+        self.assertIsInstance(payload.get('key_sentences'), list)
+        self.assertGreaterEqual(len(payload.get('key_sentences') or []), 1)
+        self.assertTrue(payload.get('summary_input_hash'))
+        self.assertTrue(payload.get('summary_cache_key'))
+        self.assertFalse(payload.get('cache_hit'))
+        self.assertEqual(payload.get('options_used', {}).get('summary_length'), 'long')
+        self.assertEqual(payload.get('options_used', {}).get('chunk_count'), 2)
+        self.assertEqual(payload.get('options_used', {}).get('input_word_count'), 300)
+        self.assertEqual(payload.get('options_used', {}).get('processed_word_count'), 300)
+        self.assertFalse(payload.get('options_used', {}).get('truncated'))
+        self.assertEqual(mock_post.call_count, 1)
+        external_call = mock_post.call_args
+        self.assertEqual(external_call.args[0], 'https://summary.example.test/summarize')
+        self.assertEqual(external_call.kwargs.get('json', {}).get('summary_length'), 'long')
+        self.assertEqual(
+            external_call.kwargs.get('headers', {}).get('Authorization'),
+            'Bearer summary-token',
+        )
+
+    @patch('backend.summary_service.EXTERNAL_SUMMARY_SERVICE_URL', 'https://summary.example.test/summarize')
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_external_summary_failure_falls_back_to_bart(self, mock_post):
+        mock_post.side_effect = [
+            self._fake_http_response(500, {'error': 'modal down'}),
+            self._fake_http_response(200, [{'summary_text': 'BART fallback summary.'}]),
+        ]
+        content = ' '.join(
+            ['Fallback lectures explain how the service should continue when Modal is unavailable.'] * 18
+        )
+        document_id = self._insert_document('External Failure Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('summary_source'), 'bart_hf')
+        self.assertEqual(payload.get('ai_summary'), 'BART fallback summary.')
+        self.assertFalse(payload.get('used_fallback'))
+        self.assertEqual(mock_post.call_count, 2)
+        self.assertEqual(mock_post.call_args_list[0].args[0], 'https://summary.example.test/summarize')
+        self.assertIn('facebook/bart-large-cnn', mock_post.call_args_list[1].args[0])
+        conn = self._connection()
+        try:
+            cache_count = conn.execute(
+                'SELECT COUNT(*) AS count FROM document_summary_cache WHERE document_id = ?',
+                (document_id,),
+            ).fetchone()['count']
+            doc_row = row_to_dict(conn.execute(
+                'SELECT summary_text, summary_cache_key FROM documents WHERE id = ?',
+                (document_id,),
+            ).fetchone())
+        finally:
+            conn.close()
+        self.assertEqual(cache_count, 0)
+        self.assertFalse(str(doc_row.get('summary_text') or '').strip())
+        self.assertFalse(str(doc_row.get('summary_cache_key') or '').strip())
+
+        mock_post.reset_mock()
+        mock_post.side_effect = None
+        mock_post.return_value = self._fake_http_response(
+            200,
+            {
+                'summary': 'Recovered custom FLAN-T5 summary.',
+                'summary_source': 'custom_flan_t5_large',
+                'summary_model': 'google/flan-t5-large+lora',
+                'summary_length': 'medium',
+                'chunk_count': 1,
+            },
+        )
+        recovered_response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+        self.assertEqual(recovered_response.status_code, 200)
+        self.assertEqual(recovered_response.get_json().get('summary_source'), 'custom_flan_t5_large')
+        self.assertEqual(recovered_response.get_json().get('ai_summary'), 'Recovered custom FLAN-T5 summary.')
+        self.assertEqual(mock_post.call_count, 1)
+
+    @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
+    @patch('backend.summary_service.requests.post')
+    def test_no_external_summary_config_keeps_existing_bart_flow(self, mock_post):
+        mock_post.return_value = self._fake_http_response(200, [{'summary_text': 'Configured BART summary.'}])
+        content = ' '.join(
+            ['No external summary configuration should preserve the existing Hugging Face flow.'] * 18
+        )
+        document_id = self._insert_document('No External Summary Notes', content)
+
+        response = self.client.post(
+            f'/api/documents/{document_id}/summarize',
+            headers=self._auth_headers(),
+            json={},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload.get('summary_source'), 'bart_hf')
+        self.assertEqual(payload.get('ai_summary'), 'Configured BART summary.')
+        self.assertEqual(mock_post.call_count, 1)
+        self.assertIn('facebook/bart-large-cnn', mock_post.call_args.args[0])
+
+    def test_summary_cache_key_separates_lengths_and_external_model(self):
+        content = ' '.join(
+            ['Cache keys must separate length presets and the active summary model identity.'] * 18
+        )
+        short_key = build_document_summary_cache_key(content, 'short', 5)
+        medium_bart_key = build_document_summary_cache_key(content, 'medium', 5)
+        long_key = build_document_summary_cache_key(content, 'long', 5)
+
+        with patch('backend.summary_service.EXTERNAL_SUMMARY_SERVICE_URL', 'https://summary.example.test/summarize'):
+            medium_external_key = build_document_summary_cache_key(content, 'medium', 5)
+
+        self.assertNotEqual(short_key, medium_bart_key)
+        self.assertNotEqual(medium_bart_key, long_key)
+        self.assertNotEqual(medium_bart_key, medium_external_key)
 
     @patch('backend.summary_service.HF_TOKEN', 'test-hf-token')
     @patch('backend.summary_service.requests.post')

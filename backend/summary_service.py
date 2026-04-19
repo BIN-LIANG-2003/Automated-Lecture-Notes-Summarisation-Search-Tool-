@@ -7,6 +7,9 @@ from datetime import datetime, timedelta
 import requests
 
 from .config import (
+    EXTERNAL_SUMMARY_AUTH_TOKEN,
+    EXTERNAL_SUMMARY_SERVICE_URL,
+    EXTERNAL_SUMMARY_TIMEOUT_SECONDS,
     HF_MODEL_BASE_URL,
     HF_SUMMARIZER_TIMEOUT_SECONDS,
     HF_TOKEN,
@@ -14,6 +17,7 @@ from .config import (
     SUMMARY_CHUNK_OVERLAP,
     SUMMARY_CHUNK_WORDS,
     SUMMARY_CACHE_VERSION,
+    SUMMARY_CONFIG_VERSION,
     SUMMARY_FALLBACK_ENABLED,
     SUMMARY_MIN_WORDS_FOR_BART,
     SUMMARY_PRIMARY_STRATEGY,
@@ -23,7 +27,7 @@ from .config import (
 )
 from .db import table_column_exists
 from .document_domain import normalize_newlines
-from .utils import parse_int, utcnow_iso
+from .utils import parse_bool, parse_int, utcnow_iso
 
 
 SUMMARY_LENGTH_PRESETS = {
@@ -41,6 +45,9 @@ SUMMARY_STOPWORDS = {
 
 _SUMMARY_IN_PROGRESS = {}
 _SUMMARY_IN_PROGRESS_LOCK = threading.Lock()
+
+EXTERNAL_SUMMARY_SOURCE = 'custom_flan_t5_large'
+EXTERNAL_SUMMARY_MODEL = 'google/flan-t5-large+lora'
 
 
 def get_summary_length_targets(summary_length='medium'):
@@ -85,6 +92,22 @@ def build_summary_input_hash(text):
     return hashlib.sha256(normalized.encode('utf-8')).hexdigest()
 
 
+def external_summary_service_configured():
+    return bool(str(EXTERNAL_SUMMARY_SERVICE_URL or '').strip())
+
+
+def active_summary_cache_model(summary_model=None):
+    safe_model = str(summary_model or '').strip()
+    if safe_model:
+        return safe_model
+    if external_summary_service_configured():
+        url_fingerprint = hashlib.sha256(
+            str(EXTERNAL_SUMMARY_SERVICE_URL or '').strip().encode('utf-8')
+        ).hexdigest()[:12]
+        return f'external:{EXTERNAL_SUMMARY_SOURCE}:{EXTERNAL_SUMMARY_MODEL}:{url_fingerprint}'
+    return str(SUMMARIZER_MODEL_ID or '').strip() or 'facebook/bart-large-cnn'
+
+
 def build_summary_cache_key(
     text,
     summary_length='medium',
@@ -96,8 +119,8 @@ def build_summary_cache_key(
     if not text_hash:
         return ''
     targets = get_summary_length_targets(summary_length)
-    safe_model = str(summary_model or SUMMARIZER_MODEL_ID or '').strip() or SUMMARIZER_MODEL_ID
-    safe_version = str(config_version or SUMMARY_CACHE_VERSION or '').strip() or 'v1'
+    safe_model = active_summary_cache_model(summary_model)
+    safe_version = str(config_version or SUMMARY_CONFIG_VERSION or SUMMARY_CACHE_VERSION or '').strip() or 'v1'
     safe_keyword_limit = parse_int(keyword_limit, 5, 1, 50)
     raw_key = '|'.join([
         safe_version,
@@ -607,6 +630,109 @@ def _hf_error_message(response):
     return raw_text[:240] or 'Unknown error'
 
 
+def _external_summary_error_message(response):
+    try:
+        body = response.json()
+        if isinstance(body, dict):
+            if body.get('error'):
+                return str(body['error'])
+            if body.get('detail'):
+                return str(body['detail'])
+            if body.get('message'):
+                return str(body['message'])
+    except Exception:
+        pass
+    raw_text = (response.text or '').strip()
+    if _looks_like_html_error(raw_text):
+        return 'External summary service returned an HTML error page instead of JSON.'
+    return raw_text[:240] or 'Unknown error'
+
+
+def get_external_summary_auth_headers():
+    headers = {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+    }
+    token = str(EXTERNAL_SUMMARY_AUTH_TOKEN or '').strip()
+    if token:
+        headers['Authorization'] = f'Bearer {token}'
+    return headers
+
+
+def call_external_summary_service(text, summary_length='medium'):
+    url = str(EXTERNAL_SUMMARY_SERVICE_URL or '').strip()
+    if not url:
+        return {'ok': False, 'summary': '', 'error': 'External summary service is not configured.', 'skipped': True}
+
+    safe_text = clean_summary_input(text)
+    if not safe_text:
+        return {'ok': False, 'summary': '', 'error': 'Empty input text'}
+
+    targets = get_summary_length_targets(summary_length)
+    payload = {
+        'text': safe_text,
+        'summary_length': targets['summary_length'],
+    }
+
+    try:
+        response = requests.post(
+            url,
+            headers=get_external_summary_auth_headers(),
+            json=payload,
+            timeout=EXTERNAL_SUMMARY_TIMEOUT_SECONDS,
+        )
+    except requests.exceptions.Timeout:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'External summary service timed out after {EXTERNAL_SUMMARY_TIMEOUT_SECONDS}s',
+        }
+    except Exception as exc:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': str(exc) or 'External summary service request failed.',
+        }
+
+    status_code = getattr(response, 'status_code', 0) or 0
+    if status_code >= 400:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'External summary service failed ({status_code}): {_external_summary_error_message(response)}',
+        }
+
+    try:
+        payload = response.json()
+    except Exception:
+        return {
+            'ok': False,
+            'summary': '',
+            'error': f'External summary service returned non-JSON response: {_external_summary_error_message(response)}',
+        }
+
+    if not isinstance(payload, dict):
+        return {'ok': False, 'summary': '', 'error': 'External summary service returned invalid JSON.'}
+
+    summary = str(payload.get('summary') or payload.get('summary_text') or '').strip()
+    if not summary:
+        return {'ok': False, 'summary': '', 'error': 'External summary service returned empty output.'}
+
+    return {
+        'ok': True,
+        'summary': summary,
+        'error': '',
+        'summary_source': str(payload.get('summary_source') or EXTERNAL_SUMMARY_SOURCE).strip() or EXTERNAL_SUMMARY_SOURCE,
+        'summary_model': str(payload.get('summary_model') or EXTERNAL_SUMMARY_MODEL).strip() or EXTERNAL_SUMMARY_MODEL,
+        'summary_length': str(payload.get('summary_length') or targets['summary_length']).strip().lower() or targets['summary_length'],
+        'chunk_count': parse_int(payload.get('chunk_count'), 1, 1),
+        'merge_rounds': parse_int(payload.get('merge_rounds'), 0, 0),
+        'input_word_count': parse_int(payload.get('input_word_count'), 0, 0),
+        'processed_word_count': parse_int(payload.get('processed_word_count'), 0, 0),
+        'truncated': parse_bool(payload.get('truncated'), False),
+    }
+
+
 def call_hf_summarizer(text, enforce_min_words=True, target_max_words=None):
     safe_text = clean_summary_input(text)
     if not safe_text:
@@ -740,13 +866,35 @@ def build_summary_bundle(text, summary_length='medium', target_max_words=None, t
             max_chars=safe_target_words * 8,
         )
 
-    ai_result = generate_abstractive_summary(cleaned, target_max_words=safe_target_words)
-    ai_summary = str(ai_result.get('summary') or '').strip() if ai_result.get('ok') else ''
-    error = str(ai_result.get('error') or '').strip()
+    external_error = ''
+    ai_result = {}
+    ai_summary = ''
+    summary_model = SUMMARIZER_MODEL_ID
+    summary_source = 'bart_hf'
+
+    if external_summary_service_configured():
+        ai_result = call_external_summary_service(cleaned, targets['summary_length'])
+        if ai_result.get('ok'):
+            ai_summary = str(ai_result.get('summary') or '').strip()
+            summary_source = str(ai_result.get('summary_source') or EXTERNAL_SUMMARY_SOURCE).strip() or EXTERNAL_SUMMARY_SOURCE
+            summary_model = str(ai_result.get('summary_model') or EXTERNAL_SUMMARY_MODEL).strip() or EXTERNAL_SUMMARY_MODEL
+        else:
+            external_error = str(ai_result.get('error') or '').strip()
+
+    if not ai_summary:
+        ai_result = generate_abstractive_summary(cleaned, target_max_words=safe_target_words)
+        ai_summary = str(ai_result.get('summary') or '').strip() if ai_result.get('ok') else ''
+        summary_source = 'bart_hf'
+        summary_model = SUMMARIZER_MODEL_ID
+
+    ai_error = str(ai_result.get('error') or '').strip()
+    if external_error and ai_error:
+        error = f'{external_error}; {ai_error}'
+    else:
+        error = ai_error or external_error
 
     if ai_summary:
         summary_text = ai_summary
-        summary_source = 'bart_hf'
         used_fallback = False
     elif SUMMARY_FALLBACK_ENABLED:
         summary_text = extractive_summary
@@ -763,11 +911,14 @@ def build_summary_bundle(text, summary_length='medium', target_max_words=None, t
         'ai_summary': ai_summary,
         'extractive_summary': extractive_summary,
         'key_sentences': key_sentences,
-        'summary_model': SUMMARIZER_MODEL_ID,
+        'summary_model': summary_model,
         'used_fallback': used_fallback,
         'error': error if used_fallback else '',
         'chunk_count': parse_int(ai_result.get('chunk_count'), 0, 0),
         'merge_rounds': parse_int(ai_result.get('merge_rounds'), 0, 0),
+        'input_word_count': parse_int(ai_result.get('input_word_count'), 0, 0),
+        'processed_word_count': parse_int(ai_result.get('processed_word_count'), 0, 0),
+        'truncated': parse_bool(ai_result.get('truncated'), False),
         'target_max_words': safe_target_words,
         'textrank_sentence_count': sentence_count,
     }

@@ -82,6 +82,7 @@ from .summary_service import (
     call_hf_summarizer,
     clean_summary_input,
     clear_document_summary_cache,
+    external_summary_service_configured,
     extract_key_sentences,
     finish_summary_generation,
     generate_abstractive_summary,
@@ -164,7 +165,6 @@ def build_document_summary_cache_key(text, summary_length='medium', keyword_limi
     return build_summary_cache_key(
         text,
         summary_length=summary_length,
-        summary_model=SUMMARIZER_MODEL_ID,
         keyword_limit=keyword_limit,
     )
 
@@ -1262,6 +1262,9 @@ def summarize_text_with_chunk_merge(text_content, length_options):
         'meta': {
             'chunk_count': parse_int(bundle.get('chunk_count'), 1, 1),
             'merge_rounds': parse_int(bundle.get('merge_rounds'), 0, 0),
+            'input_word_count': parse_int(bundle.get('input_word_count'), 0, 0),
+            'processed_word_count': parse_int(bundle.get('processed_word_count'), 0, 0),
+            'truncated': parse_bool(bundle.get('truncated'), False),
             'hf_success_count': 1 if bundle.get('ai_summary') else 0,
             'fallback_count': 1 if bundle.get('used_fallback') else 0,
         },
@@ -2195,6 +2198,9 @@ def analyze_text(document_id_override=0):
         "min_new_tokens": length_options['min_new_tokens'],
         "chunk_count": 1,
         "merge_rounds": 0,
+        "input_word_count": text_word_count,
+        "processed_word_count": text_word_count,
+        "truncated": False,
         "refreshed_from_file": refreshed_from_file,
         "pdf_extractor": str(pdf_refresh_meta.get('extractor') or ''),
         "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')),
@@ -2282,6 +2288,20 @@ def analyze_text(document_id_override=0):
                 0,
                 0
             )
+            options_used["input_word_count"] = parse_int(
+                cached_options.get("input_word_count"),
+                options_used.get("input_word_count", text_word_count),
+                0
+            )
+            options_used["processed_word_count"] = parse_int(
+                cached_options.get("processed_word_count"),
+                options_used.get("processed_word_count", text_word_count),
+                0
+            )
+            options_used["truncated"] = parse_bool(
+                cached_options.get("truncated"),
+                options_used.get("truncated", False)
+            )
             options_used["refreshed_from_file"] = parse_bool(
                 cached_options.get("refreshed_from_file"),
                 refreshed_from_file
@@ -2333,6 +2353,7 @@ def analyze_text(document_id_override=0):
             "ai_summary": str(cached_payload.get("ai_summary") or '').strip(),
             "extractive_summary": str(cached_payload.get("extractive_summary") or '').strip(),
             "summary_model": str(cached_payload.get("summary_model") or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+            "summary_length": summary_length,
             "used_fallback": parse_bool(cached_payload.get("used_fallback"), False),
             "summary_error": str(cached_payload.get("summary_error") or '').strip(),
             "summary_note": str(cached_payload.get("summary_note") or '').strip(),
@@ -2438,6 +2459,7 @@ def analyze_text(document_id_override=0):
             "ai_summary": str(summary_bundle.get('ai_summary') or '').strip(),
             "extractive_summary": str(summary_bundle.get('extractive_summary') or '').strip(),
             "summary_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
+            "summary_length": summary_length,
             "used_fallback": bool(summary_bundle.get('used_fallback')),
             "summary_error": str(summary_bundle.get('error') or '').strip(),
             "summary_note": summary_note,
@@ -2448,8 +2470,12 @@ def analyze_text(document_id_override=0):
             "cache_hit": False,
             "options_used": {
                 **base_options_used,
+                "summarizer_model": str(summary_bundle.get('summary_model') or SUMMARIZER_MODEL_ID).strip() or SUMMARIZER_MODEL_ID,
                 "chunk_count": parse_int(summary_meta.get('chunk_count'), 1, 1),
                 "merge_rounds": parse_int(summary_meta.get('merge_rounds'), 0, 0),
+                "input_word_count": parse_int(summary_meta.get('input_word_count'), text_word_count, 0),
+                "processed_word_count": parse_int(summary_meta.get('processed_word_count'), text_word_count, 0),
+                "truncated": parse_bool(summary_meta.get('truncated'), False),
                 "refreshed_from_file": refreshed_from_file,
                 "pdf_extractor": str(pdf_refresh_meta.get('extractor') or base_options_used.get('pdf_extractor') or ''),
                 "pdf_ocr_attempted": bool(pdf_refresh_meta.get('ocr_attempted')) or bool(base_options_used.get('pdf_ocr_attempted')),
@@ -2471,6 +2497,12 @@ def analyze_text(document_id_override=0):
             and not response_payload.get("used_fallback")
             and str(response_payload.get("summary_source") or '').strip().lower() not in ('textrank_fallback', 'fallback')
         )
+        if (
+            should_cache_generated_summary
+            and external_summary_service_configured()
+            and summary_source != 'custom_flan_t5_large'
+        ):
+            should_cache_generated_summary = False
         if should_cache_generated_summary:
             cache_conn = get_db_connection()
             if cache_conn:

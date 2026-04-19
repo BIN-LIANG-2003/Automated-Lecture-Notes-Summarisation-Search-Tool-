@@ -141,6 +141,15 @@ try:
     HF_SUMMARIZER_TIMEOUT_SECONDS = max(15, int((os.environ.get('HF_SUMMARIZER_TIMEOUT_SECONDS') or '60').strip()))
 except Exception:
     HF_SUMMARIZER_TIMEOUT_SECONDS = 60
+EXTERNAL_SUMMARY_SERVICE_URL = (os.environ.get("EXTERNAL_SUMMARY_SERVICE_URL") or "").strip()
+EXTERNAL_SUMMARY_AUTH_TOKEN = (os.environ.get("EXTERNAL_SUMMARY_AUTH_TOKEN") or "").strip()
+try:
+    EXTERNAL_SUMMARY_TIMEOUT_SECONDS = max(
+        15,
+        int((os.environ.get("EXTERNAL_SUMMARY_TIMEOUT_SECONDS") or "120").strip()),
+    )
+except Exception:
+    EXTERNAL_SUMMARY_TIMEOUT_SECONDS = 120
 SUMMARY_PRIMARY_STRATEGY = (os.environ.get('SUMMARY_PRIMARY_STRATEGY') or 'auto').strip().lower() or 'auto'
 _summary_fallback_raw = str(os.environ.get('SUMMARY_FALLBACK_ENABLED') or '1').strip().lower()
 SUMMARY_FALLBACK_ENABLED = _summary_fallback_raw not in ('0', 'false', 'no', 'off')
@@ -270,7 +279,12 @@ DEFAULT_WORKSPACE_SETTINGS = {
     'auto_revoke_previous_share_links': False,
     'allow_export': True,
 }
-SUMMARY_CACHE_VERSION = 'v2'
+SUMMARY_CONFIG_VERSION = (
+    os.environ.get('SUMMARY_CONFIG_VERSION')
+    or os.environ.get('SUMMARY_CACHE_VERSION')
+    or 'v2'
+).strip() or 'v2'
+SUMMARY_CACHE_VERSION = SUMMARY_CONFIG_VERSION
 
 MIME_BY_EXT = {
     'pdf': 'application/pdf',
