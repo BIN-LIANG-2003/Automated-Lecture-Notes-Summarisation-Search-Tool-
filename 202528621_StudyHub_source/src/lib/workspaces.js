@@ -1,0 +1,135 @@
+const WORKSPACES_STORE_KEY = 'workspaceStateByAccount';
+const normalizeDefaultHomeTab = (value) => {
+  const safe = String(value || '').trim().toLowerCase();
+  if (safe === 'files') return 'files';
+  if (safe === 'ai') return 'files';
+  return 'home';
+};
+const DEFAULT_WORKSPACE_SETTINGS = {
+  workspace_icon: '📚',
+  description: '',
+  accent_color: '#2f76e8',
+  default_category: 'Uncategorized',
+  auto_categorize: true,
+  default_home_tab: 'home',
+  default_documents_layout: 'grid',
+  default_documents_sort: 'newest',
+  default_documents_page_size: 20,
+  recent_items_limit: 10,
+  sidebar_density: 'comfortable',
+  show_starred_section: true,
+  show_recent_section: true,
+  show_quick_actions: true,
+  show_usage_chart: true,
+  show_recent_activity: true,
+  allow_uploads: true,
+  allow_note_editing: true,
+  allow_ai_tools: true,
+  allow_ocr: true,
+  summary_length: 'medium',
+  keyword_limit: 5,
+  notify_upload_events: true,
+  notify_summary_events: true,
+  notify_sharing_events: true,
+  allow_member_invites: false,
+  default_invite_expiry_days: 7,
+  default_share_expiry_days: 7,
+  link_sharing_mode: 'workspace',
+  restrict_invites_to_domains: false,
+  allowed_email_domains: '',
+  block_invites_from_domains: false,
+  blocked_email_domains: '',
+  allow_member_share_management: false,
+  max_active_share_links_per_document: 5,
+  auto_revoke_previous_share_links: false,
+  allow_export: true,
+};
+
+const normalizeName = (value) => String(value || '').trim();
+
+const keyForAccount = (accountName) => {
+  const name = normalizeName(accountName);
+  return name || '__guest__';
+};
+
+const randomSuffix = () => Math.random().toString(36).slice(2, 8);
+
+export const createWorkspace = (accountName, overrides = {}) => {
+  const owner = normalizeName(accountName) || 'Guest';
+  const now = new Date().toISOString();
+  return {
+    id: overrides.id || `ws-${Date.now()}-${randomSuffix()}`,
+    name: normalizeName(overrides.name) || `${owner}'s Workspace`,
+    plan: normalizeName(overrides.plan) || 'Free',
+    members: Array.isArray(overrides.members) && overrides.members.length
+      ? Array.from(new Set(overrides.members.map((item) => normalizeName(item)).filter(Boolean)))
+      : [owner],
+    invites: Array.isArray(overrides.invites)
+      ? Array.from(new Set(overrides.invites.map((item) => normalizeName(item).toLowerCase()).filter(Boolean)))
+      : [],
+    settings: {
+      ...DEFAULT_WORKSPACE_SETTINGS,
+      ...(overrides.settings && typeof overrides.settings === 'object' ? overrides.settings : {}),
+      default_home_tab: normalizeDefaultHomeTab(
+        overrides.settings?.default_home_tab ?? DEFAULT_WORKSPACE_SETTINGS.default_home_tab
+      ),
+    },
+    createdAt: overrides.createdAt || now,
+  };
+};
+
+const loadStore = () => {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(WORKSPACES_STORE_KEY) || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+};
+
+const persistStore = (store) => {
+  localStorage.setItem(WORKSPACES_STORE_KEY, JSON.stringify(store));
+};
+
+const normalizeWorkspaceEntry = (entry, accountName) => {
+  if (!entry || typeof entry !== 'object') return null;
+  const list = Array.isArray(entry.workspaces) ? entry.workspaces : [];
+  const workspaces = list
+    .map((item) => createWorkspace(accountName, item))
+    .filter((item, idx, arr) => arr.findIndex((row) => row.id === item.id) === idx);
+  if (!workspaces.length) return null;
+  const activeWorkspaceId = workspaces.some((item) => item.id === entry.activeWorkspaceId)
+    ? entry.activeWorkspaceId
+    : workspaces[0].id;
+  return { activeWorkspaceId, workspaces };
+};
+
+const createDefaultWorkspaceState = (accountName) => {
+  const workspace = createWorkspace(accountName);
+  return { activeWorkspaceId: workspace.id, workspaces: [workspace] };
+};
+
+export const loadWorkspaceState = (accountName) => {
+  const store = loadStore();
+  const accountKey = keyForAccount(accountName);
+  const normalized = normalizeWorkspaceEntry(store[accountKey], accountName);
+  if (normalized) {
+    store[accountKey] = normalized;
+    persistStore(store);
+    return normalized;
+  }
+
+  const fallback = createDefaultWorkspaceState(accountName);
+  store[accountKey] = fallback;
+  persistStore(store);
+  return fallback;
+};
+
+export const persistWorkspaceState = (accountName, state) => {
+  const accountKey = keyForAccount(accountName);
+  const store = loadStore();
+  const normalized = normalizeWorkspaceEntry(state, accountName) || createDefaultWorkspaceState(accountName);
+  store[accountKey] = normalized;
+  persistStore(store);
+  return normalized;
+};

@@ -1629,8 +1629,8 @@ button:disabled:hover,
 
 .field-with-toggle input {
   display: block;
-  width: 100%;     /* 关键：让 input 和容器同宽 */
-  padding-right: 40px; /* 给眼睛留空间 */
+  width: 100%;     /* Match the wrapper width. */
+  padding-right: 40px; /* Leave room for the visibility icon. */
 }
 
 .toggle-visibility {
@@ -1648,10 +1648,10 @@ button:disabled:hover,
   color: #7c8798;
   opacity: 0.85;
   padding: 0;
-  z-index: 1;      /* 确保在输入框之上 */
+  z-index: 1;      /* Keep the control above the input. */
 }
 
-/* 图标显示切换（与你现有一致） */
+/* Toggle which visibility icon is displayed. */
 .toggle-visibility svg { width:20px; height:20px; stroke:currentColor; stroke-width:1.8; fill:none; }
 .toggle-visibility .icon-eye-off { display:none; }
 .toggle-visibility[data-visible="true"] .icon-eye { display:none; }
@@ -1716,7 +1716,7 @@ button:disabled:hover,
   box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
 }
 
-/* 让图表画布横向铺满容器（高宽由 JS 负责） */
+/* Let the chart canvas fill the container width. */
 #usage-chart{
   display: block;
   width: 100%;
@@ -1732,19 +1732,19 @@ button:disabled:hover,
   box-shadow: 0 10px 30px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04);
 }
 
-/* 最近使用的网格（与主文档卡片同风格但独立控制列数） */
+/* Recently used grid with independent column control. */
 .recent-cards{
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   gap: 16px;
 }
 
-/* ===== Files area wrapper (hidden 属性由 JS 控制，这里只做间距) ===== */
+/* ===== Files area wrapper; visibility is controlled by JavaScript. ===== */
 .files-section{
   margin-top: 12px;
 }
 
-/* 响应式：小屏减少列数 */
+/* Reduce the number of columns on smaller screens. */
 @media (max-width: 900px){
   .recent-cards{ grid-template-columns: repeat(2, 1fr); }
 }
@@ -9482,31 +9482,53 @@ body.notion-home-body .skip-link:focus-visible{
 
   .notion-top-left{
     width:100%;
-    flex-wrap:wrap;
+    flex-wrap:nowrap;
     align-items:center;
+    gap:10px;
+  }
+
+  .notion-top-title-group{
+    flex:1 1 auto;
+    min-width:0;
   }
 
   .notion-top-time{
-    width:100%;
-    margin-left:0;
+    width:auto;
+    max-width:42%;
+    flex:0 0 auto;
+    margin-left:auto;
+    overflow:hidden;
+    text-overflow:ellipsis;
   }
 
   .notion-top-actions{
     width:100%;
     justify-content:flex-start;
     align-items:center;
+    flex-wrap:nowrap;
+    overflow-x:auto;
+    overflow-y:hidden;
+    margin:0 -2px -4px;
+    padding:2px 2px 6px;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .notion-top-actions::-webkit-scrollbar{
+    display:none;
   }
 
   .notion-top-actions > *{
-    flex:0 1 auto;
+    flex:0 0 auto;
   }
 
   .notion-top-actions > .studyhub-messages-trigger--topbar,
   .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-top-summary-btn{
-    flex:1 1 180px;
+    flex:0 0 auto;
     width:auto;
-    min-width:min(156px, 100%);
+    min-width:118px;
+    max-width:168px;
   }
 
   .notion-overview-hero,
@@ -9632,6 +9654,79 @@ body.notion-home-body .skip-link:focus-visible{
     width:100%;
   }
 
+  .notion-files-actionbar{
+    max-width:100%;
+    min-width:0;
+    overflow:hidden;
+    padding:10px;
+  }
+
+  .notion-files-workbench{
+    grid-template-columns:minmax(0, 1fr);
+  }
+
+  .notion-files-workbench > *,
+  .notion-files-workbench-head,
+  .notion-files-filter-shell,
+  .notion-files-results{
+    max-width:100%;
+    min-width:0;
+  }
+
+  .notion-files-filter-strip,
+  .notion-files-results-head{
+    max-width:100%;
+    min-width:0;
+  }
+
+  .notion-files-toolbar-actions,
+  .notion-files-filter-strip-actions,
+  .notion-results-controls{
+    width:100%;
+    max-width:100%;
+    min-width:0;
+    flex-wrap:nowrap;
+    justify-content:flex-start;
+    overflow-x:auto;
+    overflow-y:hidden;
+    padding-bottom:4px;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .notion-files-toolbar-actions::-webkit-scrollbar,
+  .notion-files-filter-strip-actions::-webkit-scrollbar,
+  .notion-results-controls::-webkit-scrollbar{
+    display:none;
+  }
+
+  .notion-files-toolbar-actions > *,
+  .notion-files-filter-strip-actions > *,
+  .notion-results-controls > *{
+    flex:0 0 auto;
+  }
+
+  .notion-files-toolbar-actions > .btn,
+  .notion-files-filter-strip-actions > .btn,
+  .notion-files-filter-strip-actions > .notion-files-saved-views-menu,
+  .notion-results-controls > .btn,
+  .notion-results-controls > .notion-results-control{
+    flex:0 0 auto;
+    width:auto;
+  }
+
+  .notion-files-filter-strip-actions > .notion-files-saved-views-menu > .btn{
+    width:auto;
+  }
+
+  .notion-results-controls > .notion-results-control{
+    width:auto;
+  }
+
+  .notion-results-controls > .notion-view-toggle{
+    min-width:176px;
+  }
+
   .notion-pdf-toolbar,
   .notion-pdf-editbar{
     padding:12px;
@@ -9689,19 +9784,23 @@ body.notion-home-body .skip-link:focus-visible{
 }
 
 @media (max-width: 540px){
+  .notion-top-time{
+    display:none;
+  }
+
   .notion-top-actions > .notion-top-pill{
     display:none;
   }
 
   .notion-top-actions > *{
-    flex:1 1 100%;
+    flex:0 0 auto;
   }
 
   .notion-top-actions > .studyhub-messages-trigger--topbar,
   .notion-top-actions > .studyhub-feedback-trigger--topbar,
   .notion-top-actions > .notion-top-summary-btn{
-    flex:1 1 100%;
-    width:100%;
+    flex:0 0 auto;
+    width:auto;
     min-width:0;
   }
 
@@ -9710,9 +9809,9 @@ body.notion-home-body .skip-link:focus-visible{
   }
 
   .notion-results-controls > .btn,
-  .notion-results-control,
-  .notion-view-toggle{
-    width:100%;
+  .notion-results-controls > .notion-results-control,
+  .notion-results-controls > .notion-view-toggle{
+    width:auto;
   }
 
   .notion-view-toggle-buttons{

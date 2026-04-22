@@ -12,15 +12,38 @@ async function expectNoHorizontalOverflow(page, label) {
   const metrics = await page.evaluate(() => {
     const root = document.documentElement;
     const body = document.body;
+    const viewportWidth = root.clientWidth || window.innerWidth;
     return {
       innerWidth: window.innerWidth,
+      clientWidth: viewportWidth,
       scrollWidth: Math.max(root.scrollWidth, body?.scrollWidth || 0),
     };
   });
   expect(
     metrics.scrollWidth,
-    `${label} overflowed horizontally: scrollWidth=${metrics.scrollWidth}, innerWidth=${metrics.innerWidth}`
-  ).toBeLessThanOrEqual(metrics.innerWidth + 1);
+    `${label} overflowed horizontally: scrollWidth=${metrics.scrollWidth}, clientWidth=${metrics.clientWidth}, innerWidth=${metrics.innerWidth}`
+  ).toBeLessThanOrEqual(metrics.clientWidth + 1);
+}
+
+async function expectCompactMobileChrome(page, label) {
+  const metrics = await page.evaluate(() => {
+    const rectHeight = (selector) => {
+      const rect = document.querySelector(selector)?.getBoundingClientRect();
+      return rect ? Math.round(rect.height) : 0;
+    };
+    return {
+      topbarHeight: rectHeight('.notion-topbar'),
+      filesActionbarHeight: rectHeight('.notion-files-actionbar'),
+      resultsHeadHeight: rectHeight('.notion-files-results-head'),
+    };
+  });
+  expect(metrics.topbarHeight, `${label} topbar should stay compact`).toBeLessThanOrEqual(150);
+  if (metrics.filesActionbarHeight) {
+    expect(metrics.filesActionbarHeight, `${label} files actionbar should stay compact`).toBeLessThanOrEqual(90);
+  }
+  if (metrics.resultsHeadHeight) {
+    expect(metrics.resultsHeadHeight, `${label} results header should stay compact`).toBeLessThanOrEqual(180);
+  }
 }
 
 async function expectWithinViewport(page, locator, label) {
@@ -91,9 +114,11 @@ for (const viewport of MOBILE_VIEWPORTS) {
 
     await loginAsAlice(page);
     await expect(page.locator('.notion-content')).toBeVisible();
+    await expectCompactMobileChrome(page, `${viewport.name} home`);
     await expectNoHorizontalOverflow(page, `${viewport.name} home`);
 
     await goToMyFiles(page);
+    await expectCompactMobileChrome(page, `${viewport.name} my files`);
     await expectNoHorizontalOverflow(page, `${viewport.name} my files`);
 
     await openGraphNoteInFiles(page);

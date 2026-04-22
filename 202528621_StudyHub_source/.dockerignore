@@ -1,0 +1,15 @@
+.git
+.vscode
+node_modules
+venv
+.venv
+__pycache__
+*.py[cod]
+*.db
+uploads
+.DS_Store
+.env
+.env.*
+
+# Docker rebuilds frontend assets in the first stage, so local dist is not needed in build context.
+dist
