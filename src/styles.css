@@ -9896,3 +9896,224 @@ body.notion-home-body .skip-link:focus-visible{
     width:100%;
   }
 }
+
+@media (max-width: 720px){
+  html,
+  body,
+  #root{
+    max-width:100%;
+    overflow-x:hidden;
+  }
+
+  .notion-content,
+  .document-detail,
+  .document-detail-card,
+  .document-detail-head,
+  .document-detail-hero-copy,
+  .document-detail-layout,
+  .document-detail-main,
+  .document-detail-sidebar,
+  .document-detail-reading-panel,
+  .document-body.document-detail-reading-panel{
+    min-width:0;
+    max-width:100%;
+  }
+
+  .notion-content{
+    padding-left:12px;
+    padding-right:12px;
+    padding-bottom:calc(72px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .notion-top-actions{
+    display:flex;
+    flex-wrap:nowrap;
+    width:100%;
+    gap:6px;
+    overflow-x:auto;
+    overflow-y:hidden;
+    margin:0 -2px -4px;
+    padding:2px 2px 6px;
+    scrollbar-width:none;
+    -webkit-overflow-scrolling:touch;
+  }
+
+  .notion-top-actions::-webkit-scrollbar{
+    display:none;
+  }
+
+  .notion-top-actions > *,
+  .notion-top-actions > .studyhub-messages-trigger--topbar,
+  .notion-top-actions > .studyhub-feedback-trigger--topbar,
+  .notion-top-actions > .notion-top-summary-btn{
+    flex:0 0 auto;
+    width:auto;
+    min-width:76px;
+    max-width:none;
+    height:38px;
+    min-height:38px;
+    padding:0 9px;
+    white-space:nowrap;
+    overflow:hidden;
+    text-overflow:ellipsis;
+    font-size:11px;
+  }
+
+  .notion-top-actions > .notion-top-summary-btn{
+    min-width:98px;
+  }
+
+  .notion-top-actions > .notion-top-manage-links-btn{
+    min-width:94px;
+  }
+
+  .document-detail-card header h1,
+  .document-share-head h1,
+  .document-detail-section-title{
+    max-width:100%;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+    hyphens:auto;
+    font-size:clamp(24px, 7vw, 32px);
+    line-height:1.18;
+  }
+
+  .document-detail-meta-pills{
+    display:grid;
+    grid-template-columns:1fr;
+    align-items:stretch;
+    width:100%;
+  }
+
+  .document-detail-meta-pill{
+    width:100%;
+    justify-content:flex-start;
+    border-radius:10px;
+    padding:9px 11px;
+  }
+
+  .document-detail-primary-actions,
+  .document-detail-study-actions,
+  .document-detail-share-card-actions,
+  .document-share-actions{
+    display:grid;
+    grid-template-columns:1fr;
+    width:100%;
+  }
+
+  .document-detail-primary-actions .btn,
+  .document-detail-study-actions .btn,
+  .document-detail-share-card-actions .btn,
+  .document-share-actions .btn{
+    width:100%;
+    min-width:0;
+  }
+
+  .document-detail-more-popover{
+    width:100%;
+    max-width:100%;
+  }
+
+  .document-detail-pre{
+    overflow-x:auto;
+  }
+
+  .notion-modal-backdrop,
+  .studyhub-messages-backdrop{
+    height:100vh;
+    height:100svh;
+    overflow:hidden;
+    padding:
+      max(10px, env(safe-area-inset-top, 0px))
+      10px
+      max(10px, env(safe-area-inset-bottom, 0px));
+    align-items:flex-start;
+  }
+
+  .notion-summary-center-modal,
+  .notion-trash-modal,
+  .studyhub-messages-modal{
+    width:100%;
+    max-width:calc(100vw - 20px);
+    height:calc(100vh - 20px);
+    height:calc(100svh - 20px);
+    max-height:calc(100vh - 20px);
+    max-height:calc(100svh - 20px);
+    min-width:0;
+    overflow:auto;
+    -webkit-overflow-scrolling:touch;
+    overscroll-behavior:contain;
+  }
+
+  .notion-summary-center-modal{
+    grid-template-rows:auto auto auto auto auto minmax(0, 1fr) auto;
+  }
+
+  .notion-summary-center-stats{
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+  }
+
+  .notion-summary-center-stat{
+    min-width:0;
+    padding:10px;
+  }
+
+  .notion-summary-center-toolbar,
+  .notion-summary-center-search,
+  .notion-summary-center-filters,
+  .notion-summary-center-filters label,
+  .notion-summary-center-filters select,
+  .notion-summary-center-search input{
+    min-width:0;
+    max-width:100%;
+  }
+
+  .notion-summary-history-list{
+    min-height:0;
+    max-height:none;
+  }
+
+  .notion-summary-history-meta strong,
+  .notion-summary-history-meta span,
+  .studyhub-site-message p,
+  .studyhub-request-card span,
+  .studyhub-friend-code-row strong{
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+
+  .studyhub-messages-modal{
+    display:flex;
+    flex-direction:column;
+  }
+
+  .studyhub-messages-grid{
+    min-height:0;
+  }
+
+  .studyhub-site-messages,
+  .studyhub-chat-panel,
+  .studyhub-requests-panel,
+  .studyhub-friends-list{
+    min-width:0;
+  }
+}
+
+@media (max-width: 430px){
+  .document-detail-card{
+    padding:14px;
+    border-radius:14px;
+  }
+
+  .notion-summary-center-stats{
+    grid-template-columns:1fr;
+  }
+
+  .studyhub-messages-modal,
+  .notion-summary-center-modal,
+  .notion-trash-modal{
+    max-width:calc(100vw - 16px);
+    padding:12px;
+    border-radius:14px;
+  }
+}

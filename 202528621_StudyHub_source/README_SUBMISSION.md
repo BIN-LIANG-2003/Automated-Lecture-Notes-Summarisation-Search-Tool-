@@ -2,8 +2,7 @@
 
 Student Number: 202528621
 Project: Automated Lecture Notes Summarisation & Search Tool
-Repository base commit SHA: 5b98b97e6171
-Submission note: this archive includes a comment-only cleanup that converts remaining Chinese comments to English.
+Repository commit SHA: b2cc303ba507
 
 ## Included
 
