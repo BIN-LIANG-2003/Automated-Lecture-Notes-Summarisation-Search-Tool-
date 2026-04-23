@@ -4259,6 +4259,193 @@ body.notion-home-body .skip-link:focus-visible{
   padding:8px 10px;
 }
 
+@media (max-width: 760px){
+  html,
+  body,
+  #root{
+    max-width:100%;
+    overflow-x:hidden;
+  }
+
+  .container.document-detail,
+  .document-share-shell.document-detail,
+  .notion-content,
+  .notion-inline-doc,
+  .document-detail-card,
+  .document-detail-head,
+  .document-detail-hero-copy,
+  .document-detail-layout,
+  .document-detail-main,
+  .document-detail-sidebar,
+  .document-detail-sidebar-card,
+  .document-detail-reading-panel,
+  .document-body.document-detail-reading-panel,
+  .notion-shell .notion-inline-doc-card,
+  .notion-inline-doc-head,
+  .notion-inline-doc-summary,
+  .notion-inline-doc-meta-grid,
+  .notion-inline-doc-actions,
+  .notion-shell .document-body.notion-inline-doc-body,
+  .notion-doc-rich-view{
+    min-width:0;
+    max-width:100%;
+  }
+
+  .container.document-detail{
+    width:100%;
+    padding-left:12px;
+    padding-right:12px;
+    overflow-x:hidden;
+  }
+
+  .document-detail-card,
+  .notion-shell .notion-inline-doc-card{
+    width:100%;
+    overflow:hidden;
+  }
+
+  .document-detail-head,
+  .document-detail-layout,
+  .document-detail-layout-shared,
+  .notion-inline-doc-head,
+  .notion-inline-doc-meta-grid{
+    display:grid;
+    grid-template-columns:minmax(0, 1fr);
+  }
+
+  .document-detail-head{
+    align-items:stretch;
+  }
+
+  .document-detail-head > *,
+  .document-detail-head-side,
+  .document-share-inline-panel{
+    width:100%;
+    min-width:0;
+    max-width:100%;
+  }
+
+  .document-detail-head-side,
+  .document-share-inline-panel{
+    justify-items:stretch;
+  }
+
+  .document-detail-sidebar{
+    position:static;
+    width:100%;
+  }
+
+  .document-detail-reading-head{
+    display:grid;
+    grid-template-columns:minmax(0, 1fr);
+    align-items:stretch;
+  }
+
+  .document-detail-reading-note,
+  .document-detail-share-hint{
+    max-width:none;
+    text-align:left;
+  }
+
+  .document-detail-card header h1,
+  .document-share-head h1,
+  .document-detail-section-title,
+  .notion-inline-doc-head h2,
+  .document-detail-meta,
+  .document-detail-fact-list dd,
+  .document-detail-tag-chip,
+  .notion-inline-doc-meta-item > strong{
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+
+  .document-detail-meta-pills,
+  .document-detail-primary-actions,
+  .document-detail-study-actions,
+  .document-detail-share-card-actions,
+  .document-share-actions,
+  .notion-inline-doc-actions{
+    display:grid;
+    grid-template-columns:minmax(0, 1fr);
+    width:100%;
+  }
+
+  .document-detail-primary-actions .btn,
+  .document-detail-study-actions .btn,
+  .document-detail-share-card-actions .btn,
+  .document-share-actions .btn,
+  .document-share-download-btn,
+  .notion-inline-doc-actions .btn,
+  .notion-inline-doc-actions .edit-tags{
+    width:100%;
+    min-width:0;
+    max-width:100%;
+  }
+
+  .document-detail-more-menu,
+  .document-detail-more-trigger{
+    width:100%;
+    min-width:0;
+    max-width:100%;
+  }
+
+  .document-detail-more-popover{
+    left:0;
+    right:auto;
+    width:100%;
+    max-width:100%;
+  }
+
+  .document-detail-share-status{
+    justify-content:flex-start;
+  }
+
+  .document-detail-meta-pill{
+    width:100%;
+    justify-content:flex-start;
+  }
+
+  .document-detail-pre,
+  .notion-shell .document-body.notion-inline-doc-body pre{
+    min-width:0;
+    max-width:100%;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+
+  .notion-doc-rich-view{
+    overflow-x:hidden;
+  }
+
+  .notion-doc-rich-view *,
+  .notion-doc-rich-view :is(p,h1,h2,h3,h4,h5,h6,li,blockquote,pre,td,th){
+    min-width:0;
+    max-width:100%;
+    overflow-wrap:anywhere;
+    word-break:break-word;
+  }
+
+  .notion-doc-rich-view [style*="width"]{
+    width:auto !important;
+    max-width:100% !important;
+  }
+
+  .notion-doc-rich-view table,
+  .notion-doc-rich-view table[style*="width"]{
+    width:100% !important;
+    max-width:100% !important;
+    table-layout:fixed;
+  }
+
+  .notion-doc-rich-view :is(img,video,canvas,iframe),
+  .notion-doc-rich-view :is(img,video,canvas,iframe)[style*="width"],
+  .notion-doc-rich-view :is(img,video,canvas,iframe)[width]{
+    width:auto !important;
+    max-width:100% !important;
+    height:auto !important;
+  }
+}
+
 .notion-rich-editor{
   display:grid;
   gap:10px;

@@ -4,8 +4,8 @@ const SEEDED_SHARE_TOKEN = 'graph-share-token';
 const WORKSPACE_STATE_KEY = 'workspaceStateByAccount';
 const MOBILE_DOCX_DOC = {
   id: 2,
-  filename: 'Automated_Lecture_Notes_Draft.docx',
-  title: 'Automated_Lecture_Notes_Draft.docx',
+  filename: 'Automated_Lecture_Notes_Draft_With_Extra_Long_Unbroken_Mobile_Filename_For_Overflow_Coverage.docx',
+  title: 'Automated_Lecture_Notes_Draft_With_Extra_Long_Unbroken_Mobile_Filename_For_Overflow_Coverage.docx',
   uploaded_at: '2026-04-19T22:52:07',
   uploadedAt: '2026-04-19T22:52:07',
   file_type: 'docx',
@@ -22,7 +22,16 @@ const MOBILE_DOCX_DOC = {
       <h2 style="font-size: 36px">Abstract</h2>
       <p style="width: 880px; font-size: 18px">
         This project developed a web-based system where university students upload, organise, share, and summarise lecture notes.
+        SupercalifragilisticexpialidociousSupercalifragilisticexpialidociousSupercalifragilisticexpialidocious must wrap.
       </p>
+      <table style="width: 980px">
+        <tbody>
+          <tr>
+            <td style="width: 490px">Milestone</td>
+            <td style="width: 490px">Mobile responsiveness validation for rich document preview content.</td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   `,
   contentHtml: '',
@@ -87,6 +96,53 @@ async function expectWithinViewport(page, locator, label) {
   expect(box, `${label} should have a bounding box`).toBeTruthy();
   expect(box.x, `${label} starts outside viewport`).toBeGreaterThanOrEqual(-1);
   expect(box.x + box.width, `${label} ends outside viewport`).toBeLessThanOrEqual((viewport?.width || 0) + 1);
+}
+
+async function expectNoInternalHorizontalOverflow(page, selector, label) {
+  const metrics = await page.locator(selector).evaluate((element) => ({
+    clientWidth: element.clientWidth,
+    scrollWidth: element.scrollWidth,
+    rectWidth: Math.round(element.getBoundingClientRect().width),
+  }));
+  expect(
+    metrics.scrollWidth,
+    `${label} overflowed internally: scrollWidth=${metrics.scrollWidth}, clientWidth=${metrics.clientWidth}, rectWidth=${metrics.rectWidth}`
+  ).toBeLessThanOrEqual(metrics.clientWidth + 1);
+}
+
+async function expectVisibleElementsInsideViewport(page, selector, label) {
+  const offenders = await page.evaluate((targetSelector) => {
+    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+    const viewportHeight = window.innerHeight;
+    return Array.from(document.querySelectorAll(targetSelector))
+      .filter((element) => {
+        const style = window.getComputedStyle(element);
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0) {
+          return false;
+        }
+        const rects = Array.from(element.getClientRects()).filter((rect) => rect.width > 1 && rect.height > 1);
+        if (!rects.length) return false;
+        return rects.some((rect) => {
+          if (rect.bottom < 0 || rect.top > viewportHeight) return false;
+          return rect.left < -1 || rect.right > viewportWidth + 1;
+        });
+      })
+      .slice(0, 8)
+      .map((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          tag: element.tagName.toLowerCase(),
+          className: String(element.className || ''),
+          text: String(element.textContent || element.getAttribute('aria-label') || '')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .slice(0, 80),
+          left: Math.round(rect.left),
+          right: Math.round(rect.right),
+        };
+      });
+  }, selector);
+  expect(offenders, `${label} has visible elements outside the mobile viewport`).toEqual([]);
 }
 
 async function expectVisibleInteractiveControlsInsideViewport(page, label) {
@@ -317,34 +373,93 @@ test('home ignores stale locally stored workspace before loading documents on mo
   await expectNoHorizontalOverflow(page, 'stale workspace mobile home');
 });
 
-test('docx file reader stays inside the mobile viewport', async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
-  await mockDocxDocumentList(page);
-  await loginAsAlice(page);
-  await goToMyFiles(page);
+for (const viewport of MOBILE_VIEWPORTS) {
+  test(`docx file reader stays inside the mobile viewport on ${viewport.name}`, async ({ page }) => {
+    await page.setViewportSize({ width: viewport.width, height: viewport.height });
+    await mockDocxDocumentList(page);
+    await loginAsAlice(page);
+    await goToMyFiles(page);
 
-  const docxCard = page.locator('.document-card', { hasText: MOBILE_DOCX_DOC.title });
-  await expect(docxCard).toBeVisible();
-  await docxCard.getByRole('button', { name: 'Open' }).click();
+    const docxCard = page.locator('.document-card', { hasText: MOBILE_DOCX_DOC.title });
+    await expect(docxCard).toBeVisible();
+    await docxCard.getByRole('button', { name: 'Open' }).click();
 
-  const reader = page.locator('.notion-inline-doc-card');
-  await expect(reader.getByRole('heading', { name: MOBILE_DOCX_DOC.title })).toBeVisible();
-  await expectNoHorizontalOverflow(page, 'mobile docx reader');
-  await expectWithinViewport(page, reader, 'mobile docx reader card');
-  await expectWithinViewport(page, page.locator('.notion-doc-rich-view'), 'mobile docx rich preview');
+    const reader = page.locator('.notion-inline-doc-card');
+    const richPreview = page.locator('.notion-doc-rich-view');
+    await expect(reader.getByRole('heading', { name: MOBILE_DOCX_DOC.title })).toBeVisible();
+    await expect(richPreview.locator('[style*="width"]')).not.toHaveCount(0);
+    await expectNoHorizontalOverflow(page, `${viewport.name} mobile docx reader`);
+    await expectWithinViewport(page, reader, `${viewport.name} mobile docx reader card`);
+    await expectWithinViewport(page, richPreview, `${viewport.name} mobile docx rich preview`);
+    await expectNoInternalHorizontalOverflow(page, '.notion-doc-rich-view', `${viewport.name} mobile docx rich preview`);
+    await expectVisibleElementsInsideViewport(
+      page,
+      [
+        '.notion-inline-doc-card',
+        '.notion-inline-doc-head',
+        '.notion-inline-doc-head h2',
+        '.notion-inline-doc-meta-item',
+        '.notion-inline-doc-actions > *',
+        '.notion-shell .document-body.notion-inline-doc-body',
+        '.notion-doc-rich-view',
+        '.notion-doc-rich-view [style*="width"]',
+        '.notion-doc-rich-view h1',
+        '.notion-doc-rich-view h2',
+        '.notion-doc-rich-view p',
+        '.notion-doc-rich-view table',
+      ].join(','),
+      `${viewport.name} mobile docx rich preview`
+    );
 
-  const layout = await page.evaluate(() => {
-    const metaLeftEdges = Array.from(document.querySelectorAll('.notion-inline-doc-meta-item'))
-      .map((element) => Math.round(element.getBoundingClientRect().left));
-    const actionWidths = Array.from(document.querySelectorAll('.notion-inline-doc-actions button'))
-      .map((element) => Math.round(element.getBoundingClientRect().width));
-    const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
-    return {
-      metaColumnCount: new Set(metaLeftEdges).size,
-      minActionWidth: Math.min(...actionWidths),
-      viewportWidth,
-    };
+    const inlineLayout = await page.evaluate(() => {
+      const metaLeftEdges = Array.from(document.querySelectorAll('.notion-inline-doc-meta-item'))
+        .map((element) => Math.round(element.getBoundingClientRect().left));
+      const actionWidths = Array.from(document.querySelectorAll('.notion-inline-doc-actions button'))
+        .map((element) => Math.round(element.getBoundingClientRect().width));
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      return {
+        metaColumnCount: new Set(metaLeftEdges).size,
+        minActionWidth: Math.min(...actionWidths),
+        viewportWidth,
+      };
+    });
+    expect(inlineLayout.metaColumnCount).toBe(1);
+    expect(inlineLayout.minActionWidth).toBeGreaterThan(inlineLayout.viewportWidth - 80);
+
+    await page.goto('/#/document/2');
+    await expect(page.locator('.document-detail-card h1')).toHaveText(MOBILE_DOCX_DOC.title);
+    await expectNoHorizontalOverflow(page, `${viewport.name} document detail with long docx title`);
+    await expectVisibleInteractiveControlsInsideViewport(page, `${viewport.name} document detail with long docx title`);
+    await expectVisibleElementsInsideViewport(
+      page,
+      [
+        '.document-detail-card',
+        '.document-detail-head',
+        '.document-detail-card h1',
+        '.document-detail-meta-pill',
+        '.document-detail-primary-actions > *',
+        '.document-detail-reading-panel',
+        '.document-detail-pre',
+        '.document-detail-sidebar',
+        '.document-detail-sidebar-card',
+      ].join(','),
+      `${viewport.name} document detail layout`
+    );
+
+    const detailLayout = await page.evaluate(() => {
+      const metaLeftEdges = Array.from(document.querySelectorAll('.document-detail-meta-pill'))
+        .map((element) => Math.round(element.getBoundingClientRect().left));
+      const actionWidths = Array.from(
+        document.querySelectorAll('.document-detail-primary-actions > .btn, .document-detail-primary-actions > .document-detail-more-menu')
+      ).map((element) => Math.round(element.getBoundingClientRect().width));
+      const viewportWidth = document.documentElement.clientWidth || window.innerWidth;
+      return {
+        metaColumnCount: new Set(metaLeftEdges).size,
+        minActionWidth: Math.min(...actionWidths),
+        viewportWidth,
+      };
+    });
+    expect(detailLayout.metaColumnCount).toBe(1);
+    expect(detailLayout.minActionWidth).toBeGreaterThan(detailLayout.viewportWidth - 80);
   });
-  expect(layout.metaColumnCount).toBe(1);
-  expect(layout.minActionWidth).toBeGreaterThan(layout.viewportWidth - 80);
-});
+}
