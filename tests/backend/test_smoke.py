@@ -1690,7 +1690,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
 
     @patch('backend.shared.create_registration_verification_code', return_value='123456')
     @patch('backend.shared.send_registration_verification_code_email', return_value=(True, ''))
-    def test_register_uses_six_digit_email_code_before_password_login(
+    def test_register_uses_six_digit_email_code_and_signs_in(
             self,
             mock_send_code_email,
             _mock_create_code):
@@ -1719,7 +1719,16 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(register_response.status_code, 201)
         register_payload = register_response.get_json()
         self.assertFalse(register_payload.get('verification_required'))
-        self.assertNotIn('auth_token', register_payload)
+        self.assertEqual(register_payload.get('message'), 'Account created. You are signed in.')
+        self.assertEqual(register_payload.get('username'), 'newuser')
+        self.assertTrue(str(register_payload.get('auth_token') or '').strip())
+        self.assertEqual(
+            register_payload.get('preferences'),
+            {'email_notifications_enabled': True},
+        )
+        cookie_header = register_response.headers.get('Set-Cookie', '')
+        self.assertIn(f'{AUTH_COOKIE_NAME}=', cookie_header)
+        self.assertIn('HttpOnly', cookie_header)
 
         conn = self._connection()
         try:
@@ -1751,12 +1760,9 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             conn.close()
         self.assertIsNone(remaining_code)
 
-        login_after_verify = self.client.post(
-            '/api/auth/login',
-            json={'username': 'newuser@example.com', 'password': 'password123'},
-        )
-        self.assertEqual(login_after_verify.status_code, 200)
-        self.assertTrue(str(login_after_verify.get_json().get('auth_token') or '').strip())
+        me_after_register = self.client.get('/api/auth/me')
+        self.assertEqual(me_after_register.status_code, 200)
+        self.assertEqual(me_after_register.get_json().get('username'), 'newuser')
 
     @patch('backend.shared.create_registration_verification_code', return_value='123456')
     @patch('backend.shared.send_registration_verification_code_email', return_value=(True, ''))

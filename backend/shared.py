@@ -749,6 +749,7 @@ def register():
     email = normalize_email(data.get('email'))
     password = data.get('password')
     verification_code = normalize_registration_code(data.get('verification_code') or data.get('code'))
+    remember_session = parse_bool(data.get('remember'), False)
 
     if not username or not email or not password:
         return jsonify({'error': 'Missing fields'}), 400
@@ -807,12 +808,15 @@ def register():
             ),
         )
         conn.commit()
-        return jsonify({
-            'message': 'Account created. You can sign in now.',
+        auth_token = create_auth_token(username)
+        return _auth_response({
+            'message': 'Account created. You are signed in.',
             'username': username,
             'email': email,
+            'auth_token': auth_token,
+            'preferences': normalize_user_preferences(),
             'verification_required': False,
-        }), 201
+        }, auth_token, remember_session, 201)
     except Exception as e:
         try:
             conn.rollback()

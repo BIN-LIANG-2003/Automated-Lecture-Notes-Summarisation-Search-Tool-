@@ -56,6 +56,138 @@ test('remember sign-in restores the account when opening a new browser tab link'
   await expect(page.locator('.notion-top-muted')).toContainText('Private workspace');
 });
 
+test('new account signs in automatically after registration', async ({ page }) => {
+  const username = 'autouser';
+  const email = 'autouser@example.com';
+  const workspaceId = 'ws-autouser';
+  let registerPayload = null;
+
+  await page.context().clearCookies();
+  await page.addInitScript(() => {
+    window.localStorage.clear();
+    window.sessionStorage.clear();
+  });
+  await page.route(/\/api\/auth\/registration-code$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: 'Verification code sent. It expires in 5 minutes.',
+        email,
+        verification_expires_at: '2026-04-23T12:05:00',
+      }),
+    });
+  });
+  await page.route(/\/api\/auth\/register$/, async (route) => {
+    registerPayload = route.request().postDataJSON();
+    await route.fulfill({
+      status: 201,
+      contentType: 'application/json',
+      headers: {
+        'Set-Cookie': 'studyhub_auth=autouser-token; Path=/; HttpOnly; SameSite=Lax',
+      },
+      body: JSON.stringify({
+        message: 'Account created. You are signed in.',
+        username,
+        email,
+        auth_token: 'autouser-token',
+        preferences: { email_notifications_enabled: true },
+        verification_required: false,
+      }),
+    });
+  });
+  await page.route(/\/api\/auth\/me$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        username,
+        email,
+        auth_token: 'autouser-token',
+        preferences: { email_notifications_enabled: true },
+        authenticated: true,
+      }),
+    });
+  });
+  await page.route(/\/api\/friends\/summary$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        friends: [],
+        incoming_requests: [],
+        outgoing_requests: [],
+        messages: [],
+        notifications: [],
+      }),
+    });
+  });
+  await page.route(/\/api\/workspaces\?username=autouser$/, async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify([
+        {
+          id: workspaceId,
+          name: "Autouser's Workspace",
+          plan: 'Free',
+          owner_username: username,
+          is_owner: true,
+          members_count: 1,
+          settings: {},
+        },
+      ]),
+    });
+  });
+  await page.route(/\/api\/documents\?.*/, async (route) => {
+    if (route.request().method() !== 'GET') {
+      await route.fallback();
+      return;
+    }
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        items: [],
+        total: 0,
+        limit: 20,
+        offset: 0,
+        has_more: false,
+        facets: { tags: [], categories: [], file_types: {} },
+      }),
+    });
+  });
+
+  await page.goto('/#/login');
+  await page.getByRole('button', { name: 'Create one' }).click();
+  await expect(page.getByRole('heading', { name: 'Create account' })).toBeVisible();
+
+  await page.locator('#su-username').fill(username);
+  await page.locator('#su-email').fill(email);
+  await page.getByRole('button', { name: 'Send code' }).click();
+  await expect(page.locator('.auth-field-help').filter({ hasText: `Code sent to ${email}` })).toBeVisible();
+  await page.locator('#su-verification-code').fill('123456');
+  await page.locator('#su-password').fill('password123');
+  await page.locator('#su-password2').fill('password123');
+  await page.getByRole('button', { name: 'Create account', exact: true }).click();
+
+  await expect(page).toHaveURL(/#\/$/);
+  await expect(page.getByRole('button', { name: 'Notes', exact: true })).toBeVisible();
+  await expect(page.locator('.notion-top-title-group strong')).toHaveText("Autouser's Workspace");
+  expect(registerPayload).toMatchObject({
+    username,
+    email,
+    verification_code: '123456',
+    remember: expect.any(Boolean),
+  });
+
+  const storedSession = await page.evaluate(() => ({
+    username: window.sessionStorage.getItem('username'),
+    email: window.sessionStorage.getItem('email'),
+  }));
+  expect(storedSession).toEqual({ username, email });
+});
+
 test('invite sign-in accepts the invitation and opens the workspace after login', async ({ page }) => {
   const token = 'return-to-invite-token';
   const invitedWorkspaceId = 'ws-invited';

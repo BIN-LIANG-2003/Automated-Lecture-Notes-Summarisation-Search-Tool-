@@ -293,7 +293,8 @@ export default function AuthPage() {
           username: username.trim(),
           email: email.trim(),
           password: password,
-          verification_code: safeVerificationCode
+          verification_code: safeVerificationCode,
+          remember: rememberSession,
         })
       });
 
@@ -301,12 +302,20 @@ export default function AuthPage() {
 
       if (response.ok) {
         setVerificationPrompt(null);
-        showToast(data.message || 'Account created. You can sign in now.', 'success');
-        setMode('login');
-        setLoginUsername((data.email || email.trim()).trim());
-        setLoginPassword('');
+        storeAuthSession({
+          username: data.username || username.trim(),
+          email: data.email || email.trim(),
+          authToken: data.auth_token,
+          remember: rememberSession,
+          preferences: data.preferences || {},
+        });
+        rememberAccount({
+          username: data.username || username.trim(),
+          email: data.email || email.trim(),
+        });
         setSignupCodeSentTo('');
         setSignupData({ username: '', email: '', password: '', confirm: '', verificationCode: '' });
+        navigate(postAuthRedirect, { replace: true });
       } else {
         showToast(data.error || 'Registration failed', 'error');
       }
