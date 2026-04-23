@@ -6236,6 +6236,9 @@ export default function HomePage() {
   const activeDocProcessingMeta = getDocumentProcessingMeta(activeDoc);
   const activeDocProcessingMessage = getDocumentProcessingMessage(activeDoc);
   const activeDocCanEditText = ['txt', 'docx'].includes(activeDocExt);
+  const activeDocEditorVisible = Boolean(
+    activeDoc && ((activeDocCanEditText && activeDocEditMode) || pdfConversionDraft)
+  );
   const activeDocViewHtml = useMemo(() => getDocumentRichHtml(activeDoc), [activeDoc]);
   const activeDocSafeViewHtml = useMemo(() => sanitizeRichHtmlForView(activeDocViewHtml), [activeDocViewHtml]);
   const showOuterDocHeader = !activeDocIsPdf;
@@ -6677,6 +6680,7 @@ export default function HomePage() {
         sidebarDensityClass,
         sidebarCollapsed ? 'is-sidebar-collapsed' : '',
         mobileSidebarOpen ? 'is-mobile-sidebar-open' : '',
+        activeDocEditorVisible ? 'has-active-doc-editor' : '',
       ].filter(Boolean).join(' ')}
       style={workspaceThemeStyle}
     >
