@@ -16,6 +16,10 @@ import {
   storeAuthSession,
 } from '../lib/authSession.js';
 
+const PASSWORD_REQUIREMENT_MESSAGE = 'Password must be at least 7 characters and include both letters and numbers.';
+const PASSWORD_POLICY_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).{7,}$/;
+const SIGNUP_PASSWORD_MIN_LENGTH = 7;
+
 export default function AuthPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -55,6 +59,10 @@ export default function AuthPage() {
         : existingUser && existingToken
         ? 'You are already signed in.'
         : 'Welcome back! Please sign in to continue.';
+  const confirmPasswordMismatch = Boolean(signupData.confirm) && signupData.password !== signupData.confirm;
+  const confirmPasswordHelpText = confirmPasswordMismatch
+    ? 'Passwords do not match.'
+    : 'Re-enter the same password to confirm it.';
   const shouldShowAccountSelector =
     mode === 'login' &&
     showAccountSelector &&
@@ -253,8 +261,8 @@ export default function AuthPage() {
       showToast('Please complete all fields.', 'warning');
       return;
     }
-    if (password.length < 6) {
-      showToast('Password must be at least 6 characters.', 'warning');
+    if (!PASSWORD_POLICY_PATTERN.test(password)) {
+      showToast(PASSWORD_REQUIREMENT_MESSAGE, 'warning');
       return;
     }
     if (password !== confirm) {
@@ -498,10 +506,12 @@ export default function AuthPage() {
             <PasswordField
               id="su-password"
               label="Password"
-              placeholder="At least 6 characters"
+              placeholder="Letters and numbers"
               value={signupData.password}
               onChange={(value) => setSignupData((prev) => ({ ...prev, password: value }))}
               autoComplete="new-password"
+              minLength={SIGNUP_PASSWORD_MIN_LENGTH}
+              helpText={PASSWORD_REQUIREMENT_MESSAGE}
             />
 
             <PasswordField
@@ -512,6 +522,9 @@ export default function AuthPage() {
               onChange={(value) => setSignupData((prev) => ({ ...prev, confirm: value }))}
               autoComplete="new-password"
               confirm
+              minLength={SIGNUP_PASSWORD_MIN_LENGTH}
+              helpText={confirmPasswordHelpText}
+              helpTone={confirmPasswordMismatch ? 'warning' : 'normal'}
             />
 
             <button type="submit" className="btn btn-primary">
@@ -544,7 +557,18 @@ export default function AuthPage() {
   );
 }
 
-function PasswordField({ id, label, placeholder, value, onChange, autoComplete, confirm, minLength = 6 }) {
+function PasswordField({
+  id,
+  label,
+  placeholder,
+  value,
+  onChange,
+  autoComplete,
+  confirm,
+  minLength = 1,
+  helpText = '',
+  helpTone = 'normal',
+}) {
   const [visible, setVisible] = useState(false);
 
   const release = () => setVisible(false);
@@ -612,6 +636,11 @@ function PasswordField({ id, label, placeholder, value, onChange, autoComplete, 
           </svg>
         </button>
       </div>
+      {helpText && (
+        <p className={`auth-field-help ${helpTone === 'warning' ? 'warning' : ''}`}>
+          {helpText}
+        </p>
+      )}
     </div>
   );
 }

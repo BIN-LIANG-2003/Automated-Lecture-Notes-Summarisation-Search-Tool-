@@ -1665,6 +1665,32 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         self.assertEqual(titles, {'First Shared Notes', 'Second Shared Notes'})
 
     @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
+    def test_register_rejects_passwords_without_required_length_letters_and_numbers(self, mock_send_email):
+        weak_passwords = [
+            ('short1', 'too short'),
+            ('password', 'missing number'),
+            ('1234567', 'missing letter'),
+        ]
+
+        for index, (password, reason) in enumerate(weak_passwords, start=1):
+            with self.subTest(reason=reason):
+                response = self.client.post(
+                    '/api/auth/register',
+                    json={
+                        'username': f'weakuser{index}',
+                        'email': f'weakuser{index}@example.com',
+                        'password': password,
+                    },
+                )
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(
+                    response.get_json().get('error'),
+                    'Password must be at least 7 characters and include both letters and numbers.',
+                )
+
+        mock_send_email.assert_not_called()
+
+    @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
     def test_register_requires_email_verification_before_password_login(self, _mock_send_email):
         register_response = self.client.post(
             '/api/auth/register',

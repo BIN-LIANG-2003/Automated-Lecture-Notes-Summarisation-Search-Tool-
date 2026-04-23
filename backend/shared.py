@@ -112,9 +112,14 @@ from .user_preferences import normalize_user_preferences
 
 # ================= Configuration =================
 app = None
+PASSWORD_REQUIREMENT_MESSAGE = 'Password must be at least 7 characters and include both letters and numbers.'
+PASSWORD_POLICY_PATTERN = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{7,}$')
 
 
 # ================= Helper functions =================
+
+def password_meets_signup_policy(value):
+    return bool(PASSWORD_POLICY_PATTERN.match(str(value or '')))
 
 
 def _auth_response(payload, auth_token='', remember=False, status_code=200):
@@ -591,6 +596,8 @@ def register():
         return jsonify({'error': 'Missing fields'}), 400
     if not is_valid_email(email):
         return jsonify({'error': 'Please enter a valid email address'}), 400
+    if not password_meets_signup_policy(password):
+        return jsonify({'error': PASSWORD_REQUIREMENT_MESSAGE}), 400
 
     hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
     conn = get_db_connection()

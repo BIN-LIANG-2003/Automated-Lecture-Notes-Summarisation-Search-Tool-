@@ -2,7 +2,7 @@
 
 Student Number: 202528621
 Project: Automated Lecture Notes Summarisation & Search Tool
-Repository commit SHA: b2cc303ba507
+Repository commit SHA: 6593e1f4a33a
 
 ## Included
 

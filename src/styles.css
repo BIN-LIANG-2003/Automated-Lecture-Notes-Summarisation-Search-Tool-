@@ -1267,6 +1267,17 @@ button:disabled:hover,
   gap:6px;
 }
 
+.auth-field-help{
+  margin:0;
+  color:#667084;
+  font-size:12px;
+  line-height:1.45;
+}
+
+.auth-field-help.warning{
+  color:#b42318;
+}
+
 /* Inputs inside auth card */
 .login-card .auth-form input[type="text"],
 .login-card .auth-form input[type="password"],
