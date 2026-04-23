@@ -964,13 +964,13 @@ test('workspace owner can see and remove members from the invite modal', async (
   await expect(inviteDialog.getByText('1 active member')).toBeVisible();
 });
 
-test('messages center exposes friend code and add friend options', async ({ page }) => {
+test('messages center exposes connection code and add friend options', async ({ page }) => {
   await loginAsAlice(page);
 
   await page.getByRole('button', { name: /Messages/ }).click();
   const dialog = page.getByRole('dialog', { name: 'Messages' });
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByText('Your friend code')).toBeVisible();
+  await expect(dialog.getByText('Your connection code')).toBeVisible();
   await expect(dialog.locator('.studyhub-friend-code-row strong')).toHaveText(/[A-Z0-9]{6,}/);
 
   await dialog.getByRole('button', { name: /Requests/ }).click();

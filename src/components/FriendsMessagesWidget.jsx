@@ -506,7 +506,7 @@ export default function FriendsMessagesWidget({
 
         <div className="studyhub-friend-code-row">
           <div>
-            <span>Your friend code</span>
+            <span>Your connection code</span>
             <strong>{currentFriendCode || 'Loading'}</strong>
           </div>
           <button type="button" className="btn" onClick={handleCopyFriendCode} disabled={!currentFriendCode}>
@@ -552,7 +552,7 @@ export default function FriendsMessagesWidget({
               {summary.friends.length === 0 ? (
                 <div className="studyhub-empty-state">
                   <strong>No friends yet</strong>
-                  <span>Add someone by email, or ask them for their login name and friend code.</span>
+                  <span>Add someone by email, or ask them for their login name and connection code.</span>
                   <button type="button" className="btn" onClick={() => setActiveTab('requests')}>
                     Add Friend
                   </button>
@@ -762,7 +762,7 @@ export default function FriendsMessagesWidget({
                     />
                   </label>
                   <label>
-                    Friend code
+                    Connection code
                     <input
                       type="text"
                       value={requestFriendCode}

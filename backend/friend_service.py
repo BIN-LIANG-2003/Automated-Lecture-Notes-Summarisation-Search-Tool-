@@ -666,10 +666,10 @@ def create_friend_request():
             target_username = str(data.get('username') or '').strip()
             friend_code = str(data.get('friend_code') or data.get('friendCode') or '').strip().upper()
             if not target_username or not friend_code:
-                return jsonify({'error': 'Login name and friend code are required'}), 400
+                return jsonify({'error': 'Login name and connection code are required'}), 400
             target = _load_user_by_username_and_code(conn, target_username, friend_code)
             if not target:
-                return jsonify({'error': 'No user matched that login name and friend code'}), 404
+                return jsonify({'error': 'No user matched that login name and connection code'}), 404
 
         target_username = str(target.get('username') or '').strip()
         if target_username == username:
