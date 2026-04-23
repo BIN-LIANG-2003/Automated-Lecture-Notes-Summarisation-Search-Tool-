@@ -10,6 +10,11 @@ def register():
     return shared.register()
 
 
+@auth_bp.route('/api/auth/registration-code', methods=['POST'])
+def send_registration_code():
+    return shared.send_registration_code()
+
+
 @auth_bp.route('/api/auth/login', methods=['POST'])
 def login():
     return shared.login()

@@ -119,6 +119,7 @@ DEBUG_ENABLED = _is_explicit_development_environment() and str(
 ).strip().lower() in ('1', 'true', 'yes', 'on')
 AUTH_BYPASS_ENDPOINTS = {
     'register',
+    'send_registration_code',
     'login',
     'google_login',
     'verify_email',

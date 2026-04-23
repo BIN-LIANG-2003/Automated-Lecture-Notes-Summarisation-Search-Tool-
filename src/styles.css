@@ -1267,6 +1267,18 @@ button:disabled:hover,
   gap:6px;
 }
 
+.auth-code-row{
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) auto;
+  gap:8px;
+  align-items:stretch;
+}
+
+.auth-code-button{
+  min-width:116px;
+  white-space:nowrap;
+}
+
 .auth-field-help{
   margin:0;
   color:#667084;
@@ -1289,6 +1301,10 @@ button:disabled:hover,
   padding:12px 14px;
   min-width:0;
   min-height:48px;
+}
+
+.login-card .auth-code-row input[type="email"]{
+  width:100%;
 }
 .login-card .auth-form input[type="text"]::placeholder,
 .login-card .auth-form input[type="password"]::placeholder,

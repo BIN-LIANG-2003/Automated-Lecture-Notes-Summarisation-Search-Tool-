@@ -114,6 +114,8 @@ from .user_preferences import normalize_user_preferences
 app = None
 PASSWORD_REQUIREMENT_MESSAGE = 'Password must be at least 7 characters and include both letters and numbers.'
 PASSWORD_POLICY_PATTERN = re.compile(r'^(?=.*[A-Za-z])(?=.*\d).{7,}$')
+REGISTRATION_CODE_TTL_MINUTES = 5
+REGISTRATION_CODE_PATTERN = re.compile(r'^\d{6}$')
 
 
 # ================= Helper functions =================
@@ -411,6 +413,18 @@ def email_verification_expires_at():
     return (datetime.utcnow() + timedelta(hours=EMAIL_VERIFICATION_TTL_HOURS)).isoformat()
 
 
+def create_registration_verification_code():
+    return f'{secrets.randbelow(1000000):06d}'
+
+
+def registration_code_expires_at():
+    return (datetime.utcnow() + timedelta(minutes=REGISTRATION_CODE_TTL_MINUTES)).isoformat()
+
+
+def normalize_registration_code(value):
+    return str(value or '').strip().replace(' ', '')
+
+
 def build_email_verification_url(token):
     safe_token = str(token or '').strip()
     if not safe_token:
@@ -539,6 +553,50 @@ def send_registration_verification_email(to_email, username, verification_url, e
     return True, ''
 
 
+def send_registration_verification_code_email(to_email, verification_code, expires_at):
+    recipient = normalize_email(to_email)
+    masked_recipient = mask_email_for_log(recipient)
+    safe_code = normalize_registration_code(verification_code)
+    safe_expiry_label = str(expires_at or '').strip() or 'Unknown'
+    if not recipient:
+        print('Registration verification code email send skipped: missing recipient email')
+        return False, 'Missing recipient email'
+    if not REGISTRATION_CODE_PATTERN.fullmatch(safe_code):
+        print(
+            f'Registration verification code email send failed for {masked_recipient}: '
+            'verification code could not be generated'
+        )
+        return False, 'Verification code could not be generated'
+
+    subject = 'Your StudyHub verification code'
+    body_html = f'''
+        <div style="font-family: Arial, sans-serif; line-height: 1.6; color: #1f2937; max-width: 560px; margin: 0 auto;">
+          <h2 style="margin-bottom: 12px;">Your StudyHub verification code</h2>
+          <p>Use this code to finish creating your StudyHub account.</p>
+          <p style="font-size: 32px; letter-spacing: 8px; font-weight: 700; margin: 18px 0; color: #111827;">
+            {html.escape(safe_code)}
+          </p>
+          <p style="margin-bottom: 8px;">This code expires in {REGISTRATION_CODE_TTL_MINUTES} minutes.</p>
+          <p style="margin-bottom: 8px;"><strong>Expires:</strong> {html.escape(safe_expiry_label)}</p>
+          <p style="font-size: 12px; color: #6b7280;">If you did not request this code, you can ignore this email.</p>
+        </div>
+    '''
+    body_text = (
+        'Use this code to finish creating your StudyHub account.\n\n'
+        f'Verification code: {safe_code}\n'
+        f'This code expires in {REGISTRATION_CODE_TTL_MINUTES} minutes.\n'
+        f'Expires: {safe_expiry_label}\n'
+    )
+    sent, error_message = send_resend_email(recipient, subject, body_html, body_text)
+    if not sent:
+        print(
+            f'Registration verification code email send failed for {masked_recipient}: '
+            f'{error_message}'
+        )
+        return False, error_message
+    return True, ''
+
+
 def _persist_email_verification(conn, user_row):
     user = row_to_dict(user_row) or {}
     username = str(user.get('username') or '').strip()
@@ -584,13 +642,113 @@ def _find_user_for_verification_request(conn, identifier='', email=''):
     return None
 
 
+def _delete_expired_registration_codes(conn):
+    conn.execute(
+        'DELETE FROM registration_email_codes WHERE expires_at < ?',
+        (datetime.utcnow().isoformat(),),
+    )
+
+
+def _consume_registration_code(conn, email, submitted_code):
+    safe_email = normalize_email(email)
+    safe_code = normalize_registration_code(submitted_code)
+    if not safe_email:
+        return False, 'Email is required'
+    if not REGISTRATION_CODE_PATTERN.fullmatch(safe_code):
+        return False, 'Enter the 6-digit verification code from your email.'
+
+    code_row = row_to_dict(
+        conn.execute(
+            '''
+            SELECT email, code_hash, expires_at
+            FROM registration_email_codes
+            WHERE LOWER(email) = ?
+            LIMIT 1
+            ''',
+            (safe_email,),
+        ).fetchone()
+    )
+    if not code_row:
+        return False, 'Send a verification code before creating your account.'
+
+    expires_at = parse_iso_datetime(code_row.get('expires_at'))
+    if expires_at is None or expires_at < datetime.utcnow():
+        conn.execute('DELETE FROM registration_email_codes WHERE LOWER(email) = ?', (safe_email,))
+        return False, 'Verification code expired. Send a new code.'
+
+    if not check_password_hash(str(code_row.get('code_hash') or ''), safe_code):
+        return False, 'Verification code is incorrect.'
+
+    conn.execute('DELETE FROM registration_email_codes WHERE LOWER(email) = ?', (safe_email,))
+    return True, ''
+
+
 # ================= API routes =================
+
+def send_registration_code():
+    data = request.get_json(silent=True) or {}
+    email = normalize_email(data.get('email'))
+    if not email:
+        return jsonify({'error': 'Email is required'}), 400
+    if not is_valid_email(email):
+        return jsonify({'error': 'Please enter a valid email address'}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({'error': 'Database connection failed'}), 500
+    try:
+        existing = row_to_dict(
+            conn.execute(
+                'SELECT username, email_verified FROM users WHERE LOWER(email) = ? LIMIT 1',
+                (email,),
+            ).fetchone()
+        )
+        if existing:
+            return jsonify({'error': 'Email is already registered'}), 409
+
+        _delete_expired_registration_codes(conn)
+        verification_code = create_registration_verification_code()
+        expires_at = registration_code_expires_at()
+        sent_at = utcnow_iso()
+        code_hash = generate_password_hash(verification_code, method='pbkdf2:sha256')
+        conn.execute(
+            '''
+            INSERT INTO registration_email_codes (email, code_hash, expires_at, sent_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(email) DO UPDATE SET
+                code_hash = excluded.code_hash,
+                expires_at = excluded.expires_at,
+                sent_at = excluded.sent_at
+            ''',
+            (email, code_hash, expires_at, sent_at),
+        )
+        sent, send_error = send_registration_verification_code_email(email, verification_code, expires_at)
+        if not sent:
+            conn.rollback()
+            return jsonify({'error': send_error or 'Failed to send verification code'}), 503
+        conn.commit()
+        return jsonify({
+            'message': 'Verification code sent. It expires in 5 minutes.',
+            'email': email,
+            'verification_expires_at': expires_at,
+        }), 200
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        print(f'Registration code send failed: {e}')
+        return jsonify({'error': 'Failed to send verification code'}), 500
+    finally:
+        conn.close()
+
 
 def register():
     data = request.get_json(silent=True) or {}
     username = str(data.get('username') or '').strip()
     email = normalize_email(data.get('email'))
     password = data.get('password')
+    verification_code = normalize_registration_code(data.get('verification_code') or data.get('code'))
 
     if not username or not email or not password:
         return jsonify({'error': 'Missing fields'}), 400
@@ -598,6 +756,8 @@ def register():
         return jsonify({'error': 'Please enter a valid email address'}), 400
     if not password_meets_signup_policy(password):
         return jsonify({'error': PASSWORD_REQUIREMENT_MESSAGE}), 400
+    if not verification_code:
+        return jsonify({'error': 'Verification code is required'}), 400
 
     hashed_pw = generate_password_hash(password, method='pbkdf2:sha256')
     conn = get_db_connection()
@@ -615,10 +775,13 @@ def register():
                 return jsonify({'error': 'Username already exists'}), 409
             return jsonify({'error': 'Email is already registered'}), 409
 
-        verification_token = create_email_verification_token()
-        expires_at = email_verification_expires_at()
-        verification_url = build_email_verification_url(verification_token)
+        code_ok, code_error = _consume_registration_code(conn, email, verification_code)
+        if not code_ok:
+            conn.commit()
+            return jsonify({'error': code_error or 'Verification code is invalid'}), 400
+
         friend_code = generate_unique_friend_code(conn)
+        verified_at = utcnow_iso()
         conn.execute(
             '''
             INSERT INTO users (
@@ -637,23 +800,18 @@ def register():
                 email,
                 friend_code,
                 hashed_pw,
-                False if conn.db_type == 'postgres' else 0,
-                verification_token,
-                expires_at,
+                True if conn.db_type == 'postgres' else 1,
                 None,
+                None,
+                verified_at,
             ),
         )
-        sent, send_error = send_registration_verification_email(email, username, verification_url, expires_at)
-        if not sent:
-            conn.rollback()
-            return jsonify({'error': send_error or 'Failed to send verification email'}), 503
         conn.commit()
         return jsonify({
-            'message': 'Account created. Please check your email to verify your account before signing in.',
+            'message': 'Account created. You can sign in now.',
             'username': username,
             'email': email,
-            'verification_required': True,
-            'verification_expires_at': expires_at,
+            'verification_required': False,
         }), 201
     except Exception as e:
         try:

@@ -19,6 +19,9 @@ import {
 const PASSWORD_REQUIREMENT_MESSAGE = 'Password must be at least 7 characters and include both letters and numbers.';
 const PASSWORD_POLICY_PATTERN = /^(?=.*[A-Za-z])(?=.*\d).{7,}$/;
 const SIGNUP_PASSWORD_MIN_LENGTH = 7;
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const REGISTRATION_CODE_PATTERN = /^\d{6}$/;
+const REGISTRATION_CODE_HELP_TEXT = 'Enter the 6-digit code sent to your email. It expires in 5 minutes.';
 
 export default function AuthPage() {
   const navigate = useNavigate();
@@ -44,8 +47,11 @@ export default function AuthPage() {
     username: '',
     email: '',
     password: '',
-    confirm: ''
+    confirm: '',
+    verificationCode: ''
   });
+  const [sendingSignupCode, setSendingSignupCode] = useState(false);
+  const [signupCodeSentTo, setSignupCodeSentTo] = useState('');
   const [verificationPrompt, setVerificationPrompt] = useState(null);
 
   const existingSession = readStoredAuthSession();
@@ -90,7 +96,7 @@ export default function AuthPage() {
     resize();
     window.addEventListener('resize', resize);
     return () => window.removeEventListener('resize', resize);
-  }, [mode]);
+  }, [mode, signupData, signupCodeSentTo, sendingSignupCode, verificationPrompt]);
 
   useEffect(() => {
     const active = mode === 'login' ? loginFormRef.current : signupFormRef.current;
@@ -255,10 +261,15 @@ export default function AuthPage() {
 
   const handleSignup = async (event) => {
     event.preventDefault();
-    const { username, email, password, confirm } = signupData;
+    const { username, email, password, confirm, verificationCode } = signupData;
+    const safeVerificationCode = String(verificationCode || '').trim();
     
-    if (!username.trim() || !email.trim() || !password || !confirm) {
+    if (!username.trim() || !email.trim() || !password || !confirm || !safeVerificationCode) {
       showToast('Please complete all fields.', 'warning');
+      return;
+    }
+    if (!EMAIL_PATTERN.test(email.trim())) {
+      showToast('Please enter a valid email address.', 'warning');
       return;
     }
     if (!PASSWORD_POLICY_PATTERN.test(password)) {
@@ -269,6 +280,10 @@ export default function AuthPage() {
       showToast('Passwords do not match.', 'warning');
       return;
     }
+    if (!REGISTRATION_CODE_PATTERN.test(safeVerificationCode)) {
+      showToast('Enter the 6-digit verification code from your email.', 'warning');
+      return;
+    }
 
     try {
       const response = await fetch('/api/auth/register', {
@@ -277,29 +292,61 @@ export default function AuthPage() {
         body: JSON.stringify({
           username: username.trim(),
           email: email.trim(),
-          password: password
+          password: password,
+          verification_code: safeVerificationCode
         })
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        setVerificationPrompt({
-          email: String(data.email || email.trim()).trim(),
-          username: String(data.username || username.trim()).trim(),
-          message: data.message || 'Account created. Please verify your email address before signing in.',
-        });
-        showToast(data.message || 'Account created. Please verify your email address before signing in.', 'success');
+        setVerificationPrompt(null);
+        showToast(data.message || 'Account created. You can sign in now.', 'success');
         setMode('login');
         setLoginUsername((data.email || email.trim()).trim());
         setLoginPassword('');
-        setSignupData({ username: '', email: '', password: '', confirm: '' });
+        setSignupCodeSentTo('');
+        setSignupData({ username: '', email: '', password: '', confirm: '', verificationCode: '' });
       } else {
         showToast(data.error || 'Registration failed', 'error');
       }
     } catch (error) {
       console.error('Signup error:', error);
       showToast('Network error. Is the backend running?', 'error');
+    }
+  };
+
+  const handleSendSignupCode = async () => {
+    const email = String(signupData.email || '').trim();
+    if (!email) {
+      showToast('Enter your email before sending a code.', 'warning');
+      return;
+    }
+    if (!EMAIL_PATTERN.test(email)) {
+      showToast('Please enter a valid email address.', 'warning');
+      return;
+    }
+
+    setSendingSignupCode(true);
+    try {
+      const response = await fetch('/api/auth/registration-code', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email })
+      });
+      const data = await response.json();
+      if (response.ok) {
+        const sentEmail = String(data.email || email).trim();
+        setSignupCodeSentTo(sentEmail);
+        showToast(data.message || 'Verification code sent. It expires in 5 minutes.', 'success');
+        return;
+      }
+      showToast(data.error || 'Failed to send verification code', 'error');
+    } catch (error) {
+      console.error('Send signup code error:', error);
+      showToast('Network error. Is the backend running?', 'error');
+    } finally {
+      setSendingSignupCode(false);
     }
   };
 
@@ -492,15 +539,56 @@ export default function AuthPage() {
 
             <div className="auth-form-field">
               <label htmlFor="su-email">Email</label>
+              <div className="auth-code-row">
+                <input
+                  type="email"
+                  id="su-email"
+                  placeholder="name@example.com"
+                  required
+                  autoComplete="email"
+                  value={signupData.email}
+                  onChange={(event) => {
+                    const nextEmail = event.target.value;
+                    setSignupData((prev) => ({ ...prev, email: nextEmail, verificationCode: '' }));
+                    if (signupCodeSentTo && nextEmail.trim().toLowerCase() !== signupCodeSentTo.toLowerCase()) {
+                      setSignupCodeSentTo('');
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  className="btn auth-code-button"
+                  onClick={handleSendSignupCode}
+                  disabled={sendingSignupCode}
+                >
+                  {sendingSignupCode ? 'Sending...' : 'Send code'}
+                </button>
+              </div>
+              <p className="auth-field-help">
+                {signupCodeSentTo
+                  ? `Code sent to ${signupCodeSentTo}. It expires in 5 minutes.`
+                  : 'Send a 6-digit verification code before creating your account.'}
+              </p>
+            </div>
+
+            <div className="auth-form-field">
+              <label htmlFor="su-verification-code">Verification code</label>
               <input
-                type="email"
-                id="su-email"
-                placeholder="name@example.com"
+                type="text"
+                id="su-verification-code"
+                placeholder="6-digit code"
                 required
-                autoComplete="email"
-                value={signupData.email}
-                onChange={(event) => setSignupData((prev) => ({ ...prev, email: event.target.value }))}
+                inputMode="numeric"
+                pattern="[0-9]{6}"
+                maxLength={6}
+                autoComplete="one-time-code"
+                value={signupData.verificationCode}
+                onChange={(event) => {
+                  const nextCode = event.target.value.replace(/\D/g, '').slice(0, 6);
+                  setSignupData((prev) => ({ ...prev, verificationCode: nextCode }));
+                }}
               />
+              <p className="auth-field-help">{REGISTRATION_CODE_HELP_TEXT}</p>
             </div>
 
             <PasswordField

@@ -24,6 +24,7 @@ _RATE_LIMIT_BUCKETS = {}
 RATE_LIMIT_RULES = {
     'login': (20, RATE_LIMIT_WINDOW_SECONDS),
     'register': (10, RATE_LIMIT_WINDOW_SECONDS),
+    'send_registration_code': (5, RATE_LIMIT_WINDOW_SECONDS),
     'resend_verification': (10, RATE_LIMIT_WINDOW_SECONDS),
     'upload_file': (60, RATE_LIMIT_WINDOW_SECONDS),
     'extract_text_from_image': (30, RATE_LIMIT_WINDOW_SECONDS),

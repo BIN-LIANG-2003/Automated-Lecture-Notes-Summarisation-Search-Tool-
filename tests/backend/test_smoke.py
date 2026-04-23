@@ -1664,8 +1664,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         titles = {item.get('document_title') for item in items}
         self.assertEqual(titles, {'First Shared Notes', 'Second Shared Notes'})
 
-    @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
-    def test_register_rejects_passwords_without_required_length_letters_and_numbers(self, mock_send_email):
+    def test_register_rejects_passwords_without_required_length_letters_and_numbers(self):
         weak_passwords = [
             ('short1', 'too short'),
             ('password', 'missing number'),
@@ -1680,6 +1679,7 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                         'username': f'weakuser{index}',
                         'email': f'weakuser{index}@example.com',
                         'password': password,
+                        'verification_code': '123456',
                     },
                 )
                 self.assertEqual(response.status_code, 400)
@@ -1688,29 +1688,38 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
                     'Password must be at least 7 characters and include both letters and numbers.',
                 )
 
-        mock_send_email.assert_not_called()
+    @patch('backend.shared.create_registration_verification_code', return_value='123456')
+    @patch('backend.shared.send_registration_verification_code_email', return_value=(True, ''))
+    def test_register_uses_six_digit_email_code_before_password_login(
+            self,
+            mock_send_code_email,
+            _mock_create_code):
+        send_code_response = self.client.post(
+            '/api/auth/registration-code',
+            json={'email': 'newuser@example.com'},
+        )
+        self.assertEqual(send_code_response.status_code, 200)
+        send_payload = send_code_response.get_json()
+        self.assertEqual(send_payload.get('message'), 'Verification code sent. It expires in 5 minutes.')
+        expires_at = send_payload.get('verification_expires_at')
+        self.assertTrue(str(expires_at or '').strip())
+        expiry_dt = datetime.fromisoformat(expires_at)
+        self.assertLessEqual(expiry_dt, datetime.utcnow() + timedelta(minutes=6))
+        mock_send_code_email.assert_called_once()
 
-    @patch('backend.shared.send_registration_verification_email', return_value=(True, ''))
-    def test_register_requires_email_verification_before_password_login(self, _mock_send_email):
         register_response = self.client.post(
             '/api/auth/register',
             json={
                 'username': 'newuser',
                 'email': 'newuser@example.com',
                 'password': 'password123',
+                'verification_code': '123456',
             },
         )
         self.assertEqual(register_response.status_code, 201)
         register_payload = register_response.get_json()
-        self.assertTrue(register_payload.get('verification_required'))
+        self.assertFalse(register_payload.get('verification_required'))
         self.assertNotIn('auth_token', register_payload)
-
-        login_before_verify = self.client.post(
-            '/api/auth/login',
-            json={'username': 'newuser@example.com', 'password': 'password123'},
-        )
-        self.assertEqual(login_before_verify.status_code, 403)
-        self.assertEqual(login_before_verify.get_json().get('code'), 'email_not_verified')
 
         conn = self._connection()
         try:
@@ -1728,14 +1737,19 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             conn.close()
 
         self.assertIsNotNone(user_row)
-        self.assertFalse(bool(user_row.get('email_verified')))
+        self.assertTrue(bool(user_row.get('email_verified')))
         verification_token = str(user_row.get('email_verification_token') or '').strip()
-        self.assertTrue(verification_token)
-        self.assertTrue(str(user_row.get('email_verification_expires_at') or '').strip())
-
-        verify_response = self.client.get(f'/api/auth/verify-email?token={verification_token}')
-        self.assertEqual(verify_response.status_code, 200)
-        self.assertIn('Email verified', verify_response.get_data(as_text=True))
+        self.assertFalse(verification_token)
+        self.assertFalse(str(user_row.get('email_verification_expires_at') or '').strip())
+        conn = self._connection()
+        try:
+            remaining_code = conn.execute(
+                'SELECT email FROM registration_email_codes WHERE email = ?',
+                ('newuser@example.com',),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(remaining_code)
 
         login_after_verify = self.client.post(
             '/api/auth/login',
@@ -1743,6 +1757,83 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
         )
         self.assertEqual(login_after_verify.status_code, 200)
         self.assertTrue(str(login_after_verify.get_json().get('auth_token') or '').strip())
+
+    @patch('backend.shared.create_registration_verification_code', return_value='123456')
+    @patch('backend.shared.send_registration_verification_code_email', return_value=(True, ''))
+    def test_register_rejects_invalid_email_verification_code(self, _mock_send_code_email, _mock_create_code):
+        send_code_response = self.client.post(
+            '/api/auth/registration-code',
+            json={'email': 'wrongcode@example.com'},
+        )
+        self.assertEqual(send_code_response.status_code, 200)
+
+        register_response = self.client.post(
+            '/api/auth/register',
+            json={
+                'username': 'wrongcode',
+                'email': 'wrongcode@example.com',
+                'password': 'password123',
+                'verification_code': '000000',
+            },
+        )
+        self.assertEqual(register_response.status_code, 400)
+        self.assertEqual(register_response.get_json().get('error'), 'Verification code is incorrect.')
+
+        conn = self._connection()
+        try:
+            user_row = conn.execute(
+                'SELECT username FROM users WHERE username = ?',
+                ('wrongcode',),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(user_row)
+
+    def test_register_rejects_expired_email_verification_code(self):
+        conn = self._connection()
+        try:
+            conn.execute(
+                '''
+                INSERT INTO registration_email_codes (email, code_hash, expires_at, sent_at)
+                VALUES (?, ?, ?, ?)
+                ''',
+                (
+                    'expiredcode@example.com',
+                    generate_password_hash('654321', method='pbkdf2:sha256'),
+                    (datetime.utcnow() - timedelta(minutes=1)).isoformat(),
+                    utcnow_iso(),
+                ),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        register_response = self.client.post(
+            '/api/auth/register',
+            json={
+                'username': 'expiredcode',
+                'email': 'expiredcode@example.com',
+                'password': 'password123',
+                'verification_code': '654321',
+            },
+        )
+        self.assertEqual(register_response.status_code, 400)
+        self.assertEqual(register_response.get_json().get('error'), 'Verification code expired. Send a new code.')
+
+        conn = self._connection()
+        try:
+            remaining_code = conn.execute(
+                'SELECT email FROM registration_email_codes WHERE email = ?',
+                ('expiredcode@example.com',),
+            ).fetchone()
+            user_row = conn.execute(
+                'SELECT username FROM users WHERE username = ?',
+                ('expiredcode',),
+            ).fetchone()
+        finally:
+            conn.close()
+        self.assertIsNone(remaining_code)
+        self.assertIsNone(user_row)
 
     def test_keyword_search_returns_ranked_results_and_facets(self):
         self._insert_document(

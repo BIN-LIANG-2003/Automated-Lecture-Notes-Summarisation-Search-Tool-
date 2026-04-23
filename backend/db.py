@@ -533,6 +533,15 @@ def init_db():
         );
     '''
 
+    registration_email_codes_sql = f'''
+        CREATE TABLE IF NOT EXISTS registration_email_codes (
+            email TEXT PRIMARY KEY,
+            code_hash TEXT NOT NULL,
+            expires_at {optional_timestamp_type} NOT NULL,
+            sent_at {timestamp_type}
+        );
+    '''
+
     workspace_members_unique_sql = '''
         CREATE UNIQUE INDEX IF NOT EXISTS idx_workspace_members_workspace_user
         ON workspace_members(workspace_id, username);
@@ -654,6 +663,11 @@ def init_db():
         ON user_notifications(username, read_at, created_at);
     '''
 
+    registration_email_codes_expires_idx_sql = '''
+        CREATE INDEX IF NOT EXISTS idx_registration_email_codes_expires
+        ON registration_email_codes(expires_at);
+    '''
+
     try:
         conn.execute(users_sql)
         conn.execute(docs_sql)
@@ -669,6 +683,7 @@ def init_db():
         conn.execute(friendships_sql)
         conn.execute(friend_messages_sql)
         conn.execute(user_notifications_sql)
+        conn.execute(registration_email_codes_sql)
         ensure_users_columns(conn, optional_timestamp_type)
         backfill_user_friend_codes(conn)
         ensure_documents_columns(conn, optional_timestamp_type)
@@ -699,6 +714,7 @@ def init_db():
         conn.execute(friend_messages_recipient_read_idx_sql)
         conn.execute(friend_messages_pair_idx_sql)
         conn.execute(user_notifications_username_read_idx_sql)
+        conn.execute(registration_email_codes_expires_idx_sql)
 
         from .document_search import ensure_document_search_support
         from .workspace_domain import backfill_documents_workspace_ids
