@@ -2558,6 +2558,60 @@ class StudyHubBackendSmokeTests(unittest.TestCase):
             self.assertEqual(raised.exception.status_code, 401)
             modal_summary_app._auth_dependency('Bearer summary-secret')
 
+    def test_modal_summary_health_does_not_load_model(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from fastapi.testclient import TestClient
+        from summary_service import app as modal_summary_app
+
+        with patch.object(modal_summary_app, '_load_model_once') as load_model:
+            response = TestClient(modal_summary_app.create_app()).get('/health')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'ok': True, 'service': 'studyhub-summary'})
+        load_model.assert_not_called()
+
+    def test_modal_summary_ready_loads_cached_model(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from fastapi.testclient import TestClient
+        from summary_service import app as modal_summary_app
+
+        with patch.object(modal_summary_app, '_load_model_once') as load_model:
+            response = TestClient(modal_summary_app.create_app()).get('/ready')
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), {'ok': True, 'model_loaded': True})
+        load_model.assert_called_once()
+
+    def test_modal_summary_returns_json_when_model_path_missing(self):
+        if importlib.util.find_spec('fastapi') is None:
+            self.skipTest('FastAPI is only installed for the standalone Modal summary service')
+        from fastapi.testclient import TestClient
+        from summary_service import app as modal_summary_app
+
+        with patch.dict(os.environ, {
+            'APP_ENV': 'development',
+            'SUMMARY_SERVICE_AUTH_TOKEN': 'summary-secret',
+            'ALLOW_UNAUTHENTICATED_SUMMARY_SERVICE': '0',
+        }):
+            with patch.object(
+                modal_summary_app,
+                '_load_model_once',
+                side_effect=modal_summary_app.SummaryModelPathMissingError('summary model path not found'),
+            ):
+                response = TestClient(modal_summary_app.create_app()).post(
+                    '/summarize',
+                    headers={'Authorization': 'Bearer summary-secret'},
+                    json={
+                        'text': 'Short lecture note content about graph traversal and revision planning.',
+                        'summary_length': 'short',
+                    },
+                )
+
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json(), {'error': 'summary model path not found'})
+
     def test_modal_ocr_service_fails_closed_without_token_in_production(self):
         if importlib.util.find_spec('fastapi') is None:
             self.skipTest('FastAPI is only installed for the standalone Modal OCR service')

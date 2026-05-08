@@ -1,9 +1,11 @@
 import os
 import re
 import threading
+import traceback
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
 
@@ -13,6 +15,7 @@ PROMPT = (
     "definitions, causes, effects, and exam-relevant points:\n\n"
 )
 SERVICE_NAME = "studyhub-summary-service"
+HEALTH_SERVICE_NAME = "studyhub-summary"
 SUMMARY_SOURCE = "custom_flan_t5_large"
 SUMMARY_MODEL_LABEL = "google/flan-t5-large+lora"
 
@@ -28,12 +31,33 @@ _model_state: dict[str, Any] = {
     "model": None,
     "device": "cpu",
     "loaded": False,
+    "last_error": "",
 }
 
 
 class SummaryRequest(BaseModel):
-    text: str
+    text: str = ""
     summary_length: str | None = None
+
+
+class SummaryServiceError(RuntimeError):
+    status_code = 500
+
+    def __init__(self, public_message: str):
+        super().__init__(public_message)
+        self.public_message = public_message
+
+
+class SummaryModelPathMissingError(SummaryServiceError):
+    status_code = 503
+
+
+class SummaryModelLoadError(SummaryServiceError):
+    status_code = 503
+
+
+class SummaryGenerationError(SummaryServiceError):
+    status_code = 502
 
 
 def _env(name: str, default: str = "") -> str:
@@ -66,6 +90,29 @@ def _clean_text(text: str) -> str:
 def _summary_length(value: str | None) -> str:
     requested = str(value or _env("SUMMARY_DEFAULT_LENGTH", "medium")).strip().lower()
     return requested if requested in LENGTH_PRESETS else "medium"
+
+
+def _word_count(text: str) -> int:
+    return len(_clean_text(text).split())
+
+
+def _safe_error_message(
+    exc: BaseException | str,
+    fallback: str = "summary service error",
+) -> str:
+    message = str(exc or "").strip() or fallback
+    for secret_name in ("HF_TOKEN", "SUMMARY_SERVICE_AUTH_TOKEN"):
+        secret_value = _env(secret_name)
+        if secret_value and secret_value in message:
+            message = message.replace(secret_value, "[redacted]")
+    return message[:500]
+
+
+def _json_error(message: str, status_code: int) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"error": _safe_error_message(message)},
+    )
 
 
 def _split_chunks_with_metadata(text: str) -> tuple[list[str], dict[str, Any]]:
@@ -137,45 +184,82 @@ def _load_model_once():
         if _model_state.get("loaded"):
             return
 
-        import torch
-        from peft import PeftModel
-        from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
-
         base_model_id = _env("SUMMARY_BASE_MODEL_ID", "google/flan-t5-large")
         adapter_dir = _env("SUMMARY_ADAPTER_DIR", "/models/flan_t5_large_lora_adapter_stable_final")
-        hf_token = _env("HF_TOKEN")
-        cache_dir = _env("HF_CACHE_DIR")
-        if cache_dir:
-            os.makedirs(cache_dir, exist_ok=True)
-
-        model_kwargs: dict[str, Any] = {}
-        if hf_token:
-            model_kwargs["token"] = hf_token
-        if cache_dir:
-            model_kwargs["cache_dir"] = cache_dir
-
-        cuda_available = torch.cuda.is_available()
-        dtype = torch.float16 if cuda_available else torch.float32
-        device = "cuda" if cuda_available else "cpu"
-
-        tokenizer = AutoTokenizer.from_pretrained(base_model_id, **model_kwargs)
-        base_model = AutoModelForSeq2SeqLM.from_pretrained(
-            base_model_id,
-            torch_dtype=dtype,
-            **model_kwargs,
+        print(
+            f"SUMMARY_MODEL_LOAD_START base_model_id={base_model_id} adapter_dir={adapter_dir}",
+            flush=True,
         )
-        model = PeftModel.from_pretrained(base_model, adapter_dir, is_trainable=False)
-        model.to(device)
-        model.eval()
 
-        _model_state.update(
-            {
-                "tokenizer": tokenizer,
-                "model": model,
-                "device": device,
-                "loaded": True,
-            }
-        )
+        try:
+            if not adapter_dir or not os.path.isdir(adapter_dir):
+                raise SummaryModelPathMissingError("summary model path not found")
+
+            import torch
+            from peft import PeftModel
+            from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+
+            hf_token = _env("HF_TOKEN")
+            cache_dir = _env("HF_CACHE_DIR")
+            if cache_dir:
+                os.makedirs(cache_dir, exist_ok=True)
+
+            model_kwargs: dict[str, Any] = {}
+            if hf_token:
+                model_kwargs["token"] = hf_token
+            if cache_dir:
+                model_kwargs["cache_dir"] = cache_dir
+
+            cuda_available = torch.cuda.is_available()
+            dtype = torch.float16 if cuda_available else torch.float32
+            device = "cuda" if cuda_available else "cpu"
+
+            tokenizer = AutoTokenizer.from_pretrained(base_model_id, **model_kwargs)
+            base_model = AutoModelForSeq2SeqLM.from_pretrained(
+                base_model_id,
+                torch_dtype=dtype,
+                **model_kwargs,
+            )
+            try:
+                model = PeftModel.from_pretrained(base_model, adapter_dir, is_trainable=False)
+            except Exception as exc:
+                raise SummaryModelLoadError(
+                    f"summary adapter loading failed: {_safe_error_message(exc)}"
+                ) from exc
+
+            model.to(device)
+            model.eval()
+
+            _model_state.update(
+                {
+                    "tokenizer": tokenizer,
+                    "model": model,
+                    "device": device,
+                    "loaded": True,
+                    "last_error": "",
+                }
+            )
+            print(f"SUMMARY_MODEL_LOAD_DONE device={device}", flush=True)
+        except Exception as exc:
+            public_message = (
+                exc.public_message
+                if isinstance(exc, SummaryServiceError)
+                else f"summary model loading failed: {_safe_error_message(exc)}"
+            )
+            _model_state.update(
+                {
+                    "tokenizer": None,
+                    "model": None,
+                    "device": "cpu",
+                    "loaded": False,
+                    "last_error": public_message,
+                }
+            )
+            print(f"SUMMARY_MODEL_LOAD_FAILED error={public_message}", flush=True)
+            traceback.print_exc()
+            if isinstance(exc, SummaryServiceError):
+                raise
+            raise SummaryModelLoadError(public_message) from exc
 
 
 def _generate_one(text: str, summary_length: str) -> str:
@@ -219,13 +303,28 @@ def _summarize_sync(text: str, summary_length: str) -> dict[str, Any]:
     if not chunks:
         raise HTTPException(status_code=400, detail="Text is required")
 
-    partial_summaries = [_generate_one(chunk, summary_length) for chunk in chunks]
+    try:
+        partial_summaries = [_generate_one(chunk, summary_length) for chunk in chunks]
+    except (SummaryModelPathMissingError, SummaryModelLoadError):
+        raise
+    except Exception as exc:
+        raise SummaryGenerationError(
+            f"summary generation failed: {_safe_error_message(exc)}"
+        ) from exc
+
     partial_summaries = [summary for summary in partial_summaries if summary]
     if not partial_summaries:
         raise HTTPException(status_code=502, detail="Summary model returned empty output")
 
     if len(partial_summaries) > 1:
-        final_summary = _generate_one("\n\n".join(partial_summaries), summary_length)
+        try:
+            final_summary = _generate_one("\n\n".join(partial_summaries), summary_length)
+        except (SummaryModelPathMissingError, SummaryModelLoadError):
+            raise
+        except Exception as exc:
+            raise SummaryGenerationError(
+                f"summary generation failed: {_safe_error_message(exc)}"
+            ) from exc
     else:
         final_summary = partial_summaries[0]
 
@@ -247,31 +346,68 @@ def _summarize_sync(text: str, summary_length: str) -> dict[str, Any]:
 def create_app() -> FastAPI:
     app = FastAPI(title=SERVICE_NAME)
 
-    @app.on_event("startup")
-    async def startup_load_model():
-        await run_in_threadpool(_load_model_once)
-
     @app.get("/health")
     async def health():
-        try:
-            import torch
+        return {"ok": True, "service": HEALTH_SERVICE_NAME}
 
-            cuda_available = torch.cuda.is_available()
-        except Exception:
-            cuda_available = False
-        return {
-            "ok": bool(_model_state.get("loaded")),
-            "service": SERVICE_NAME,
-            "base_model": _env("SUMMARY_BASE_MODEL_ID", "google/flan-t5-large"),
-            "adapter_dir": _env("SUMMARY_ADAPTER_DIR", "/models/flan_t5_large_lora_adapter_stable_final"),
-            "cuda_available": cuda_available,
-            "model_loaded": bool(_model_state.get("loaded")),
-        }
+    @app.get("/ready")
+    async def ready():
+        try:
+            await run_in_threadpool(_load_model_once)
+        except SummaryServiceError as exc:
+            print(f"SUMMARY_READY_FAILED error={exc.public_message}", flush=True)
+            traceback.print_exc()
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={
+                    "ok": False,
+                    "model_loaded": False,
+                    "error": _safe_error_message(exc.public_message),
+                },
+            )
+        except Exception as exc:
+            error_message = f"summary model loading failed: {_safe_error_message(exc)}"
+            print(f"SUMMARY_READY_FAILED error={error_message}", flush=True)
+            traceback.print_exc()
+            return JSONResponse(
+                status_code=503,
+                content={"ok": False, "model_loaded": False, "error": error_message},
+            )
+        return {"ok": True, "model_loaded": True}
 
     @app.post("/summarize", dependencies=[Depends(_auth_dependency)])
     async def summarize(payload: SummaryRequest):
         summary_length = _summary_length(payload.summary_length)
-        return await run_in_threadpool(_summarize_sync, payload.text, summary_length)
+        input_word_count = _word_count(payload.text)
+        print(f"SUMMARY_REQUEST_RECEIVED summary_length={summary_length}", flush=True)
+        print(f"SUMMARY_INPUT_WORD_COUNT {input_word_count}", flush=True)
+
+        if input_word_count <= 0:
+            return _json_error("Text is required", 400)
+
+        print("SUMMARY_GENERATION_START", flush=True)
+        try:
+            result = await run_in_threadpool(_summarize_sync, payload.text, summary_length)
+        except SummaryServiceError as exc:
+            print(f"SUMMARY_GENERATION_FAILED error={exc.public_message}", flush=True)
+            traceback.print_exc()
+            return _json_error(exc.public_message, exc.status_code)
+        except HTTPException as exc:
+            error_message = str(exc.detail or "summary request failed")
+            print(
+                f"SUMMARY_GENERATION_FAILED error={_safe_error_message(error_message)}",
+                flush=True,
+            )
+            traceback.print_exc()
+            return _json_error(error_message, exc.status_code)
+        except Exception as exc:
+            error_message = f"summary generation failed: {_safe_error_message(exc)}"
+            print(f"SUMMARY_GENERATION_FAILED error={error_message}", flush=True)
+            traceback.print_exc()
+            return _json_error(error_message, 502)
+
+        print("SUMMARY_GENERATION_DONE", flush=True)
+        return result
 
     return app
 

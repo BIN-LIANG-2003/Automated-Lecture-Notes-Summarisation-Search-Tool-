@@ -19,7 +19,11 @@ image = (
 @app.function(
     image=image,
     gpu="T4",
-    timeout=900,
+    timeout=300,
+    startup_timeout=600,
+    scaledown_window=600,
+    # min_containers=1 is for demo reliability and may increase cost.
+    min_containers=1,
     volumes={MODEL_MOUNT_PATH: model_volume},
     secrets=[modal.Secret.from_name(SECRET_NAME)],
 )
